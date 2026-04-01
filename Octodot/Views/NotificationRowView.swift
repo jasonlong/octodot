@@ -51,7 +51,7 @@ struct NotificationRowView: View {
             .padding(.trailing, 10)
         }
         .frame(height: 44)
-        .background(isSelected ? Color.white.opacity(0.08) : Color.clear)
+        .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
         .contentShape(Rectangle())
     }
 

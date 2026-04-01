@@ -23,15 +23,14 @@ final class AppState {
     var searchQuery: String = ""
     var isLoading: Bool = false
     var errorMessage: String?
-    var groupByRepo: Bool = false
-    private var doneIDs: Set<String> = []
+    var groupByRepo: Bool = true
     private var undoStack: [(notification: GitHubNotification, index: Int)] = []
 
     // API
     private var apiClient: GitHubAPIClient?
 
     var filteredNotifications: [GitHubNotification] {
-        var result = notifications.filter { !doneIDs.contains($0.id) }
+        var result = notifications
         if !searchQuery.isEmpty {
             let query = searchQuery.lowercased()
             result = result.filter {
@@ -56,6 +55,10 @@ final class AppState {
     }
 
     // MARK: - Init
+
+    init(notifications: [GitHubNotification]) {
+        self.notifications = notifications
+    }
 
     init() {
         if let token = KeychainHelper.loadToken() {
@@ -202,7 +205,6 @@ final class AppState {
 
     func undo() {
         guard let last = undoStack.popLast() else { return }
-        doneIDs.remove(last.notification.id)
         let insertAt = min(last.index, notifications.count)
         notifications.insert(last.notification, at: insertAt)
         selectedIndex = min(insertAt, filteredNotifications.count - 1)
@@ -214,7 +216,6 @@ final class AppState {
         guard selectedIndex >= 0 && selectedIndex < list.count else { return }
         let target = list[selectedIndex]
 
-        doneIDs.insert(target.id)
         if let realIndex = notifications.firstIndex(where: { $0.id == target.id }) {
             undoStack.append((notification: target, index: realIndex))
             if undoStack.count > 50 { undoStack.removeFirst() }

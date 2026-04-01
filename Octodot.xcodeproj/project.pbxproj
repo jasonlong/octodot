@@ -22,6 +22,7 @@
 		BB000000000000000000000D /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* KeychainHelper.swift */; };
 		BB000000000000000000000E /* GitHubAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* GitHubAPIClient.swift */; };
 		BB000000000000000000000F /* TokenEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* TokenEntryView.swift */; };
+		BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +41,8 @@
 		AA000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA000000000000000000000E /* Octodot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Octodot.entitlements; sourceTree = "<group>"; };
 		AA000000000000000000000F /* Octodot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Octodot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000020 /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000021 /* OctodotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OctodotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
 		AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
@@ -60,6 +63,7 @@
 			isa = PBXGroup;
 			children = (
 				CC0000000000000000000002 /* Octodot */,
+				CC0000000000000000000009 /* OctodotTests */,
 				CC0000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -128,10 +132,19 @@
 			path = Auth;
 			sourceTree = "<group>";
 		};
+		CC0000000000000000000009 /* OctodotTests */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000020 /* AppStateTests.swift */,
+			);
+			path = OctodotTests;
+			sourceTree = "<group>";
+		};
 		CC0000000000000000000007 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				AA000000000000000000000F /* Octodot.app */,
+				AA0000000000000000000021 /* OctodotTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -156,7 +169,42 @@
 			productReference = AA000000000000000000000F /* Octodot.app */;
 			productType = "com.apple.product-type.application";
 		};
+		DD0000000000000000000010 /* OctodotTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF0000000000000000000003 /* Build configuration list for PBXNativeTarget "OctodotTests" */;
+			buildPhases = (
+				DD0000000000000000000011 /* Sources */,
+				DD0000000000000000000012 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DD0000000000000000000014 /* PBXTargetDependency */,
+			);
+			name = OctodotTests;
+			productName = OctodotTests;
+			productReference = AA0000000000000000000021 /* OctodotTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		DD0000000000000000000013 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DD0000000000000000000002 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DD0000000000000000000001;
+			remoteInfo = Octodot;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		DD0000000000000000000014 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DD0000000000000000000001 /* Octodot */;
+			targetProxy = DD0000000000000000000013 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		DD0000000000000000000002 /* Project object */ = {
@@ -180,6 +228,7 @@
 			projectRoot = "";
 			targets = (
 				DD0000000000000000000001 /* Octodot */,
+				DD0000000000000000000010 /* OctodotTests */,
 			);
 		};
 /* End PBXProject section */
@@ -214,6 +263,21 @@
 				BB000000000000000000000D /* KeychainHelper.swift in Sources */,
 				BB000000000000000000000E /* GitHubAPIClient.swift in Sources */,
 				BB000000000000000000000F /* TokenEntryView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DD0000000000000000000011 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000020 /* AppStateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DD0000000000000000000012 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -382,6 +446,38 @@
 			};
 			name = Release;
 		};
+		EE0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.octodot.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Octodot.app/Contents/MacOS/Octodot";
+			};
+			name = Debug;
+		};
+		EE0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.octodot.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Octodot.app/Contents/MacOS/Octodot";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -399,6 +495,15 @@
 			buildConfigurations = (
 				EE0000000000000000000001 /* Debug */,
 				EE0000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF0000000000000000000003 /* Build configuration list for PBXNativeTarget "OctodotTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE0000000000000000000005 /* Debug */,
+				EE0000000000000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -12,8 +12,10 @@ final class StatusItemController {
         self.panel = NotificationPanel(appState: appState)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "bell.fill", accessibilityDescription: "Octodot")
-            button.image?.isTemplate = true
+            let icon = NSImage(named: "menubar-icon")
+            icon?.size = NSSize(width: 18, height: 18)
+            icon?.isTemplate = true
+            button.image = icon
             button.action = #selector(togglePanel)
             button.target = self
         }

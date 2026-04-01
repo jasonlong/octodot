@@ -5,50 +5,50 @@ struct NotificationRowView: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Unread indicator
-            Rectangle()
-                .fill(notification.isUnread ? Color.accentColor : Color.clear)
-                .frame(width: 3)
+        HStack(spacing: 8) {
+            // Dot + icon in a fixed-width block
+            HStack(spacing: 0) {
+                Circle()
+                    .fill(notification.isUnread ? Color(red: 0.039, green: 0.518, blue: 1.0) : Color.clear)
+                    .frame(width: 6, height: 6)
+                    .frame(maxWidth: .infinity)
 
-            HStack(spacing: 10) {
-                // Type icon
                 Image(notification.iconName)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 14, height: 14)
                     .foregroundStyle(notification.iconColor)
-                    .frame(width: 20, alignment: .center)
-
-                // Content
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(notification.repository)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Text(notification.title)
-                        .font(.system(size: 13, weight: notification.isUnread ? .medium : .regular))
-                        .foregroundStyle(notification.isUnread ? .primary : .secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 4)
-
-                // Right side: reason + time
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(notification.reason.rawValue)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-
-                    Text(relativeTime)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+                    .opacity(notification.isUnread ? 1.0 : 0.5)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .frame(width: 40)
+
+            // Content
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notification.repository)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Text(notification.title)
+                    .font(.system(size: 13, weight: notification.isUnread ? .medium : .regular))
+                    .foregroundStyle(notification.isUnread ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            // Right side: reason + time
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(notification.reason.rawValue)
+                    .font(.system(size: 10))
+                    .foregroundStyle(notification.reason.isDirectlyInvolved ? AnyShapeStyle(Color.green) : AnyShapeStyle(.tertiary))
+                    .lineLimit(1)
+
+                Text(relativeTime)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.trailing, 10)
         }
         .frame(height: 44)
         .background(isSelected ? Color.white.opacity(0.08) : Color.clear)

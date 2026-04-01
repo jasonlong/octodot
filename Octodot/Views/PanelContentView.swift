@@ -10,6 +10,7 @@ struct PanelContentView: View {
     }
 
     @FocusState private var focus: Focus?
+    @State private var pendingG = false
 
     var body: some View {
         Group {
@@ -20,7 +21,7 @@ struct PanelContentView: View {
             }
         }
         .frame(width: 380, height: 500)
-        .background(.regularMaterial)
+        .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .ignoresSafeArea()
     }
@@ -109,9 +110,11 @@ struct PanelContentView: View {
             Divider().opacity(0.5)
 
             // Footer
-            HStack(spacing: 12) {
-                shortcutHint(key: "j/k", label: "navigate")
-                shortcutHint(key: "e", label: "done")
+            HStack(spacing: 10) {
+                shortcutHint(key: "j/k", label: "nav")
+                shortcutHint(key: "d", label: "done")
+                shortcutHint(key: "m", label: "read")
+                shortcutHint(key: "u", label: "unsub")
                 shortcutHint(key: "o", label: "open")
                 shortcutHint(key: "/", label: "search")
             }
@@ -121,7 +124,7 @@ struct PanelContentView: View {
         .focusable()
         .focused($focus, equals: .list)
         .focusEffectDisabled()
-        .onKeyPress(phases: .down) { press in
+        .onKeyPress(phases: [.down, .repeat]) { press in
             handleKeyPress(press)
         }
         .onAppear {
@@ -152,6 +155,16 @@ struct PanelContentView: View {
             }
         }
 
+        // Handle gg sequence
+        if pendingG {
+            pendingG = false
+            if press.key == KeyEquivalent("g") {
+                appState.jumpToTop()
+                return .handled
+            }
+            // Not a second g — fall through to normal handling
+        }
+
         switch press.key {
         case KeyEquivalent("j"), .downArrow:
             appState.moveDown()
@@ -159,11 +172,26 @@ struct PanelContentView: View {
         case KeyEquivalent("k"), .upArrow:
             appState.moveUp()
             return .handled
-        case KeyEquivalent("e"):
-            appState.markReadAndAdvance()
+        case KeyEquivalent("G"):
+            appState.jumpToBottom()
+            return .handled
+        case KeyEquivalent("g"):
+            pendingG = true
+            return .handled
+        case KeyEquivalent("d"):
+            appState.done()
+            return .handled
+        case KeyEquivalent("m"):
+            appState.markRead()
+            return .handled
+        case KeyEquivalent("u"):
+            appState.unsubscribeFromThread()
             return .handled
         case KeyEquivalent("o"), .return:
             appState.openInBrowser()
+            return .handled
+        case KeyEquivalent("y"):
+            appState.copyURL()
             return .handled
         case KeyEquivalent("r"):
             appState.refresh()

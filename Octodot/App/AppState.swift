@@ -121,41 +121,97 @@ final class AppState {
         selectedIndex = max(selectedIndex - 1, 0)
     }
 
+    func jumpToTop() {
+        guard filteredNotifications.count > 0 else { return }
+        selectedIndex = 0
+    }
+
+    func jumpToBottom() {
+        let count = filteredNotifications.count
+        guard count > 0 else { return }
+        selectedIndex = count - 1
+    }
+
     // MARK: - Actions
 
-    func markReadAndAdvance() {
+    func done() {
+        removeAndAdvance { client, threadId in
+            try await client.markAsDone(threadId: threadId)
+        }
+    }
+
+    func markRead() {
         let list = filteredNotifications
         guard selectedIndex >= 0 && selectedIndex < list.count else { return }
         let target = list[selectedIndex]
+        let wasUnread = target.isUnread
 
-        // Optimistic UI update
         if let realIndex = notifications.firstIndex(where: { $0.id == target.id }) {
-            notifications[realIndex].isUnread = false
+            notifications[realIndex].isUnread.toggle()
         }
 
-        clampSelection()
-
-        // Fire API call in background
         if let client = apiClient {
             Task {
                 do {
-                    try await client.markAsRead(threadId: target.threadId)
+                    if wasUnread {
+                        try await client.markAsRead(threadId: target.threadId)
+                    }
+                    // GitHub API doesn't have "mark as unread", so toggling back is local-only
                 } catch {
-                    // Revert on failure
                     await MainActor.run {
                         if let realIndex = self.notifications.firstIndex(where: { $0.id == target.id }) {
-                            self.notifications[realIndex].isUnread = true
+                            self.notifications[realIndex].isUnread = wasUnread
                         }
-                        self.errorMessage = "Failed to mark as read"
+                        self.errorMessage = "Failed to update read state"
                     }
                 }
             }
         }
     }
 
+    func unsubscribeFromThread() {
+        removeAndAdvance { client, threadId in
+            try await client.unsubscribe(threadId: threadId)
+        }
+    }
+
+    func copyURL() {
+        guard let notification = selectedNotification else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(notification.url.absoluteString, forType: .string)
+    }
+
     func openInBrowser() {
         guard let notification = selectedNotification else { return }
         NSWorkspace.shared.open(notification.url)
+    }
+
+    /// Remove the selected notification from the list, advance selection, and call an API action.
+    private func removeAndAdvance(apiAction: @escaping (GitHubAPIClient, String) async throws -> Void) {
+        let list = filteredNotifications
+        guard selectedIndex >= 0 && selectedIndex < list.count else { return }
+        let target = list[selectedIndex]
+
+        // Optimistic: remove from list
+        if let realIndex = notifications.firstIndex(where: { $0.id == target.id }) {
+            notifications.remove(at: realIndex)
+        }
+        clampSelection()
+
+        if let client = apiClient {
+            Task {
+                do {
+                    try await apiAction(client, target.threadId)
+                } catch {
+                    // Revert on failure
+                    await MainActor.run {
+                        self.notifications.append(target)
+                        self.notifications.sort { $0.updatedAt > $1.updatedAt }
+                        self.errorMessage = "Action failed"
+                    }
+                }
+            }
+        }
     }
 
     func refresh() {

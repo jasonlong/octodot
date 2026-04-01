@@ -36,6 +36,22 @@ final class NotificationPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
+    override func cancelOperation(_ sender: Any?) {
+        if appState.isSearchActive {
+            appState.deactivateSearch()
+        } else {
+            close()
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // Escape key
+            cancelOperation(nil)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
     override func close() {
         super.close()
         appState.isPanelVisible = false

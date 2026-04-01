@@ -21,9 +21,7 @@ struct NotificationListView: View {
             }
             .onChange(of: selectedIndex) { _, newValue in
                 guard newValue >= 0 && newValue < notifications.count else { return }
-                withAnimation(.easeOut(duration: 0.1)) {
-                    proxy.scrollTo(notifications[newValue].id, anchor: .center)
-                }
+                proxy.scrollTo(notifications[newValue].id)
             }
         }
     }

@@ -14,7 +14,7 @@ actor GitHubAPIClient {
 
     // MARK: - Fetch notifications
 
-    func fetchNotifications(all: Bool = false) async throws -> [GitHubNotification] {
+    func fetchNotifications(all: Bool = true) async throws -> [GitHubNotification] {
         var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "all", value: all ? "true" : "false"),
@@ -80,6 +80,28 @@ actor GitHubAPIClient {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
+        }
+    }
+
+    func markAsDone(threadId: String) async throws {
+        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)")
+        var req = makeRequest(url: url)
+        req.httpMethod = "DELETE"
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) || status == 304 else {
+            throw APIError.httpError(status)
+        }
+    }
+
+    func unsubscribe(threadId: String) async throws {
+        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
+        var req = makeRequest(url: url)
+        req.httpMethod = "DELETE"
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) || status == 304 else {
+            throw APIError.httpError(status)
         }
     }
 

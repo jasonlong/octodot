@@ -71,6 +71,10 @@ struct GitHubNotification: Identifiable, Hashable {
         case author = "Author"
         case comment = "Comment"
         case stateChange = "State change"
+
+        var isDirectlyInvolved: Bool {
+            self == .mentioned || self == .assigned
+        }
     }
 
     enum SubjectType: String, CaseIterable {

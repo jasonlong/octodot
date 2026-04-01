@@ -3,6 +3,7 @@ import SwiftUI
 struct PanelContentView: View {
     @Bindable var appState: AppState
     let closePanel: () -> Void
+    @State private var hasAppeared = false
 
     enum Focus: Hashable {
         case list
@@ -116,6 +117,7 @@ struct PanelContentView: View {
                 shortcutHint(key: "d", label: "done")
                 shortcutHint(key: "m", label: "read")
                 shortcutHint(key: "u", label: "unsub")
+                shortcutHint(key: "z", label: "undo")
                 shortcutHint(key: "o", label: "open")
                 shortcutHint(key: "/", label: "search")
             }
@@ -129,13 +131,21 @@ struct PanelContentView: View {
             handleKeyPress(press)
         }
         .onAppear {
-            focus = .list
-            appState.refresh()
+            guard !hasAppeared else { return }
+            hasAppeared = true
+            Task { @MainActor in
+                await Task.yield()
+                focus = .list
+                appState.refresh()
+            }
         }
         .onChange(of: appState.isPanelVisible) { _, visible in
             if visible {
-                focus = .list
-                appState.refresh()
+                Task { @MainActor in
+                    await Task.yield()
+                    focus = .list
+                    appState.refresh()
+                }
             }
         }
         .animation(.easeOut(duration: 0.15), value: appState.isSearchActive)
@@ -201,7 +211,7 @@ struct PanelContentView: View {
             appState.toggleGroupByRepo()
             return .handled
         case KeyEquivalent("r"):
-            appState.refresh()
+            appState.refresh(force: true)
             return .handled
         case KeyEquivalent("/"):
             appState.activateSearch()

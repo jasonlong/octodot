@@ -17,7 +17,7 @@ struct TokenEntryView: View {
             Text("Sign in to GitHub")
                 .font(.system(size: 15, weight: .semibold))
 
-            Text("Create a Personal Access Token with the\n**notifications** scope at GitHub → Settings → Tokens")
+            Text("Create a classic Personal Access Token with the\n**notifications** scope at GitHub → Settings → Tokens")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

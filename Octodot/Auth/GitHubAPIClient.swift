@@ -1,11 +1,23 @@
 import Foundation
 
+protocol NetworkSession: Sendable {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: NetworkSession {}
+
 actor GitHubAPIClient {
     private let baseURL = URL(string: "https://api.github.com")!
+    private let notificationsPerPage = 100
+    private let session: any NetworkSession
     private var token: String
+    private var cachedNotifications: [GitHubNotification] = []
+    private var lastModifiedValue: String?
+    private var nextNotificationsRefreshAt = Date.distantPast
 
-    init(token: String) {
+    init(token: String, session: any NetworkSession = URLSession.shared) {
         self.token = token
+        self.session = session
     }
 
     func updateToken(_ token: String) {
@@ -14,20 +26,91 @@ actor GitHubAPIClient {
 
     // MARK: - Fetch notifications
 
-    func fetchNotifications(all: Bool = true) async throws -> [GitHubNotification] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
-            URLQueryItem(name: "all", value: all ? "true" : "false"),
-            URLQueryItem(name: "per_page", value: "50"),
-        ]
+    func fetchNotifications(all: Bool = false, force: Bool = false) async throws -> [GitHubNotification] {
+        if !force,
+           !cachedNotifications.isEmpty,
+           Date() < nextNotificationsRefreshAt {
+            return cachedNotifications
+        }
 
-        let data = try await request(url: components.url!)
-        let items = try JSONDecoder.github.decode([APINotification].self, from: data)
-        var notifications = items.compactMap { $0.toModel() }
+        var apiItems: [APINotification] = []
+        var page = 1
+        var lastModifiedFromResponse: String?
+
+        while true {
+            var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [
+                URLQueryItem(name: "all", value: all ? "true" : "false"),
+                URLQueryItem(name: "per_page", value: "\(notificationsPerPage)"),
+                URLQueryItem(name: "page", value: "\(page)"),
+            ]
+
+            var request = makeRequest(url: components.url!)
+            if page == 1,
+               !force,
+               let lastModifiedValue {
+                request.setValue(lastModifiedValue, forHTTPHeaderField: "If-Modified-Since")
+            }
+
+            let (data, response) = try await session.data(for: request)
+            let httpResponse = response as? HTTPURLResponse
+            let status = httpResponse?.statusCode ?? 0
+
+            if page == 1 {
+                updatePollingHeaders(from: httpResponse)
+            }
+
+            switch status {
+            case 200...299:
+                if page == 1 {
+                    lastModifiedFromResponse = httpResponse?.value(forHTTPHeaderField: "Last-Modified")
+                }
+
+                let pageItems = try JSONDecoder.github.decode([APINotification].self, from: data)
+                apiItems.append(contentsOf: pageItems)
+
+                if pageItems.count < notificationsPerPage {
+                    lastModifiedValue = lastModifiedFromResponse
+                    page = 0
+                    break
+                }
+
+                page += 1
+
+            case 304 where page == 1:
+                return cachedNotifications
+            case 401:
+                throw APIError.unauthorized
+            case 403:
+                throw APIError.forbidden
+            case 429:
+                throw APIError.rateLimited
+            default:
+                throw APIError.httpError(status)
+            }
+
+            if page == 0 {
+                break
+            }
+        }
+
+        var notifications = apiItems.compactMap { $0.toModel() }
+        notifications.sort { $0.updatedAt > $1.updatedAt }
+        let previousNotifications = Dictionary(uniqueKeysWithValues: cachedNotifications.map { ($0.id, $0) })
+
+        for index in notifications.indices {
+            guard notifications[index].subjectURL != nil else { continue }
+
+            if let previous = previousNotifications[notifications[index].id],
+               previous.updatedAt == notifications[index].updatedAt {
+                notifications[index].subjectState = previous.subjectState
+            }
+        }
 
         // Fetch subject states concurrently
         await withTaskGroup(of: (String, GitHubNotification.SubjectState).self) { group in
-            for notification in notifications where notification.subjectURL != nil {
+            for notification in notifications
+            where notification.subjectURL != nil && notification.subjectState == .unknown {
                 let subjectURL = notification.subjectURL!
                 let id = notification.id
                 group.addTask { [self] in
@@ -43,6 +126,7 @@ actor GitHubAPIClient {
             }
         }
 
+        cachedNotifications = notifications
         return notifications
     }
 
@@ -76,10 +160,13 @@ actor GitHubAPIClient {
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)")
         var req = makeRequest(url: url)
         req.httpMethod = "PATCH"
-        let (_, response) = try await URLSession.shared.data(for: req)
+        let (_, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
+        }
+        if let index = cachedNotifications.firstIndex(where: { $0.threadId == threadId }) {
+            cachedNotifications[index].isUnread = false
         }
     }
 
@@ -87,21 +174,44 @@ actor GitHubAPIClient {
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)")
         var req = makeRequest(url: url)
         req.httpMethod = "DELETE"
-        let (_, response) = try await URLSession.shared.data(for: req)
+        let (_, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
         }
+        cachedNotifications.removeAll { $0.threadId == threadId }
     }
 
     func unsubscribe(threadId: String) async throws {
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
         var req = makeRequest(url: url)
         req.httpMethod = "DELETE"
-        let (_, response) = try await URLSession.shared.data(for: req)
+        let (_, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
+        }
+        cachedNotifications.removeAll { $0.threadId == threadId }
+    }
+
+    func restoreSubscription(threadId: String, notification: GitHubNotification, originalIndex: Int) async throws {
+        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
+        var req = makeRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: false, subscribed: true))
+
+        let (_, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) else {
+            throw APIError.httpError(status)
+        }
+
+        if let index = cachedNotifications.firstIndex(where: { $0.threadId == threadId }) {
+            cachedNotifications[index] = notification
+        } else {
+            let insertAt = min(max(0, originalIndex), cachedNotifications.count)
+            cachedNotifications.insert(notification, at: insertAt)
         }
     }
 
@@ -126,7 +236,7 @@ actor GitHubAPIClient {
 
     private func request(url: URL) async throws -> Data {
         let req = makeRequest(url: url)
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 
         switch status {
@@ -140,6 +250,17 @@ actor GitHubAPIClient {
             throw APIError.rateLimited
         default:
             throw APIError.httpError(status)
+        }
+    }
+
+    private func updatePollingHeaders(from response: HTTPURLResponse?) {
+        guard let response else { return }
+
+        if let pollInterval = response.value(forHTTPHeaderField: "X-Poll-Interval"),
+           let seconds = TimeInterval(pollInterval) {
+            nextNotificationsRefreshAt = Date().addingTimeInterval(seconds)
+        } else {
+            nextNotificationsRefreshAt = Date()
         }
     }
 
@@ -265,6 +386,11 @@ private struct APISubjectState: Decodable {
 
 private struct APIUser: Decodable {
     let login: String
+}
+
+private struct ThreadSubscriptionRequest: Encodable {
+    let ignored: Bool
+    let subscribed: Bool
 }
 
 extension JSONDecoder {

@@ -32,7 +32,11 @@ struct NotificationListView: View {
             }
             .onChange(of: selectedIndex) { _, newValue in
                 guard newValue >= 0 && newValue < notifications.count else { return }
-                proxy.scrollTo(notifications[newValue].id)
+                let notificationID = notifications[newValue].id
+                Task { @MainActor in
+                    await Task.yield()
+                    proxy.scrollTo(notificationID)
+                }
             }
         }
     }

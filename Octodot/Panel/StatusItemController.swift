@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class StatusItemController {
     private let statusItem: NSStatusItem
     private let panel: NotificationPanel
@@ -93,6 +94,7 @@ final class StatusItemController {
 
         panel.setFrameOrigin(NSPoint(x: panelX, y: panelY))
         panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
     }
 }

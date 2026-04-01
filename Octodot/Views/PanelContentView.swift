@@ -103,6 +103,7 @@ struct PanelContentView: View {
                 NotificationListView(
                     notifications: appState.filteredNotifications,
                     selectedIndex: appState.selectedIndex,
+                    groupByRepo: appState.groupByRepo,
                     onSelect: { appState.selectedIndex = $0 }
                 )
             }
@@ -192,6 +193,12 @@ struct PanelContentView: View {
             return .handled
         case KeyEquivalent("y"):
             appState.copyURL()
+            return .handled
+        case KeyEquivalent("z"):
+            appState.undo()
+            return .handled
+        case KeyEquivalent("s"):
+            appState.toggleGroupByRepo()
             return .handled
         case KeyEquivalent("r"):
             appState.refresh()

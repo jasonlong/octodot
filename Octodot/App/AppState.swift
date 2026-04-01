@@ -23,16 +23,30 @@ final class AppState {
     var searchQuery: String = ""
     var isLoading: Bool = false
     var errorMessage: String?
+    var groupByRepo: Bool = false
+    private var doneIDs: Set<String> = []
+    private var undoStack: [(notification: GitHubNotification, index: Int)] = []
 
     // API
     private var apiClient: GitHubAPIClient?
 
     var filteredNotifications: [GitHubNotification] {
-        guard !searchQuery.isEmpty else { return notifications }
-        let query = searchQuery.lowercased()
-        return notifications.filter {
-            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+        var result = notifications.filter { !doneIDs.contains($0.id) }
+        if !searchQuery.isEmpty {
+            let query = searchQuery.lowercased()
+            result = result.filter {
+                $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+            }
         }
+        if groupByRepo {
+            result.sort { $0.repository < $1.repository }
+        }
+        return result
+    }
+
+    func toggleGroupByRepo() {
+        groupByRepo.toggle()
+        clampSelection()
     }
 
     var selectedNotification: GitHubNotification? {
@@ -186,14 +200,24 @@ final class AppState {
         NSWorkspace.shared.open(notification.url)
     }
 
+    func undo() {
+        guard let last = undoStack.popLast() else { return }
+        doneIDs.remove(last.notification.id)
+        let insertAt = min(last.index, notifications.count)
+        notifications.insert(last.notification, at: insertAt)
+        selectedIndex = min(insertAt, filteredNotifications.count - 1)
+    }
+
     /// Remove the selected notification from the list, advance selection, and call an API action.
     private func removeAndAdvance(apiAction: @escaping (GitHubAPIClient, String) async throws -> Void) {
         let list = filteredNotifications
         guard selectedIndex >= 0 && selectedIndex < list.count else { return }
         let target = list[selectedIndex]
 
-        // Optimistic: remove from list
+        doneIDs.insert(target.id)
         if let realIndex = notifications.firstIndex(where: { $0.id == target.id }) {
+            undoStack.append((notification: target, index: realIndex))
+            if undoStack.count > 50 { undoStack.removeFirst() }
             notifications.remove(at: realIndex)
         }
         clampSelection()

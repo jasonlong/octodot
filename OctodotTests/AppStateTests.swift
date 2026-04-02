@@ -333,6 +333,18 @@ struct AppStateTests {
         #expect(state.groupByRepo == false)
     }
 
+    @Test func viewPreferencesPersistAcrossStateInstances() {
+        let defaults = Self.makeIsolatedUserDefaults()
+
+        let firstState = Self.makeState(userDefaults: defaults)
+        firstState.groupByRepo = false
+        firstState.inboxMode = .all
+
+        let secondState = Self.makeState(userDefaults: defaults)
+        #expect(secondState.groupByRepo == false)
+        #expect(secondState.inboxMode == .all)
+    }
+
     @Test func toggleInboxModeRefreshesUsingAllFeed() async {
         let (state, session) = Self.makeAuthedState(
             results: [
@@ -504,6 +516,8 @@ struct AppStateTests {
         #expect(state.notifications.count == 1)
         #expect(state.notifications[0].subjectState == .unknown)
 
+        state.notificationBecameVisible(id: "7")
+
         await Self.waitUntil {
             await MainActor.run {
                 state.notifications.first?.subjectState == .open
@@ -541,6 +555,45 @@ struct AppStateTests {
 
         #expect(state.notifications.count == 1)
         #expect(state.notifications.first?.id == "99")
+
+        state.signOut()
+    }
+
+    @Test func backgroundRefreshUsesUnreadFeedWhenAllModeIsHidden() async {
+        let sleeper = BackgroundRefreshSleeper()
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "99"),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["X-Poll-Interval": "30"]
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [Self.makeNotification(id: 0, isUnread: false)],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            backgroundRefreshEnabled: true,
+            sleepHandler: { nanoseconds in
+                await sleeper.sleep(nanoseconds: nanoseconds)
+            }
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .all
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.first?.url?.query?.contains("all=false") == true)
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications.first?.id == "0")
+        #expect(state.unreadNotificationCount == 1)
 
         state.signOut()
     }

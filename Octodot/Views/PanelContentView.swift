@@ -132,7 +132,8 @@ struct PanelContentView: View {
                     notifications: appState.filteredNotifications,
                     selectedNotificationID: appState.selectedNotificationID,
                     groupByRepo: appState.groupByRepo,
-                    onSelect: { appState.selectNotification(id: $0) }
+                    onSelect: { appState.selectNotification(id: $0) },
+                    onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
                 )
             }
 
@@ -238,7 +239,7 @@ struct PanelContentView: View {
         Task { @MainActor in
             await Task.yield()
             focus = .list
-            appState.refresh()
+            appState.refresh(force: appState.inboxMode.includesReadNotifications)
         }
     }
 

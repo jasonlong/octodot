@@ -5,6 +5,7 @@ struct NotificationListView: View {
     let selectedNotificationID: String?
     let groupByRepo: Bool
     let onSelect: (String) -> Void
+    let onNotificationVisible: (String) -> Void
 
     enum ListItem: Equatable, Identifiable {
         case repositoryHeader(name: String, isFirst: Bool)
@@ -74,6 +75,7 @@ struct NotificationListView: View {
             )
             .id(notification.id)
             .onTapGesture { onSelect(notification.id) }
+            .onAppear { onNotificationVisible(notification.id) }
         }
     }
 

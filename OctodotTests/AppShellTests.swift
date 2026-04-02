@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Testing
 @testable import Octodot
 
@@ -26,21 +27,26 @@ struct AppShellTests {
         #expect(origin.y == 0)
     }
 
-    @Test func toggleHotkeyMatchesOnlyControlOptionN() {
+    @Test func toggleHotkeyMatchesOnlyCommandQuote() {
         #expect(StatusItemController.matchesToggleHotkey(
             keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.control, .option]
+            modifierFlags: [.command]
         ))
 
         #expect(StatusItemController.matchesToggleHotkey(
             keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.control]
+            modifierFlags: [.option]
         ) == false)
 
         #expect(StatusItemController.matchesToggleHotkey(
             keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.control, .option, .shift]
+            modifierFlags: [.command, .shift]
         ) == false)
+    }
+
+    @Test func carbonHotkeyModifiersMirrorAppKitFlags() {
+        #expect(StatusItemController.carbonModifiers(from: [.command]) == UInt32(cmdKey))
+        #expect(StatusItemController.carbonModifiers(from: [.control, .option]) == UInt32(controlKey | optionKey))
     }
 
     @Test func outsideClickClosesPanelButStatusItemClickDoesNot() {

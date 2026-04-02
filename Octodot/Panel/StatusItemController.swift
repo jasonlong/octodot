@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Observation
 import SwiftUI
 
@@ -8,8 +9,10 @@ final class StatusItemController {
         static let activeAlpha: CGFloat = 1.0
         static let dimmedAlpha: CGFloat = 0.45
         static let iconSize = NSSize(width: 18, height: 18)
-        static let toggleHotkeyCode: UInt16 = 45
-        static let toggleHotkeyModifiers: NSEvent.ModifierFlags = [.control, .option]
+        static let toggleHotkeyCode: UInt16 = 39
+        static let toggleHotkeyModifiers: NSEvent.ModifierFlags = [.command]
+        static let hotKeySignature: OSType = 0x4F435444 // 'OCTD'
+        static let hotKeyID: UInt32 = 1
     }
 
     struct Appearance: Equatable {
@@ -23,8 +26,8 @@ final class StatusItemController {
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
-    private var globalKeyMonitor: Any?
-    private var localKeyMonitor: Any?
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandlerRef: EventHandlerRef?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
@@ -53,11 +56,11 @@ final class StatusItemController {
     }
 
     deinit {
-        if let globalKeyMonitor {
-            NSEvent.removeMonitor(globalKeyMonitor)
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
         }
-        if let localKeyMonitor {
-            NSEvent.removeMonitor(localKeyMonitor)
+        if let hotKeyHandlerRef {
+            RemoveEventHandler(hotKeyHandlerRef)
         }
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)
@@ -68,21 +71,83 @@ final class StatusItemController {
     }
 
     private func setupGlobalHotkey() {
-        // Ctrl+Option+N toggles panel from anywhere
-        // Requires Accessibility permission in System Settings → Privacy & Security → Accessibility
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if Self.matchesToggleHotkey(keyCode: event.keyCode, modifierFlags: event.modifierFlags) {
-                DispatchQueue.main.async { self?.togglePanel() }
-            }
+        var eventSpec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let userData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        let eventTarget = GetApplicationEventTarget()
+
+        let installStatus = InstallEventHandler(
+            eventTarget,
+            { _, eventRef, userData in
+                guard let userData else { return noErr }
+
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+
+                guard status == noErr,
+                      hotKeyID.signature == Constants.hotKeySignature,
+                      hotKeyID.id == Constants.hotKeyID else {
+                    return noErr
+                }
+
+                let controller = Unmanaged<StatusItemController>
+                    .fromOpaque(userData)
+                    .takeUnretainedValue()
+                Task { @MainActor in
+                    controller.togglePanel()
+                }
+                return noErr
+            },
+            1,
+            &eventSpec,
+            userData,
+            &hotKeyHandlerRef
+        )
+        guard installStatus == noErr else {
+            assertionFailure("Failed to install global hotkey handler: \(installStatus)")
+            return
         }
 
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if Self.matchesToggleHotkey(keyCode: event.keyCode, modifierFlags: event.modifierFlags) {
-                DispatchQueue.main.async { self?.togglePanel() }
-                return nil
-            }
-            return event
+        let hotKeyID = EventHotKeyID(signature: Constants.hotKeySignature, id: Constants.hotKeyID)
+        let registerStatus = RegisterEventHotKey(
+            UInt32(Constants.toggleHotkeyCode),
+            Self.carbonModifiers(from: Constants.toggleHotkeyModifiers),
+            hotKeyID,
+            eventTarget,
+            0,
+            &hotKeyRef
+        )
+        guard registerStatus == noErr else {
+            assertionFailure("Failed to register global hotkey: \(registerStatus)")
+            return
         }
+    }
+
+    static func carbonModifiers(from modifierFlags: NSEvent.ModifierFlags) -> UInt32 {
+        var carbonFlags: UInt32 = 0
+        if modifierFlags.contains(.command) {
+            carbonFlags |= UInt32(cmdKey)
+        }
+        if modifierFlags.contains(.option) {
+            carbonFlags |= UInt32(optionKey)
+        }
+        if modifierFlags.contains(.control) {
+            carbonFlags |= UInt32(controlKey)
+        }
+        if modifierFlags.contains(.shift) {
+            carbonFlags |= UInt32(shiftKey)
+        }
+        return carbonFlags
     }
 
     private func setupOutsideClickMonitors() {

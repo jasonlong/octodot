@@ -293,6 +293,71 @@ struct AppStateTests {
         #expect(state.filteredNotifications.count == 5)
     }
 
+    @Test func allModeHidesNotificationsOlderThanThirtyDays() {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "recent",
+                threadId: "recent",
+                title: "Recent notification",
+                repository: "acme/alpha",
+                reason: .subscribed,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-7 * 24 * 60 * 60),
+                isUnread: false,
+                url: URL(string: "https://github.com/acme/test/pull/recent")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "old",
+                threadId: "old",
+                title: "Old notification",
+                repository: "acme/alpha",
+                reason: .subscribed,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-45 * 24 * 60 * 60),
+                isUnread: false,
+                url: URL(string: "https://github.com/acme/test/pull/old")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let state = AppState(notifications: notifications)
+
+        state.groupByRepo = false
+        state.inboxMode = .all
+        state.clampSelection()
+
+        #expect(state.filteredNotifications.map(\.id) == ["recent"])
+        #expect(state.notifications.map(\.id) == ["recent"])
+    }
+
+    @Test func unreadModeDoesNotApplyAllModeRetentionWindow() {
+        let oldNotification = GitHubNotification(
+            id: "old",
+            threadId: "old",
+            title: "Old unread notification",
+            repository: "acme/alpha",
+            reason: .subscribed,
+            type: .pullRequest,
+            updatedAt: Date().addingTimeInterval(-45 * 24 * 60 * 60),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/old")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let state = AppState(
+            notifications: [oldNotification],
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = false
+
+        #expect(state.inboxMode == .unread)
+        #expect(state.filteredNotifications.map(\.id) == ["old"])
+    }
+
     @Test func searchIsCaseInsensitive() {
         let state = Self.makeState()
         state.searchQuery = "NOTIFICATION 0"
@@ -550,7 +615,11 @@ struct AppStateTests {
         #expect(state.isPanelVisible == false)
 
         await Self.waitUntil {
-            await session.recordedRequests().count == 1
+            let didRequest = await session.recordedRequests().count == 1
+            let didApply = await MainActor.run {
+                state.notifications.count == 1 && state.notifications.first?.id == "99"
+            }
+            return didRequest && didApply
         }
 
         #expect(state.notifications.count == 1)
@@ -680,6 +749,208 @@ struct AppStateTests {
         #expect(state.selectedIndex == 0)
     }
 
+    @Test func doneOnlyRemovesSelectedNotificationWhenTwoRowsShareARepository() async {
+        let notifications = [
+            GitHubNotification(
+                id: "top",
+                threadId: "top",
+                title: "Process backup verification jobs",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: Date(),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "second",
+                threadId: "second",
+                title: "Adds a sales serve toggle to the...",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: Date().addingTimeInterval(-3600),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/top",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "top")
+        state.done()
+
+        #expect(state.filteredNotifications.map(\.id) == ["second"])
+        #expect(state.selectedNotification?.id == "second")
+
+        await Self.settleTasks()
+        #expect((await session.recordedRequests()).count == 1)
+    }
+
+    @Test func doneOnlyRemovesSelectedNotificationWhenRowsShareRepositoryAndTitle() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "first",
+                threadId: "first",
+                title: "Process backup verification jobs",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "second",
+                threadId: "second",
+                title: "Process backup verification jobs",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "third",
+                threadId: "third",
+                title: "Process backup verification jobs",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-120),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/3")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/first",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "first")
+        state.done()
+
+        #expect(state.filteredNotifications.map(\.id) == ["second", "third"])
+        #expect(state.selectedNotification?.id == "second")
+
+        await Self.settleTasks()
+        #expect((await session.recordedRequests()).count == 1)
+    }
+
+    @Test func doneOnlyRemovesSelectedActivitySnapshotWhenRowsShareAThread() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "first",
+                threadId: "shared-thread",
+                title: "Process backup verification jobs",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "second",
+                threadId: "shared-thread",
+                title: "Adds a sales serve toggle to the...",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-3600),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "third",
+                threadId: "shared-thread",
+                title: "Add `started_at` to `backup_ver`...",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-7200),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/3")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/shared-thread",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "first")
+        state.done()
+
+        #expect(state.filteredNotifications.map(\.id) == ["second", "third"])
+        #expect(state.selectedNotification?.id == "second")
+
+        await Self.settleTasks()
+        #expect((await session.recordedRequests()).count == 1)
+    }
+
     // MARK: - Undo
 
     @Test func undoRestoresPendingDoneBeforeItHitsTheAPI() async {
@@ -724,6 +995,86 @@ struct AppStateTests {
         try? await Task.sleep(nanoseconds: 75_000_000)
         #expect(state.notifications.count == 5)
         #expect((await session.recordedRequests()).isEmpty)
+    }
+
+    @Test func actionDispatchWindowSlidesAcrossMultipleQueuedActions() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 204
+                    )
+                )),
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/1",
+                        statusCode: 204
+                    )
+                )),
+            ],
+            actionDispatchDelayNanoseconds: 80_000_000,
+            sleepHandler: Self.realSleep
+        )
+
+        state.groupByRepo = false
+        state.selectedIndex = 0
+        state.done()
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        state.selectedIndex = 0
+        state.done()
+
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        #expect((await session.recordedRequests()).isEmpty)
+
+        await Self.waitUntil(timeoutNanoseconds: 200_000_000) {
+            await session.recordedRequests().count == 2
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
+    }
+
+    @Test func refreshFlushesQueuedActionsImmediatelyBeforeReload() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 204
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+            ],
+            count: 1,
+            actionDispatchDelayNanoseconds: 5_000_000_000,
+            sleepHandler: Self.realSleep
+        )
+
+        state.groupByRepo = false
+        state.selectedIndex = 0
+        state.done()
+
+        state.refresh(force: true)
+
+        await Self.waitUntil(timeoutNanoseconds: 250_000_000) {
+            await session.recordedRequests().count == 2
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests.first?.httpMethod == "DELETE")
+        #expect(requests.last?.httpMethod == "GET")
     }
 
     @Test func undoOnEmptyStackIsNoOp() {
@@ -888,8 +1239,21 @@ struct AppStateTests {
             await session.recordedRequests().count == 1
         }
 
+        let staleSnapshot = GitHubNotification(
+            id: "0",
+            threadId: "0",
+            title: "Notification 0",
+            repository: "acme/alpha",
+            reason: .subscribed,
+            type: .pullRequest,
+            updatedAt: Date(timeIntervalSince1970: 0),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/0")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
         let relaunchedState = AppState(
-            notifications: Self.makeNotifications(1),
+            notifications: [staleSnapshot],
             authStatus: .signedIn(username: "octodot"),
             userDefaults: defaults
         )

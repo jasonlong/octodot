@@ -49,4 +49,35 @@ struct PanelContentViewTests {
         #expect(PanelContentView.routeKey(.escape, isSearchActive: false, pendingG: false) ==
             .init(command: .closePanel, pendingG: false, focusDirective: .unchanged, isHandled: true))
     }
+
+    @Test func notificationSummaryReflectsMode() {
+        #expect(
+            PanelContentView.notificationSummary(
+                unreadCount: 3,
+                totalCount: 3,
+                mode: .unread
+            ) == "3 unread"
+        )
+        #expect(
+            PanelContentView.notificationSummary(
+                unreadCount: 3,
+                totalCount: 8,
+                mode: .all
+            ) == "3 unread · 8 total"
+        )
+    }
+
+    @Test func searchFieldSubmitReturnsFocusToListAndKeepsFilter() {
+        #expect(
+            PanelContentView.searchFieldEffect(for: .submit) ==
+            .init(clearsQuery: false, keepsSearchActive: false, focusDirective: .list)
+        )
+    }
+
+    @Test func searchFieldCancelClearsFilterAndReturnsFocusToList() {
+        #expect(
+            PanelContentView.searchFieldEffect(for: .cancel) ==
+            .init(clearsQuery: true, keepsSearchActive: false, focusDirective: .list)
+        )
+    }
 }

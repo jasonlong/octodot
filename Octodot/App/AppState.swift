@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-private let defaultActionDispatchDelayNanoseconds: UInt64 = 1_500_000_000
+private let defaultActionDispatchDelayNanoseconds: UInt64 = 2_500_000_000
 private let defaultBackgroundRefreshFallbackNanoseconds: UInt64 = 60_000_000_000
 
 private let defaultSleepHandler: AppState.SleepHandler = { nanoseconds in
@@ -9,40 +9,10 @@ private let defaultSleepHandler: AppState.SleepHandler = { nanoseconds in
     try? await Task.sleep(nanoseconds: nanoseconds)
 }
 
-@MainActor
-@Observable
-final class AppState {
-    typealias SleepHandler = @Sendable (UInt64) async -> Void
-    typealias URLOpener = @MainActor (URL) -> Bool
-    typealias TokenDeleter = @MainActor () -> Void
-    typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
-    private static let committedThreadActionsStorageKey = "AppState.committedThreadActions.v1"
-    private static let inboxModeStorageKey = "AppState.inboxMode.v1"
-    private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
-    private static let visibleSubjectStateBatchSize = 20
+private struct ThreadActionStore {
+    static let committedThreadActionsStorageKey = "AppState.committedThreadActions.v1"
 
-    enum AuthStatus: Equatable {
-        case signedOut
-        case signedIn(username: String)
-    }
-
-    enum InboxMode: String, Equatable {
-        case unread
-        case all
-
-        var includesReadNotifications: Bool {
-            self == .all
-        }
-
-        var title: String {
-            switch self {
-            case .unread: "Unread"
-            case .all: "All"
-            }
-        }
-    }
-
-    private enum ThreadActionKind: String, Codable {
+    enum ActionKind: String, Codable {
         case markRead
         case done
         case unsubscribe
@@ -71,35 +41,465 @@ final class AppState {
         }
     }
 
-    private enum PendingActionPhase {
+    enum PendingActionPhase {
         case queued
         case executing
     }
 
-    private struct PendingThreadAction {
+    struct PendingAction {
         let requestID: UUID
-        let kind: ThreadActionKind
+        let kind: ActionKind
         let notification: GitHubNotification
         let originalServerIndex: Int
         var phase: PendingActionPhase
-        var restoreAfterSuccess: Bool = false
+        var restoreAfterSuccess = false
     }
 
-    private struct CommittedThreadAction {
-        let kind: ThreadActionKind
+    struct CommittedAction {
+        let kind: ActionKind
         let threadId: String
         let updatedAt: Date
+        let activityIdentity: String?
     }
 
-    private struct PersistedCommittedThreadAction: Codable {
-        let kind: ThreadActionKind
+    private struct PersistedCommittedAction: Codable {
+        let kind: ActionKind
         let threadId: String
         let updatedAt: Date
+        let activityIdentity: String?
     }
 
-    private enum UndoEntry {
+    enum UndoEntry {
         case cancelPending(threadId: String, requestID: UUID)
         case restoreSubscription(notification: GitHubNotification, originalServerIndex: Int)
+    }
+
+    enum UndoEffect {
+        case none
+        case cancelQueued(PendingAction)
+        case markedRestoreAfterSuccess
+        case restoreSubscription(notification: GitHubNotification, originalServerIndex: Int)
+    }
+
+    private let userDefaults: UserDefaults
+
+    private(set) var pendingActions: [String: PendingAction]
+    private(set) var committedActions: [String: CommittedAction]
+    private(set) var undoStack: [UndoEntry]
+
+    init(userDefaults: UserDefaults) {
+        self.userDefaults = userDefaults
+        self.pendingActions = [:]
+        self.committedActions = Self.loadCommittedActions(from: userDefaults)
+        self.undoStack = []
+    }
+
+    func hasPendingAction(for threadId: String) -> Bool {
+        pendingActions[threadId] != nil
+    }
+
+    func pendingAction(for threadId: String) -> PendingAction? {
+        pendingActions[threadId]
+    }
+
+    func queuedActionsForDispatch() -> [PendingAction] {
+        pendingActions.values
+            .filter { $0.phase == .queued }
+            .sorted { lhs, rhs in
+                if lhs.originalServerIndex != rhs.originalServerIndex {
+                    return lhs.originalServerIndex < rhs.originalServerIndex
+                }
+                return lhs.notification.id < rhs.notification.id
+            }
+    }
+
+    mutating func start(
+        _ kind: ActionKind,
+        notification: GitHubNotification,
+        originalServerIndex: Int,
+        pushesUndo: Bool
+    ) -> PendingAction {
+        let requestID = UUID()
+        let pending = PendingAction(
+            requestID: requestID,
+            kind: kind,
+            notification: notification,
+            originalServerIndex: originalServerIndex,
+            phase: .queued
+        )
+
+        pendingActions[notification.threadId] = pending
+        if pushesUndo {
+            pushUndo(.cancelPending(threadId: notification.threadId, requestID: requestID))
+        }
+        return pending
+    }
+
+    mutating func updatePendingAction(_ pending: PendingAction) {
+        pendingActions[pending.notification.threadId] = pending
+    }
+
+    mutating func applyUndo() -> UndoEffect {
+        while let entry = undoStack.popLast() {
+            switch entry {
+            case .cancelPending(let threadId, let requestID):
+                guard var pending = pendingActions[threadId],
+                      pending.requestID == requestID else {
+                    continue
+                }
+
+                switch pending.phase {
+                case .queued:
+                    pendingActions.removeValue(forKey: threadId)
+                    return .cancelQueued(pending)
+
+                case .executing:
+                    guard pending.kind == .unsubscribe else {
+                        return .none
+                    }
+
+                    pending.restoreAfterSuccess = true
+                    pendingActions[threadId] = pending
+                    return .markedRestoreAfterSuccess
+                }
+
+            case .restoreSubscription(let notification, let originalServerIndex):
+                guard pendingActions[notification.threadId] == nil else {
+                    continue
+                }
+
+                committedActions.removeValue(forKey: notification.threadId)
+                persistCommittedActions()
+                return .restoreSubscription(
+                    notification: notification,
+                    originalServerIndex: originalServerIndex
+                )
+            }
+        }
+
+        return .none
+    }
+
+    mutating func handleSuccess(
+        _ pending: PendingAction,
+        serverNotifications: inout [GitHubNotification]
+    ) -> UndoEffect {
+        pendingActions[pending.notification.threadId] = nil
+
+        switch pending.kind {
+        case .markRead:
+            if let index = serverNotifications.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+                serverNotifications[index].isUnread = false
+            }
+            committedActions[pending.notification.threadId] = CommittedAction(
+                kind: .markRead,
+                threadId: pending.notification.threadId,
+                updatedAt: pending.notification.updatedAt,
+                activityIdentity: pending.notification.activityIdentity
+            )
+            persistCommittedActions()
+            removeUndoEntry(for: pending.requestID)
+            return .none
+
+        case .done:
+            serverNotifications.removeAll { $0.matchesActivity(as: pending.notification) }
+            committedActions[pending.notification.threadId] = CommittedAction(
+                kind: .done,
+                threadId: pending.notification.threadId,
+                updatedAt: pending.notification.updatedAt,
+                activityIdentity: pending.notification.activityIdentity
+            )
+            persistCommittedActions()
+            removeUndoEntry(for: pending.requestID)
+            return .none
+
+        case .unsubscribe:
+            serverNotifications.removeAll { $0.matchesActivity(as: pending.notification) }
+            if pending.restoreAfterSuccess {
+                return .restoreSubscription(
+                    notification: pending.notification,
+                    originalServerIndex: pending.originalServerIndex
+                )
+            }
+
+            committedActions[pending.notification.threadId] = CommittedAction(
+                kind: .unsubscribe,
+                threadId: pending.notification.threadId,
+                updatedAt: pending.notification.updatedAt,
+                activityIdentity: pending.notification.activityIdentity
+            )
+            persistCommittedActions()
+            replaceUndoEntry(
+                for: pending.requestID,
+                with: .restoreSubscription(
+                    notification: pending.notification,
+                    originalServerIndex: pending.originalServerIndex
+                )
+            )
+            return .none
+
+        case .restoreSubscription:
+            committedActions.removeValue(forKey: pending.notification.threadId)
+            persistCommittedActions()
+            if let index = serverNotifications.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+                serverNotifications[index] = pending.notification
+            } else {
+                let insertAt = min(max(0, pending.originalServerIndex), serverNotifications.count)
+                serverNotifications.insert(pending.notification, at: insertAt)
+            }
+            return .none
+        }
+    }
+
+    mutating func handleFailure(_ pending: PendingAction) -> String {
+        pendingActions[pending.notification.threadId] = nil
+        removeUndoEntry(for: pending.requestID)
+        return pending.kind.failureMessage
+    }
+
+    func projectedNotifications(from baseNotifications: [GitHubNotification]) -> [GitHubNotification] {
+        var projected = baseNotifications
+
+        for committed in committedActions.values {
+            switch committed.kind {
+            case .markRead:
+                if let index = projected.firstIndex(where: { $0.threadId == committed.threadId }),
+                   projected[index].updatedAt <= committed.updatedAt {
+                    projected[index].isUnread = false
+                }
+            case .done, .unsubscribe:
+                hideDismissedActivity(
+                    activityIdentity: committed.activityIdentity,
+                    threadId: committed.threadId,
+                    updatedAt: committed.updatedAt,
+                    useLegacyThreadFallback: committed.activityIdentity == nil,
+                    in: &projected
+                )
+            case .restoreSubscription:
+                break
+            }
+        }
+
+        for pending in pendingActions.values {
+            switch pending.kind {
+            case .markRead:
+                if let index = projected.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+                    projected[index].isUnread = false
+                }
+
+            case .done, .unsubscribe:
+                hideDismissedActivity(
+                    activityIdentity: pending.notification.activityIdentity,
+                    threadId: pending.notification.threadId,
+                    updatedAt: pending.notification.updatedAt,
+                    useLegacyThreadFallback: false,
+                    in: &projected
+                )
+
+            case .restoreSubscription:
+                if let index = projected.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+                    projected[index] = pending.notification
+                } else {
+                    let insertAt = min(max(0, pending.originalServerIndex), projected.count)
+                    projected.insert(pending.notification, at: insertAt)
+                }
+            }
+        }
+
+        return projected
+    }
+
+    mutating func reconcileCommittedActions(with fetchedNotifications: [GitHubNotification]) {
+        committedActions = committedActions.filter { threadId, committed in
+            switch committed.kind {
+            case .markRead:
+                guard let fetched = fetchedNotifications.first(where: { $0.threadId == threadId }) else {
+                    return false
+                }
+                guard fetched.updatedAt <= committed.updatedAt else {
+                    return false
+                }
+                return fetched.isUnread
+
+            case .done, .unsubscribe:
+                let fetchedSnapshots = fetchedNotifications.filter { $0.threadId == threadId }
+                guard !fetchedSnapshots.isEmpty else {
+                    return true
+                }
+                if let activityIdentity = committed.activityIdentity {
+                    if fetchedSnapshots.contains(where: { $0.activityIdentity == activityIdentity }) {
+                        return true
+                    }
+                    if fetchedSnapshots.count == 1,
+                       fetchedSnapshots[0].updatedAt <= committed.updatedAt {
+                        return true
+                    }
+                    return false
+                }
+                return fetchedSnapshots.contains { $0.updatedAt <= committed.updatedAt }
+
+            case .restoreSubscription:
+                return false
+            }
+        }
+        persistCommittedActions()
+    }
+
+    private func hideDismissedActivity(
+        activityIdentity: String?,
+        threadId: String,
+        updatedAt: Date,
+        useLegacyThreadFallback: Bool,
+        in notifications: inout [GitHubNotification]
+    ) {
+        if let activityIdentity,
+           let exactIndex = notifications.firstIndex(where: { $0.activityIdentity == activityIdentity }) {
+            notifications.remove(at: exactIndex)
+            return
+        }
+
+        let threadSnapshotIndices = notifications.indices.filter {
+            notifications[$0].threadId == threadId
+        }
+
+        guard threadSnapshotIndices.count == 1 else {
+            if useLegacyThreadFallback {
+                notifications.removeAll {
+                    $0.threadId == threadId && $0.updatedAt <= updatedAt
+                }
+            }
+            return
+        }
+
+        let snapshotIndex = threadSnapshotIndices[0]
+        guard notifications[snapshotIndex].updatedAt <= updatedAt else {
+            return
+        }
+
+        notifications.remove(at: snapshotIndex)
+    }
+
+    mutating func clearCommittedActions() {
+        committedActions.removeAll()
+        persistCommittedActions()
+    }
+
+    mutating func cancelAllPendingActions() {
+        pendingActions.removeAll()
+        undoStack.removeAll()
+    }
+
+    private mutating func removeUndoEntry(for requestID: UUID) {
+        undoStack.removeAll {
+            if case .cancelPending(_, let entryRequestID) = $0 {
+                return entryRequestID == requestID
+            }
+            return false
+        }
+    }
+
+    private mutating func replaceUndoEntry(for requestID: UUID, with entry: UndoEntry) {
+        if let index = undoStack.lastIndex(where: {
+            if case .cancelPending(_, let entryRequestID) = $0 {
+                return entryRequestID == requestID
+            }
+            return false
+        }) {
+            undoStack[index] = entry
+        }
+    }
+
+    private mutating func pushUndo(_ entry: UndoEntry) {
+        undoStack.append(entry)
+        if undoStack.count > 50 {
+            undoStack.removeFirst()
+        }
+    }
+
+    private static func loadCommittedActions(from userDefaults: UserDefaults) -> [String: CommittedAction] {
+        guard let data = userDefaults.data(forKey: committedThreadActionsStorageKey) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let persisted = try? decoder.decode([PersistedCommittedAction].self, from: data) else {
+            return [:]
+        }
+
+        return Dictionary(
+            uniqueKeysWithValues: persisted.map {
+                (
+                    $0.threadId,
+                    CommittedAction(
+                        kind: $0.kind,
+                        threadId: $0.threadId,
+                        updatedAt: $0.updatedAt,
+                        activityIdentity: $0.activityIdentity
+                    )
+                )
+            }
+        )
+    }
+
+    private func persistCommittedActions() {
+        guard !committedActions.isEmpty else {
+            userDefaults.removeObject(forKey: Self.committedThreadActionsStorageKey)
+            return
+        }
+
+        let persisted = committedActions.values.map {
+            PersistedCommittedAction(
+                kind: $0.kind,
+                threadId: $0.threadId,
+                updatedAt: $0.updatedAt,
+                activityIdentity: $0.activityIdentity
+            )
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        guard let data = try? encoder.encode(persisted) else {
+            return
+        }
+
+        userDefaults.set(data, forKey: Self.committedThreadActionsStorageKey)
+    }
+}
+
+@MainActor
+@Observable
+final class AppState {
+    typealias SleepHandler = @Sendable (UInt64) async -> Void
+    typealias URLOpener = @MainActor (URL) -> Bool
+    typealias TokenDeleter = @MainActor () -> Void
+    typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
+    private static let inboxModeStorageKey = "AppState.inboxMode.v1"
+    private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
+    private static let visibleSubjectStateBatchSize = 20
+    private static let allModeRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
+
+    enum AuthStatus: Equatable {
+        case signedOut
+        case signedIn(username: String)
+    }
+
+    enum InboxMode: String, Equatable {
+        case unread
+        case all
+
+        var includesReadNotifications: Bool {
+            self == .all
+        }
+
+        var title: String {
+            switch self {
+            case .unread: "Unread"
+            case .all: "All"
+            }
+        }
     }
 
     var authStatus: AuthStatus = .signedOut
@@ -130,10 +530,9 @@ final class AppState {
     private var serverNotifications: [GitHubNotification] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
-    private var pendingThreadActions: [String: PendingThreadAction] = [:]
-    private var committedThreadActions: [String: CommittedThreadAction] = [:]
-    private var undoStack: [UndoEntry] = []
+    private var threadActions: ThreadActionStore
     private var actionTasks: [String: Task<Void, Never>] = [:]
+    private var batchDispatchTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
@@ -198,9 +597,9 @@ final class AppState {
         self.urlOpener = urlOpener
         self.tokenDeleter = tokenDeleter
         self.apiClientFactory = apiClientFactory
+        self.threadActions = ThreadActionStore(userDefaults: userDefaults)
         self.inboxMode = Self.loadInboxMode(from: userDefaults)
         self.groupByRepo = Self.loadGroupByRepo(from: userDefaults)
-        self.committedThreadActions = Self.loadCommittedThreadActions(from: userDefaults)
         self.selectedThreadID = notifications.first?.id
         rebuildDerivedState()
 
@@ -234,7 +633,12 @@ final class AppState {
     }
 
     func toggleInboxMode() {
-        inboxMode = inboxMode == .unread ? .all : .unread
+        setInboxMode(inboxMode == .unread ? .all : .unread)
+    }
+
+    func setInboxMode(_ mode: InboxMode) {
+        guard inboxMode != mode else { return }
+        inboxMode = mode
         refresh(force: true)
     }
 
@@ -265,8 +669,7 @@ final class AppState {
             if case GitHubAPIClient.APIError.unauthorized = error {
                 self.authStatus = .signedOut
                 self.apiClient = nil
-                self.committedThreadActions.removeAll()
-                self.persistCommittedThreadActions()
+                self.threadActions.clearCommittedActions()
                 tokenDeleter()
                 rebuildDerivedState()
             } else {
@@ -299,8 +702,7 @@ final class AppState {
         apiClient = nil
         authStatus = .signedOut
         serverNotifications = []
-        committedThreadActions.removeAll()
-        persistCommittedThreadActions()
+        threadActions.clearCommittedActions()
         errorMessage = nil
         searchQuery = ""
         isSearchActive = false
@@ -321,7 +723,7 @@ final class AppState {
             )
             guard requestID == activeLoadRequestID else { return }
             serverNotifications = fetched
-            reconcileCommittedThreadActions(with: fetched)
+            threadActions.reconcileCommittedActions(with: fetched)
             isLoading = false
             errorMessage = nil
             rebuildDerivedState()
@@ -382,55 +784,28 @@ final class AppState {
     }
 
     func undo() {
-        while let entry = undoStack.popLast() {
-            switch entry {
-            case .cancelPending(let threadId, let requestID):
-                guard var pending = pendingThreadActions[threadId],
-                      pending.requestID == requestID else {
-                    continue
-                }
-
-                switch pending.phase {
-                case .queued:
-                    actionTasks.removeValue(forKey: threadId)?.cancel()
-                    pendingThreadActions.removeValue(forKey: threadId)
-                    errorMessage = nil
-
-                    if pending.kind.hidesNotification || pending.kind == .restoreSubscription {
-                        selectedThreadID = pending.notification.id
-                        selectedIndexStorage = pending.originalServerIndex
-                    }
-                    clampSelection()
-                    return
-
-                case .executing:
-                    guard pending.kind == .unsubscribe else {
-                        clampSelection()
-                        return
-                    }
-
-                    pending.restoreAfterSuccess = true
-                    pendingThreadActions[threadId] = pending
-                    errorMessage = nil
-                    return
-                }
-
-            case .restoreSubscription(let notification, let originalServerIndex):
-                guard pendingThreadActions[notification.threadId] == nil else {
-                    continue
-                }
-
-                committedThreadActions.removeValue(forKey: notification.threadId)
-                persistCommittedThreadActions()
-                startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
-                return
+        switch threadActions.applyUndo() {
+        case .none:
+            clampSelection()
+        case .cancelQueued(let pending):
+            actionTasks.removeValue(forKey: pending.notification.threadId)?.cancel()
+            errorMessage = nil
+            if pending.kind.hidesNotification || pending.kind == .restoreSubscription {
+                selectedThreadID = pending.notification.id
+                selectedIndexStorage = pending.originalServerIndex
             }
+            clampSelection()
+        case .markedRestoreAfterSuccess:
+            errorMessage = nil
+        case .restoreSubscription(let notification, let originalServerIndex):
+            startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
         }
     }
 
     func refresh(force: Bool = false) {
         searchQuery = ""
         isSearchActive = false
+        flushPendingActions()
         if apiClient != nil {
             Task { await loadNotifications(force: force) }
         } else {
@@ -461,17 +836,26 @@ final class AppState {
         rebuildDerivedState()
     }
 
+    func flushPendingActions() {
+        batchDispatchTask?.cancel()
+        batchDispatchTask = nil
+
+        guard let client = apiClient else { return }
+        dispatchQueuedActions(using: client)
+    }
+
     private func rebuildDerivedState() {
-        let projected = projectedNotifications(from: serverNotifications)
-        notifications = projected
-        unreadNotificationCount = projected.reduce(into: 0) { count, notification in
+        let projected = threadActions.projectedNotifications(from: serverNotifications)
+        let modeFiltered = filteredNotificationsForCurrentMode(projected)
+        notifications = modeFiltered
+        unreadNotificationCount = modeFiltered.reduce(into: 0) { count, notification in
             if notification.isUnread {
                 count += 1
             }
         }
 
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let filtered = query.isEmpty ? projected : projected.filter {
+        let filtered = query.isEmpty ? modeFiltered : modeFiltered.filter {
             $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
         }
 
@@ -491,6 +875,15 @@ final class AppState {
         }
 
         applySelection(index: selectedIndexStorage, in: ordered)
+    }
+
+    private func filteredNotificationsForCurrentMode(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
+        guard inboxMode == .all else {
+            return notifications
+        }
+
+        let cutoffDate = Date().addingTimeInterval(-Self.allModeRetentionInterval)
+        return notifications.filter { $0.updatedAt >= cutoffDate }
     }
 
     private func orderedNotifications(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
@@ -525,46 +918,6 @@ final class AppState {
         }
     }
 
-    private func projectedNotifications(from baseNotifications: [GitHubNotification]) -> [GitHubNotification] {
-        var projected = baseNotifications
-
-        for committed in committedThreadActions.values {
-            switch committed.kind {
-            case .markRead:
-                if let index = projected.firstIndex(where: { $0.threadId == committed.threadId }),
-                   projected[index].updatedAt <= committed.updatedAt {
-                    projected[index].isUnread = false
-                }
-            case .done, .unsubscribe:
-                projected.removeAll { $0.threadId == committed.threadId }
-            case .restoreSubscription:
-                break
-            }
-        }
-
-        for pending in pendingThreadActions.values {
-            switch pending.kind {
-            case .markRead:
-                if let index = projected.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
-                    projected[index].isUnread = false
-                }
-
-            case .done, .unsubscribe:
-                projected.removeAll { $0.threadId == pending.notification.threadId }
-
-            case .restoreSubscription:
-                if let index = projected.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
-                    projected[index] = pending.notification
-                } else {
-                    let insertAt = min(max(0, pending.originalServerIndex), projected.count)
-                    projected.insert(pending.notification, at: insertAt)
-                }
-            }
-        }
-
-        return projected
-    }
-
     private func applySelection(index: Int, in notifications: [GitHubNotification]) {
         guard !notifications.isEmpty else {
             clearSelection()
@@ -587,7 +940,7 @@ final class AppState {
     }
 
     private func startThreadAction(
-        _ kind: ThreadActionKind,
+        _ kind: ThreadActionStore.ActionKind,
         delayNanosecondsOverride: UInt64? = nil,
         pushesUndo: Bool = true
     ) {
@@ -595,24 +948,18 @@ final class AppState {
               let target = selectedNotification else {
             return
         }
-        guard pendingThreadActions[target.threadId] == nil else { return }
+        guard !threadActions.hasPendingAction(for: target.threadId) else { return }
         if kind == .markRead && !target.isUnread { return }
 
         let originalServerIndex = serverNotifications.firstIndex(where: { $0.id == target.id }) ?? serverNotifications.count
-        let requestID = UUID()
-        let pending = PendingThreadAction(
-            requestID: requestID,
-            kind: kind,
+        let pending = threadActions.start(
+            kind,
             notification: target,
             originalServerIndex: originalServerIndex,
-            phase: .queued
+            pushesUndo: pushesUndo
         )
 
         let visibleBeforeMutation = filteredNotifications
-        pendingThreadActions[target.threadId] = pending
-        if pushesUndo {
-            pushUndo(.cancelPending(threadId: target.threadId, requestID: requestID))
-        }
 
         if kind.hidesNotification {
             selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
@@ -620,65 +967,81 @@ final class AppState {
         }
         clampSelection()
 
-        schedulePendingAction(
-            client: client,
-            pending: pending,
-            delayNanoseconds: delayNanosecondsOverride ?? actionDelay(for: kind)
-        )
+        let delayNanoseconds = delayNanosecondsOverride ?? actionDelay(for: kind)
+        if delayNanoseconds == 0 {
+            dispatchPendingActionImmediately(client: client, pending: pending)
+        } else {
+            scheduleBatchDispatch(client: client, delayNanoseconds: delayNanoseconds)
+        }
     }
 
     private func startRestoreSubscriptionUndo(notification: GitHubNotification, originalServerIndex: Int) {
         guard let client = apiClient else { return }
 
-        let requestID = UUID()
-        let pending = PendingThreadAction(
-            requestID: requestID,
-            kind: .restoreSubscription,
+        let pending = threadActions.start(
+            .restoreSubscription,
             notification: notification,
             originalServerIndex: originalServerIndex,
-            phase: .queued
+            pushesUndo: false
         )
 
-        pendingThreadActions[notification.threadId] = pending
         selectedThreadID = notification.id
         selectedIndexStorage = originalServerIndex
         errorMessage = nil
         clampSelection()
 
-        schedulePendingAction(client: client, pending: pending, delayNanoseconds: actionDelay(for: .restoreSubscription))
+        dispatchPendingActionImmediately(client: client, pending: pending)
     }
 
-    private func schedulePendingAction(
-        client: GitHubAPIClient,
-        pending: PendingThreadAction,
-        delayNanoseconds: UInt64
-    ) {
-        actionTasks[pending.notification.threadId]?.cancel()
-        actionTasks[pending.notification.threadId] = Task { [sleepHandler] in
+    private func scheduleBatchDispatch(client: GitHubAPIClient, delayNanoseconds: UInt64) {
+        batchDispatchTask?.cancel()
+        batchDispatchTask = Task { [sleepHandler] in
             await sleepHandler(delayNanoseconds)
             guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.batchDispatchTask = nil
+                self.dispatchQueuedActions(using: client)
+            }
+        }
+    }
+
+    private func dispatchQueuedActions(using client: GitHubAPIClient) {
+        let queuedActions = threadActions.queuedActionsForDispatch()
+        guard !queuedActions.isEmpty else { return }
+
+        for pending in queuedActions {
+            dispatchPendingActionImmediately(client: client, pending: pending)
+        }
+    }
+
+    private func dispatchPendingActionImmediately(
+        client: GitHubAPIClient,
+        pending: ThreadActionStore.PendingAction
+    ) {
+        actionTasks[pending.notification.threadId]?.cancel()
+        actionTasks[pending.notification.threadId] = Task {
             await self.executePendingAction(client: client, pending: pending)
         }
     }
 
-    private func executePendingAction(client: GitHubAPIClient, pending: PendingThreadAction) async {
-        guard var current = pendingThreadActions[pending.notification.threadId],
+    private func executePendingAction(client: GitHubAPIClient, pending: ThreadActionStore.PendingAction) async {
+        guard var current = threadActions.pendingAction(for: pending.notification.threadId),
               current.requestID == pending.requestID else {
             actionTasks[pending.notification.threadId] = nil
             return
         }
 
         current.phase = .executing
-        pendingThreadActions[pending.notification.threadId] = current
+        threadActions.updatePendingAction(current)
 
         do {
             switch pending.kind {
             case .markRead:
                 try await client.markAsRead(threadId: pending.notification.threadId)
             case .done:
-                try await client.markAsDone(threadId: pending.notification.threadId)
+                try await client.markAsDone(notification: pending.notification)
             case .unsubscribe:
-                try await client.unsubscribe(threadId: pending.notification.threadId)
+                try await client.unsubscribe(notification: pending.notification)
             case .restoreSubscription:
                 try await client.restoreSubscription(
                     threadId: pending.notification.threadId,
@@ -687,7 +1050,7 @@ final class AppState {
                 )
             }
 
-            guard let latest = pendingThreadActions[pending.notification.threadId],
+            guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                   latest.requestID == pending.requestID else {
                 actionTasks[pending.notification.threadId] = nil
                 return
@@ -696,7 +1059,7 @@ final class AppState {
             handlePendingActionSuccess(latest)
         } catch {
             if Task.isCancelled { return }
-            guard let latest = pendingThreadActions[pending.notification.threadId],
+            guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                   latest.requestID == pending.requestID else {
                 actionTasks[pending.notification.threadId] = nil
                 return
@@ -706,119 +1069,40 @@ final class AppState {
         }
     }
 
-    private func handlePendingActionSuccess(_ pending: PendingThreadAction) {
+    private func handlePendingActionSuccess(_ pending: ThreadActionStore.PendingAction) {
         actionTasks[pending.notification.threadId] = nil
-        pendingThreadActions[pending.notification.threadId] = nil
-
-        switch pending.kind {
-        case .markRead:
-            if let index = serverNotifications.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
-                serverNotifications[index].isUnread = false
-            }
-            committedThreadActions[pending.notification.threadId] = CommittedThreadAction(
-                kind: .markRead,
-                threadId: pending.notification.threadId,
-                updatedAt: pending.notification.updatedAt
+        let successEffect = threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
+        if case .restoreSubscription(let notification, let originalServerIndex) = successEffect {
+            startRestoreSubscriptionUndo(
+                notification: notification,
+                originalServerIndex: originalServerIndex
             )
-            persistCommittedThreadActions()
-            removeUndoEntry(for: pending.requestID)
-
-        case .done:
-            serverNotifications.removeAll { $0.threadId == pending.notification.threadId }
-            committedThreadActions[pending.notification.threadId] = CommittedThreadAction(
-                kind: .done,
-                threadId: pending.notification.threadId,
-                updatedAt: pending.notification.updatedAt
-            )
-            persistCommittedThreadActions()
-            removeUndoEntry(for: pending.requestID)
-
-        case .unsubscribe:
-            serverNotifications.removeAll { $0.threadId == pending.notification.threadId }
-            if pending.restoreAfterSuccess {
-                startRestoreSubscriptionUndo(
-                    notification: pending.notification,
-                    originalServerIndex: pending.originalServerIndex
-                )
-            } else {
-                committedThreadActions[pending.notification.threadId] = CommittedThreadAction(
-                    kind: .unsubscribe,
-                    threadId: pending.notification.threadId,
-                    updatedAt: pending.notification.updatedAt
-                )
-                persistCommittedThreadActions()
-                replaceUndoEntry(
-                    for: pending.requestID,
-                    with: .restoreSubscription(
-                        notification: pending.notification,
-                        originalServerIndex: pending.originalServerIndex
-                    )
-                )
-            }
-
-        case .restoreSubscription:
-            committedThreadActions.removeValue(forKey: pending.notification.threadId)
-            persistCommittedThreadActions()
-            if let index = serverNotifications.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
-                serverNotifications[index] = pending.notification
-            } else {
-                let insertAt = min(max(0, pending.originalServerIndex), serverNotifications.count)
-                serverNotifications.insert(pending.notification, at: insertAt)
-            }
         }
 
         errorMessage = nil
         rebuildDerivedState()
     }
 
-    private func handlePendingActionFailure(_ pending: PendingThreadAction, error _: Error) {
+    private func handlePendingActionFailure(_ pending: ThreadActionStore.PendingAction, error _: Error) {
         actionTasks[pending.notification.threadId] = nil
-        pendingThreadActions[pending.notification.threadId] = nil
-        removeUndoEntry(for: pending.requestID)
 
         if pending.kind.hidesNotification {
             selectedThreadID = pending.notification.id
             selectedIndexStorage = pending.originalServerIndex
         }
 
-        errorMessage = pending.kind.failureMessage
+        errorMessage = threadActions.handleFailure(pending)
         rebuildDerivedState()
     }
 
-    private func removeUndoEntry(for requestID: UUID) {
-        undoStack.removeAll {
-            if case .cancelPending(_, let entryRequestID) = $0 {
-                return entryRequestID == requestID
-            }
-            return false
-        }
-    }
-
-    private func replaceUndoEntry(for requestID: UUID, with entry: UndoEntry) {
-        if let index = undoStack.lastIndex(where: {
-            if case .cancelPending(_, let entryRequestID) = $0 {
-                return entryRequestID == requestID
-            }
-            return false
-        }) {
-            undoStack[index] = entry
-        }
-    }
-
-    private func pushUndo(_ entry: UndoEntry) {
-        undoStack.append(entry)
-        if undoStack.count > 50 {
-            undoStack.removeFirst()
-        }
-    }
-
     private func cancelAllPendingActions() {
+        batchDispatchTask?.cancel()
+        batchDispatchTask = nil
         for task in actionTasks.values {
             task.cancel()
         }
         actionTasks.removeAll()
-        pendingThreadActions.removeAll()
-        undoStack.removeAll()
+        threadActions.cancelAllPendingActions()
     }
 
     private func cancelSubjectStateResolution() {
@@ -881,32 +1165,6 @@ final class AppState {
         scheduleVisibleSubjectStateResolutionIfNeeded()
     }
 
-    private func reconcileCommittedThreadActions(with fetchedNotifications: [GitHubNotification]) {
-        let fetchedByThreadID = Dictionary(uniqueKeysWithValues: fetchedNotifications.map { ($0.threadId, $0) })
-        committedThreadActions = committedThreadActions.filter { threadId, committed in
-            switch committed.kind {
-            case .markRead:
-                guard let fetched = fetchedByThreadID[threadId] else {
-                    return false
-                }
-                guard fetched.updatedAt <= committed.updatedAt else {
-                    return false
-                }
-                return fetched.isUnread
-
-            case .done, .unsubscribe:
-                guard let fetched = fetchedByThreadID[threadId] else {
-                    return true
-                }
-                return fetched.updatedAt <= committed.updatedAt
-
-            case .restoreSubscription:
-                return false
-            }
-        }
-        persistCommittedThreadActions()
-    }
-
     private func selectionAfterRemoving(threadId: String, from list: [GitHubNotification]) -> String? {
         guard let removeIndex = list.firstIndex(where: { $0.id == threadId }) else {
             return selectedThreadID
@@ -917,7 +1175,7 @@ final class AppState {
         return list[nextIndex].id
     }
 
-    private func actionDelay(for kind: ThreadActionKind) -> UInt64 {
+    private func actionDelay(for kind: ThreadActionStore.ActionKind) -> UInt64 {
         switch kind {
         case .restoreSubscription:
             return 0
@@ -1003,55 +1261,4 @@ final class AppState {
     private func persistGroupByRepo() {
         userDefaults.set(groupByRepo, forKey: Self.groupByRepoStorageKey)
     }
-
-    private static func loadCommittedThreadActions(from userDefaults: UserDefaults) -> [String: CommittedThreadAction] {
-        guard let data = userDefaults.data(forKey: committedThreadActionsStorageKey) else {
-            return [:]
-        }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        guard let persisted = try? decoder.decode([PersistedCommittedThreadAction].self, from: data) else {
-            return [:]
-        }
-
-        return Dictionary(
-            uniqueKeysWithValues: persisted.map {
-                (
-                    $0.threadId,
-                    CommittedThreadAction(
-                        kind: $0.kind,
-                        threadId: $0.threadId,
-                        updatedAt: $0.updatedAt
-                    )
-                )
-            }
-        )
-    }
-
-    private func persistCommittedThreadActions() {
-        guard !committedThreadActions.isEmpty else {
-            userDefaults.removeObject(forKey: Self.committedThreadActionsStorageKey)
-            return
-        }
-
-        let persisted = committedThreadActions.values.map {
-            PersistedCommittedThreadAction(
-                kind: $0.kind,
-                threadId: $0.threadId,
-                updatedAt: $0.updatedAt
-            )
-        }
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-
-        guard let data = try? encoder.encode(persisted) else {
-            return
-        }
-
-        userDefaults.set(data, forKey: Self.committedThreadActionsStorageKey)
-    }
-
 }

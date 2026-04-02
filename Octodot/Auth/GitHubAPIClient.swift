@@ -14,9 +14,23 @@ actor GitHubAPIClient {
     private let maxSubjectResolutionBatchSize = 40
     private let session: any NetworkSession
     private var token: String
-    private var cachedNotifications: [GitHubNotification] = []
-    private var lastModifiedValue: String?
-    private var nextNotificationsRefreshAt = Date.distantPast
+
+    private enum FeedScope: CaseIterable {
+        case unread
+        case all
+
+        init(all: Bool) {
+            self = all ? .all : .unread
+        }
+    }
+
+    private struct FeedCache {
+        var notifications: [GitHubNotification] = []
+        var lastModifiedValue: String?
+        var nextNotificationsRefreshAt = Date.distantPast
+    }
+
+    private var cachedFeeds: [FeedScope: FeedCache] = [:]
 
     private struct SubjectRequestContext: Sendable {
         let token: String
@@ -40,10 +54,13 @@ actor GitHubAPIClient {
     // MARK: - Fetch notifications
 
     func fetchNotifications(all: Bool = false, force: Bool = false) async throws -> [GitHubNotification] {
+        let scope = FeedScope(all: all)
+        let cachedFeed = feedCache(for: scope)
+
         if !force,
-           !cachedNotifications.isEmpty,
-           Date() < nextNotificationsRefreshAt {
-            return cachedNotifications
+           !cachedFeed.notifications.isEmpty,
+           Date() < cachedFeed.nextNotificationsRefreshAt {
+            return cachedFeed.notifications
         }
 
         var apiItems: [APINotification] = []
@@ -55,7 +72,7 @@ actor GitHubAPIClient {
             var request = makeNotificationsRequest(url: requestURL)
             if page == 1,
                !force,
-               let lastModifiedValue {
+               let lastModifiedValue = cachedFeed.lastModifiedValue {
                 request.setValue(lastModifiedValue, forHTTPHeaderField: "If-Modified-Since")
             }
 
@@ -64,7 +81,7 @@ actor GitHubAPIClient {
             let status = httpResponse?.statusCode ?? 0
 
             if page == 1 {
-                updatePollingHeaders(from: httpResponse)
+                updatePollingHeaders(from: httpResponse, scope: scope)
             }
 
             switch status {
@@ -88,11 +105,13 @@ actor GitHubAPIClient {
                     continue
                 }
 
-                lastModifiedValue = lastModifiedFromResponse
+                updateFeedCache(scope) { cache in
+                    cache.lastModifiedValue = lastModifiedFromResponse
+                }
                 currentURL = nil
 
             case 304 where page == 1:
-                return cachedNotifications
+                return cachedFeed.notifications
             case 401:
                 throw APIError.unauthorized
             case 403:
@@ -106,7 +125,7 @@ actor GitHubAPIClient {
 
         var notifications = apiItems.compactMap { $0.toModel() }
         notifications.sort { $0.updatedAt > $1.updatedAt }
-        let previousNotifications = Dictionary(uniqueKeysWithValues: cachedNotifications.map { ($0.id, $0) })
+        let previousNotifications = Dictionary(uniqueKeysWithValues: cachedFeed.notifications.map { ($0.id, $0) })
 
         for index in notifications.indices {
             guard notifications[index].subjectURL != nil else { continue }
@@ -117,7 +136,10 @@ actor GitHubAPIClient {
             }
         }
 
-        cachedNotifications = notifications
+        updateFeedCache(scope) { cache in
+            cache.notifications = notifications
+            cache.lastModifiedValue = lastModifiedFromResponse
+        }
         return notifications
     }
 
@@ -139,9 +161,13 @@ actor GitHubAPIClient {
 
         guard !subjectStatesByID.isEmpty else { return [:] }
 
-        for index in cachedNotifications.indices {
-            if let state = subjectStatesByID[cachedNotifications[index].id] {
-                cachedNotifications[index].subjectState = state
+        for scope in FeedScope.allCases {
+            updateFeedCache(scope) { cache in
+                for index in cache.notifications.indices {
+                    if let state = subjectStatesByID[cache.notifications[index].id] {
+                        cache.notifications[index].subjectState = state
+                    }
+                }
             }
         }
 
@@ -245,13 +271,18 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
         }
-        if let index = cachedNotifications.firstIndex(where: { $0.threadId == threadId }) {
-            cachedNotifications[index].isUnread = false
+        updateFeedCache(.all) { cache in
+            if let index = cache.notifications.firstIndex(where: { $0.threadId == threadId }) {
+                cache.notifications[index].isUnread = false
+            }
+        }
+        updateFeedCache(.unread) { cache in
+            cache.notifications.removeAll { $0.threadId == threadId }
         }
     }
 
-    func markAsDone(threadId: String) async throws {
-        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)")
+    func markAsDone(notification: GitHubNotification) async throws {
+        let url = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
         var req = makeRequest(url: url)
         req.httpMethod = "DELETE"
         let (_, response) = try await session.data(for: req)
@@ -259,11 +290,11 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
         }
-        cachedNotifications.removeAll { $0.threadId == threadId }
+        removeActivity(notification, from: FeedScope.allCases)
     }
 
-    func unsubscribe(threadId: String) async throws {
-        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
+    func unsubscribe(notification: GitHubNotification) async throws {
+        let url = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)/subscription")
         var req = makeRequest(url: url)
         req.httpMethod = "DELETE"
         let (_, response) = try await session.data(for: req)
@@ -271,7 +302,7 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
         }
-        cachedNotifications.removeAll { $0.threadId == threadId }
+        removeActivity(notification, from: FeedScope.allCases)
     }
 
     func restoreSubscription(threadId: String, notification: GitHubNotification, originalIndex: Int) async throws {
@@ -287,11 +318,15 @@ actor GitHubAPIClient {
             throw APIError.httpError(status)
         }
 
-        if let index = cachedNotifications.firstIndex(where: { $0.threadId == threadId }) {
-            cachedNotifications[index] = notification
-        } else {
-            let insertAt = min(max(0, originalIndex), cachedNotifications.count)
-            cachedNotifications.insert(notification, at: insertAt)
+        updateFeedCache(.all) { cache in
+            upsertThread(notification, originalIndex: originalIndex, into: &cache.notifications)
+        }
+        updateFeedCache(.unread) { cache in
+            if notification.isUnread {
+                upsertThread(notification, originalIndex: originalIndex, into: &cache.notifications)
+            } else {
+                cache.notifications.removeAll { $0.threadId == threadId }
+            }
         }
     }
 
@@ -305,7 +340,10 @@ actor GitHubAPIClient {
     }
 
     func suggestedRefreshDelayNanoseconds() -> UInt64 {
-        let secondsUntilRefresh = nextNotificationsRefreshAt.timeIntervalSinceNow
+        let nextRefreshAt = cachedFeeds.values
+            .map(\.nextNotificationsRefreshAt)
+            .min() ?? .distantPast
+        let secondsUntilRefresh = nextRefreshAt.timeIntervalSinceNow
         let delaySeconds = secondsUntilRefresh > 0 ? secondsUntilRefresh : defaultPollInterval
         return UInt64(delaySeconds * 1_000_000_000)
     }
@@ -358,14 +396,47 @@ actor GitHubAPIClient {
         }
     }
 
-    private func updatePollingHeaders(from response: HTTPURLResponse?) {
+    private func updatePollingHeaders(from response: HTTPURLResponse?, scope: FeedScope) {
         guard let response else { return }
 
-        if let pollInterval = response.value(forHTTPHeaderField: "X-Poll-Interval"),
-           let seconds = TimeInterval(pollInterval) {
-            nextNotificationsRefreshAt = Date().addingTimeInterval(seconds)
+        updateFeedCache(scope) { cache in
+            if let pollInterval = response.value(forHTTPHeaderField: "X-Poll-Interval"),
+               let seconds = TimeInterval(pollInterval) {
+                cache.nextNotificationsRefreshAt = Date().addingTimeInterval(seconds)
+            } else {
+                cache.nextNotificationsRefreshAt = Date()
+            }
+        }
+    }
+
+    private func feedCache(for scope: FeedScope) -> FeedCache {
+        cachedFeeds[scope] ?? FeedCache()
+    }
+
+    private func updateFeedCache(_ scope: FeedScope, mutate: (inout FeedCache) -> Void) {
+        var cache = feedCache(for: scope)
+        mutate(&cache)
+        cachedFeeds[scope] = cache
+    }
+
+    private func removeActivity(_ notification: GitHubNotification, from scopes: some Sequence<FeedScope>) {
+        for scope in scopes {
+            updateFeedCache(scope) { cache in
+                cache.notifications.removeAll { $0.matchesActivity(as: notification) }
+            }
+        }
+    }
+
+    private func upsertThread(
+        _ notification: GitHubNotification,
+        originalIndex: Int,
+        into notifications: inout [GitHubNotification]
+    ) {
+        if let index = notifications.firstIndex(where: { $0.threadId == notification.threadId }) {
+            notifications[index] = notification
         } else {
-            nextNotificationsRefreshAt = Date()
+            let insertAt = min(max(0, originalIndex), notifications.count)
+            notifications.insert(notification, at: insertAt)
         }
     }
 

@@ -320,6 +320,70 @@ struct GitHubAPIClientTests {
         #expect(requests.count == 3)
     }
 
+    @Test func fetchNotificationsMaintainsSeparateCachesForUnreadAndAllModes() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "unread-only").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "0",
+                    ]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(id: "all-feed").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=true")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:05:00 GMT",
+                        "X-Poll-Interval": "0",
+                    ]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 304,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "60"]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=true")!,
+                    statusCode: 304,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "60"]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let unreadInitial = try await client.fetchNotifications(all: false, force: true)
+        let allInitial = try await client.fetchNotifications(all: true, force: true)
+        let unreadCached = try await client.fetchNotifications(all: false, force: false)
+        let allCached = try await client.fetchNotifications(all: true, force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(unreadInitial.first?.id == "unread-only")
+        #expect(allInitial.first?.id == "all-feed")
+        #expect(unreadCached.first?.id == "unread-only")
+        #expect(allCached.first?.id == "all-feed")
+        #expect(requests.count == 4)
+        #expect(requests[2].url?.query?.contains("all=false") == true)
+        #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
+        #expect(requests[3].url?.query?.contains("all=true") == true)
+        #expect(requests[3].value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:05:00 GMT")
+    }
+
     @Test func resolveSubjectStatesCapsConcurrentRequests() async throws {
         let session = SubjectConcurrencyTrackingSession(
             notificationsPayload: Self.notificationsPayload(

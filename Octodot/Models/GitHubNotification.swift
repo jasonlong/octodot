@@ -54,6 +54,15 @@ struct GitHubNotification: Identifiable, Hashable {
         }
     }
 
+    var activityIdentity: String {
+        let milliseconds = Int(updatedAt.timeIntervalSince1970 * 1_000)
+        return "\(threadId)|\(milliseconds)"
+    }
+
+    func matchesActivity(as other: GitHubNotification) -> Bool {
+        activityIdentity == other.activityIdentity
+    }
+
     enum SubjectState: String, Hashable {
         case open
         case closed

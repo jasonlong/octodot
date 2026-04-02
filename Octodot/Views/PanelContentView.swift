@@ -44,6 +44,17 @@ struct PanelContentView: View {
         case search
     }
 
+    enum SearchFieldAction: Equatable {
+        case submit
+        case cancel
+    }
+
+    struct SearchFieldEffect: Equatable {
+        let clearsQuery: Bool
+        let keepsSearchActive: Bool
+        let focusDirective: FocusDirective
+    }
+
     struct KeyRouting: Equatable {
         let command: KeyboardCommand?
         let pendingG: Bool
@@ -71,21 +82,47 @@ struct PanelContentView: View {
     private var notificationView: some View {
         VStack(spacing: 0) {
             // Header
-            HStack {
-                Text("Notifications")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
+            VStack(spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text("Notifications")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
 
-                Spacer()
+                    Spacer()
 
-                if appState.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    let unreadCount = appState.filteredNotifications.filter(\.isUnread).count
-                    Text("\(unreadCount) unread · \(appState.inboxMode.title)")
+                    Picker(
+                        "Inbox mode",
+                        selection: Binding(
+                            get: { appState.inboxMode },
+                            set: { appState.setInboxMode($0) }
+                        )
+                    ) {
+                        Text("Unread").tag(AppState.InboxMode.unread)
+                        Text("All").tag(AppState.InboxMode.all)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 104)
+                }
+
+                HStack {
+                    if appState.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(
+                            Self.notificationSummary(
+                                unreadCount: appState.unreadNotificationCount,
+                                totalCount: appState.notifications.count,
+                                mode: appState.inboxMode
+                            )
+                        )
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
                 }
             }
             .padding(.horizontal, 14)
@@ -108,7 +145,11 @@ struct PanelContentView: View {
 
             // Search bar (conditional)
             if appState.isSearchActive {
-                SearchBarView(query: $appState.searchQuery)
+                SearchBarView(
+                    query: $appState.searchQuery,
+                    onSubmit: commitSearch,
+                    onCancel: cancelSearch
+                )
                     .focused($focus, equals: .search)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -147,7 +188,7 @@ struct PanelContentView: View {
                 shortcutHint(key: "x", label: "unsub")
                 shortcutHint(key: "u", label: "undo")
                 shortcutHint(key: "o", label: "open")
-                shortcutHint(key: "a", label: "all")
+                shortcutHint(key: "a", label: "mode")
                 shortcutHint(key: "/", label: "search")
             }
             .padding(.horizontal, 14)
@@ -196,6 +237,32 @@ struct PanelContentView: View {
         return routing.isHandled ? .handled : .ignored
     }
 
+    private func commitSearch() {
+        applySearchFieldEffect(Self.searchFieldEffect(for: .submit))
+    }
+
+    private func cancelSearch() {
+        applySearchFieldEffect(Self.searchFieldEffect(for: .cancel))
+    }
+
+    private func applySearchFieldEffect(_ effect: SearchFieldEffect) {
+        if effect.clearsQuery {
+            appState.deactivateSearch()
+        } else if !effect.keepsSearchActive {
+            appState.isSearchActive = false
+        }
+
+        switch effect.focusDirective {
+        case .unchanged:
+            break
+        case .list:
+            focus = nil
+            focusListSoon()
+        case .search:
+            focusSearchSoon()
+        }
+    }
+
     private func perform(_ command: KeyboardCommand) {
         switch command {
         case .moveDown:
@@ -214,6 +281,7 @@ struct PanelContentView: View {
             appState.unsubscribeFromThread()
         case .open:
             if appState.openInBrowser() {
+                appState.flushPendingActions()
                 closePanel()
             }
         case .copyURL:
@@ -228,9 +296,13 @@ struct PanelContentView: View {
             appState.refresh(force: true)
         case .activateSearch:
             appState.activateSearch()
+            focusSearchSoon()
         case .deactivateSearch:
             appState.deactivateSearch()
+            focus = nil
+            focusListSoon()
         case .closePanel:
+            appState.flushPendingActions()
             closePanel()
         }
     }
@@ -240,6 +312,20 @@ struct PanelContentView: View {
             await Task.yield()
             focus = .list
             appState.refresh(force: appState.inboxMode.includesReadNotifications)
+        }
+    }
+
+    private func focusListSoon() {
+        Task { @MainActor in
+            await Task.yield()
+            focus = .list
+        }
+    }
+
+    private func focusSearchSoon() {
+        Task { @MainActor in
+            await Task.yield()
+            focus = .search
         }
     }
 
@@ -255,6 +341,36 @@ struct PanelContentView: View {
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    static func notificationSummary(
+        unreadCount: Int,
+        totalCount: Int,
+        mode: AppState.InboxMode
+    ) -> String {
+        switch mode {
+        case .unread:
+            return "\(unreadCount) unread"
+        case .all:
+            return "\(unreadCount) unread · \(totalCount) total"
+        }
+    }
+
+    static func searchFieldEffect(for action: SearchFieldAction) -> SearchFieldEffect {
+        switch action {
+        case .submit:
+            return SearchFieldEffect(
+                clearsQuery: false,
+                keepsSearchActive: false,
+                focusDirective: .list
+            )
+        case .cancel:
+            return SearchFieldEffect(
+                clearsQuery: true,
+                keepsSearchActive: false,
+                focusDirective: .list
+            )
         }
     }
 

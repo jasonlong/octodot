@@ -2,9 +2,14 @@ import SwiftUI
 
 struct NotificationListView: View {
     let notifications: [GitHubNotification]
-    let selectedIndex: Int
+    let selectedNotificationID: String?
     let groupByRepo: Bool
-    let onSelect: (Int) -> Void
+    let onSelect: (String) -> Void
+
+    struct ScrollRequest: Equatable {
+        let targetID: String
+        let visibleIDs: [String]
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -23,22 +28,40 @@ struct NotificationListView: View {
 
                         NotificationRowView(
                             notification: pair.element,
-                            isSelected: pair.offset == selectedIndex
+                            isSelected: pair.element.id == selectedNotificationID
                         )
                         .id(pair.element.id)
-                        .onTapGesture { onSelect(pair.offset) }
+                        .onTapGesture { onSelect(pair.element.id) }
                     }
                 }
             }
-            .onChange(of: selectedIndex) { _, newValue in
-                guard newValue >= 0 && newValue < notifications.count else { return }
-                let notificationID = notifications[newValue].id
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo(notificationID)
+            .task(id: Self.scrollRequest(selectedNotificationID: selectedNotificationID, notifications: notifications)) {
+                guard let scrollRequest = Self.scrollRequest(
+                    selectedNotificationID: selectedNotificationID,
+                    notifications: notifications
+                ) else {
+                    return
                 }
+
+                await Task.yield()
+                proxy.scrollTo(scrollRequest.targetID)
             }
         }
+    }
+
+    static func scrollRequest(
+        selectedNotificationID: String?,
+        notifications: [GitHubNotification]
+    ) -> ScrollRequest? {
+        guard let selectedNotificationID,
+              notifications.contains(where: { $0.id == selectedNotificationID }) else {
+            return nil
+        }
+
+        return ScrollRequest(
+            targetID: selectedNotificationID,
+            visibleIDs: notifications.map(\.id)
+        )
     }
 
     private func isFirstInRepo(index: Int) -> Bool {

@@ -47,4 +47,35 @@ struct AppShellTests {
         #expect(AppDelegate.shouldLaunchUI(environment: [:]) == true)
         #expect(AppDelegate.shouldLaunchUI(environment: ["XCTestConfigurationFilePath": "/tmp/test.xctest"]) == false)
     }
+
+    @Test func notificationListScrollRequestRequiresVisibleSelection() {
+        let notifications = AppStateTests.makeNotifications(3)
+
+        let request = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications
+        )
+
+        #expect(request?.targetID == "1")
+        #expect(request?.visibleIDs == ["0", "1", "2"])
+        #expect(NotificationListView.scrollRequest(
+            selectedNotificationID: "999",
+            notifications: notifications
+        ) == nil)
+    }
+
+    @Test func notificationListScrollRequestTracksVisibleOrder() {
+        let notifications = AppStateTests.makeNotifications(3)
+
+        let original = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications
+        )
+        let reordered = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: Array(notifications.reversed())
+        )
+
+        #expect(original != reordered)
+    }
 }

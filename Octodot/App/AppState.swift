@@ -123,6 +123,7 @@ final class AppState {
     private(set) var unreadNotificationCount = 0
     private(set) var filteredNotifications: [GitHubNotification] = []
     private(set) var selectedNotification: GitHubNotification?
+    private(set) var selectedNotificationID: String?
 
     var isSignedIn: Bool {
         if case .signedIn = authStatus { return true }
@@ -136,17 +137,12 @@ final class AppState {
         set {
             let list = filteredNotifications
             guard !list.isEmpty else {
-                selectedIndexStorage = 0
-                selectedThreadID = nil
-                selectedNotification = nil
+                clearSelection()
                 return
             }
 
             let clamped = max(0, min(newValue, list.count - 1))
-            selectedIndexStorage = clamped
-            let selected = list[clamped]
-            selectedThreadID = selected.id
-            selectedNotification = selected
+            applySelection(index: clamped, in: list)
         }
     }
 
@@ -256,8 +252,7 @@ final class AppState {
         errorMessage = nil
         searchQuery = ""
         isSearchActive = false
-        selectedIndexStorage = 0
-        selectedThreadID = nil
+        clearSelection()
         rebuildDerivedState()
     }
 
@@ -399,6 +394,13 @@ final class AppState {
         searchQuery = ""
     }
 
+    func selectNotification(id: String) {
+        guard let index = filteredNotifications.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        applySelection(index: index, in: filteredNotifications)
+    }
+
     func clampSelection() {
         rebuildDerivedState()
     }
@@ -421,9 +423,7 @@ final class AppState {
         filteredNotifications = ordered
 
         guard !ordered.isEmpty else {
-            selectedIndexStorage = 0
-            selectedThreadID = nil
-            selectedNotification = nil
+            clearSelection()
             return
         }
 
@@ -434,9 +434,7 @@ final class AppState {
             selectedIndexStorage = min(selectedIndexStorage, ordered.count - 1)
         }
 
-        let selected = ordered[selectedIndexStorage]
-        selectedThreadID = selected.id
-        selectedNotification = selected
+        applySelection(index: selectedIndexStorage, in: ordered)
     }
 
     private func orderedNotifications(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
@@ -509,6 +507,27 @@ final class AppState {
         }
 
         return projected
+    }
+
+    private func applySelection(index: Int, in notifications: [GitHubNotification]) {
+        guard !notifications.isEmpty else {
+            clearSelection()
+            return
+        }
+
+        let clampedIndex = max(0, min(index, notifications.count - 1))
+        let selected = notifications[clampedIndex]
+        selectedIndexStorage = clampedIndex
+        selectedThreadID = selected.id
+        selectedNotificationID = selected.id
+        selectedNotification = selected
+    }
+
+    private func clearSelection() {
+        selectedIndexStorage = 0
+        selectedThreadID = nil
+        selectedNotificationID = nil
+        selectedNotification = nil
     }
 
     private func startThreadAction(

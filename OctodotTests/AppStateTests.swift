@@ -221,6 +221,31 @@ struct AppStateTests {
         #expect(state.selectedIndex == 4)
     }
 
+    @Test func selectNotificationByIDUpdatesSelection() {
+        let state = Self.makeState()
+        let expectedIndex = state.filteredNotifications.firstIndex(where: { $0.id == "3" })
+
+        state.selectNotification(id: "3")
+
+        #expect(state.selectedIndex == expectedIndex)
+        #expect(state.selectedNotification?.id == "3")
+        #expect(state.selectedNotificationID == "3")
+    }
+
+    @Test func selectNotificationByIDIgnoresUnknownIDs() {
+        let state = Self.makeState()
+        state.selectedIndex = 1
+        let initialIndex = state.selectedIndex
+        let initialNotificationID = state.selectedNotification?.id
+        let initialSelectedNotificationID = state.selectedNotificationID
+
+        state.selectNotification(id: "999")
+
+        #expect(state.selectedIndex == initialIndex)
+        #expect(state.selectedNotification?.id == initialNotificationID)
+        #expect(state.selectedNotificationID == initialSelectedNotificationID)
+    }
+
     @Test func navigationOnEmptyListIsNoOp() {
         let state = Self.makeState(0)
         state.moveDown()

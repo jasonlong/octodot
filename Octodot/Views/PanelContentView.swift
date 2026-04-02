@@ -129,9 +129,9 @@ struct PanelContentView: View {
             } else {
                 NotificationListView(
                     notifications: appState.filteredNotifications,
-                    selectedIndex: appState.selectedIndex,
+                    selectedNotificationID: appState.selectedNotificationID,
                     groupByRepo: appState.groupByRepo,
-                    onSelect: { appState.selectedIndex = $0 }
+                    onSelect: { appState.selectNotification(id: $0) }
                 )
             }
 

@@ -15,6 +15,8 @@ struct PanelContentViewTests {
             .init(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelContentView.routeKey(.character("u"), isSearchActive: false, pendingG: false) ==
             .init(command: .undo, pendingG: false, focusDirective: .unchanged, isHandled: true))
+        #expect(PanelContentView.routeKey(.character("a"), isSearchActive: false, pendingG: false) ==
+            .init(command: .toggleInboxMode, pendingG: false, focusDirective: .unchanged, isHandled: true))
     }
 
     @Test func routeKeyHandlesSearchFocusTransitions() {

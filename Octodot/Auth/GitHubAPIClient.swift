@@ -11,6 +11,7 @@ actor GitHubAPIClient {
     private let notificationsPerPage = 100
     private let defaultPollInterval: TimeInterval = 60
     private let maxConcurrentSubjectRequests: Int
+    private let maxSubjectResolutionBatchSize = 40
     private let session: any NetworkSession
     private var token: String
     private var cachedNotifications: [GitHubNotification] = []
@@ -116,24 +117,35 @@ actor GitHubAPIClient {
             }
         }
 
-        let pendingSubjectNotifications = notifications.filter {
-            $0.subjectURL != nil && $0.subjectState == .unknown
-        }
+        cachedNotifications = notifications
+        return notifications
+    }
+
+    func resolveSubjectStates(
+        for notifications: [GitHubNotification]
+    ) async -> [String: GitHubNotification.SubjectState] {
+        let pendingSubjectNotifications = notifications
+            .filter(Self.shouldResolveSubjectState)
+            .prefix(maxSubjectResolutionBatchSize)
+        let candidateNotifications = Array(pendingSubjectNotifications)
+        guard !candidateNotifications.isEmpty else { return [:] }
+
         let subjectRequestContext = SubjectRequestContext(token: token, session: session)
         let subjectStatesByID = await Self.fetchSubjectStates(
-            for: pendingSubjectNotifications,
+            for: candidateNotifications,
             maxConcurrent: maxConcurrentSubjectRequests,
             context: subjectRequestContext
         )
 
-        for index in notifications.indices {
-            if let state = subjectStatesByID[notifications[index].id] {
-                notifications[index].subjectState = state
+        guard !subjectStatesByID.isEmpty else { return [:] }
+
+        for index in cachedNotifications.indices {
+            if let state = subjectStatesByID[cachedNotifications[index].id] {
+                cachedNotifications[index].subjectState = state
             }
         }
 
-        cachedNotifications = notifications
-        return notifications
+        return subjectStatesByID
     }
 
     // MARK: - Fetch subject state
@@ -204,6 +216,21 @@ actor GitHubAPIClient {
             }
         } catch {
             return .unknown
+        }
+    }
+
+    private static func shouldResolveSubjectState(_ notification: GitHubNotification) -> Bool {
+        guard notification.subjectURL != nil,
+              notification.subjectState == .unknown,
+              notification.isUnread else {
+            return false
+        }
+
+        switch notification.type {
+        case .pullRequest, .issue:
+            return true
+        case .release, .discussion, .commit:
+            return false
         }
     }
 

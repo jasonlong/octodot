@@ -17,10 +17,27 @@ final class AppState {
     typealias TokenDeleter = @MainActor () -> Void
     typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
     private static let committedThreadActionsStorageKey = "AppState.committedThreadActions.v1"
+    private static let eagerVisibleSubjectStateBatchSize = 20
 
     enum AuthStatus: Equatable {
         case signedOut
         case signedIn(username: String)
+    }
+
+    enum InboxMode: String, Equatable {
+        case unread
+        case all
+
+        var includesReadNotifications: Bool {
+            self == .all
+        }
+
+        var title: String {
+            switch self {
+            case .unread: "Unread"
+            case .all: "All"
+            }
+        }
     }
 
     private enum ThreadActionKind: String, Codable {
@@ -94,6 +111,7 @@ final class AppState {
     }
     var isLoading: Bool = false
     var errorMessage: String?
+    var inboxMode: InboxMode = .unread
     var groupByRepo: Bool = true {
         didSet {
             guard groupByRepo != oldValue else { return }
@@ -109,6 +127,8 @@ final class AppState {
     private var undoStack: [UndoEntry] = []
     private var actionTasks: [String: Task<Void, Never>] = [:]
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var subjectStateResolutionTask: Task<Void, Never>?
+    private var subjectStateResolutionTargetIDs: [String] = []
     private var activeLoadRequestID = UUID()
     private var apiClient: GitHubAPIClient?
     private let actionDispatchDelayNanoseconds: UInt64
@@ -202,6 +222,11 @@ final class AppState {
         clampSelection()
     }
 
+    func toggleInboxMode() {
+        inboxMode = inboxMode == .unread ? .all : .unread
+        refresh(force: true)
+    }
+
     private func validateAndLoad(client: GitHubAPIClient) async {
         do {
             let username = try await client.validateToken()
@@ -241,6 +266,7 @@ final class AppState {
 
     func signOut() {
         cancelBackgroundRefresh()
+        cancelSubjectStateResolution()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
         tokenDeleter()
@@ -260,9 +286,13 @@ final class AppState {
         guard let client = apiClient else { return }
         let requestID = UUID()
         activeLoadRequestID = requestID
+        cancelSubjectStateResolution()
         isLoading = true
         do {
-            let fetched = try await client.fetchNotifications(force: force)
+            let fetched = try await client.fetchNotifications(
+                all: inboxMode.includesReadNotifications,
+                force: force
+            )
             guard requestID == activeLoadRequestID else { return }
             serverNotifications = fetched
             reconcileCommittedThreadActions(with: fetched)
@@ -435,6 +465,7 @@ final class AppState {
         }
 
         applySelection(index: selectedIndexStorage, in: ordered)
+        scheduleVisibleSubjectStateResolutionIfNeeded()
     }
 
     private func orderedNotifications(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
@@ -763,6 +794,77 @@ final class AppState {
         actionTasks.removeAll()
         pendingThreadActions.removeAll()
         undoStack.removeAll()
+    }
+
+    private func cancelSubjectStateResolution() {
+        subjectStateResolutionTask?.cancel()
+        subjectStateResolutionTask = nil
+        subjectStateResolutionTargetIDs = []
+    }
+
+    private func scheduleVisibleSubjectStateResolutionIfNeeded() {
+        guard let client = apiClient else {
+            cancelSubjectStateResolution()
+            return
+        }
+
+        let candidates = Array(
+            filteredNotifications
+                .filter {
+                    $0.isUnread &&
+                    $0.subjectURL != nil &&
+                    $0.subjectState == .unknown
+                }
+                .prefix(Self.eagerVisibleSubjectStateBatchSize)
+        )
+        let candidateIDs = candidates.map(\.id)
+
+        guard !candidateIDs.isEmpty else {
+            cancelSubjectStateResolution()
+            return
+        }
+
+        guard candidateIDs != subjectStateResolutionTargetIDs else {
+            return
+        }
+
+        subjectStateResolutionTask?.cancel()
+        subjectStateResolutionTargetIDs = candidateIDs
+        subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs] in
+            let resolvedStates = await client.resolveSubjectStates(for: candidates)
+            guard !Task.isCancelled else { return }
+            self?.applyResolvedSubjectStates(resolvedStates, expectedIDs: candidateIDs)
+        }
+    }
+
+    private func applyResolvedSubjectStates(
+        _ resolvedStates: [String: GitHubNotification.SubjectState],
+        expectedIDs: [String]
+    ) {
+        guard !resolvedStates.isEmpty,
+              expectedIDs == subjectStateResolutionTargetIDs else {
+            return
+        }
+
+        var didChange = false
+        for index in serverNotifications.indices {
+            guard let resolvedState = resolvedStates[serverNotifications[index].id],
+                  serverNotifications[index].subjectState != resolvedState else {
+                continue
+            }
+
+            serverNotifications[index].subjectState = resolvedState
+            didChange = true
+        }
+
+        subjectStateResolutionTargetIDs = []
+        subjectStateResolutionTask = nil
+
+        if didChange {
+            rebuildDerivedState()
+        } else {
+            scheduleVisibleSubjectStateResolutionIfNeeded()
+        }
     }
 
     private func reconcileCommittedThreadActions(with fetchedNotifications: [GitHubNotification]) {

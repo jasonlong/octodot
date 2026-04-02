@@ -30,6 +30,7 @@ struct PanelContentView: View {
         case open
         case copyURL
         case undo
+        case toggleInboxMode
         case toggleGrouping
         case forceRefresh
         case activateSearch
@@ -82,7 +83,7 @@ struct PanelContentView: View {
                         .controlSize(.small)
                 } else {
                     let unreadCount = appState.filteredNotifications.filter(\.isUnread).count
-                    Text("\(unreadCount) unread")
+                    Text("\(unreadCount) unread · \(appState.inboxMode.title)")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -145,6 +146,7 @@ struct PanelContentView: View {
                 shortcutHint(key: "x", label: "unsub")
                 shortcutHint(key: "u", label: "undo")
                 shortcutHint(key: "o", label: "open")
+                shortcutHint(key: "a", label: "all")
                 shortcutHint(key: "/", label: "search")
             }
             .padding(.horizontal, 14)
@@ -217,6 +219,8 @@ struct PanelContentView: View {
             appState.copyURL()
         case .undo:
             appState.undo()
+        case .toggleInboxMode:
+            appState.toggleInboxMode()
         case .toggleGrouping:
             appState.toggleGroupByRepo()
         case .forceRefresh:
@@ -283,6 +287,8 @@ struct PanelContentView: View {
             return .character("y")
         case KeyEquivalent("u"):
             return .character("u")
+        case KeyEquivalent("a"):
+            return .character("a")
         case KeyEquivalent("s"):
             return .character("s")
         case KeyEquivalent("r"):
@@ -333,6 +339,8 @@ struct PanelContentView: View {
             return KeyRouting(command: .copyURL, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("u"):
             return KeyRouting(command: .undo, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .character("a"):
+            return KeyRouting(command: .toggleInboxMode, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("s"):
             return KeyRouting(command: .toggleGrouping, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("r"):

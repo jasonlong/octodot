@@ -3,6 +3,13 @@ import Testing
 @testable import Octodot
 
 struct GitHubAPIClientTests {
+    private struct NotificationFixture {
+        let id: String
+        let unread: Bool
+        let subjectType: String
+        let subjectURL: String?
+    }
+
     private final class SubjectConcurrencyTrackingSession: @unchecked Sendable, NetworkSession {
         private let notificationsPayload: Data
         private let subjectDelayNanoseconds: UInt64
@@ -138,6 +145,7 @@ struct GitHubAPIClientTests {
         #expect(cached.count == 1)
         #expect(cached.first?.id == initial.first?.id)
         #expect(requests.count == 2)
+        #expect(requests.first?.url?.query?.contains("all=false") == true)
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
     }
 
@@ -177,6 +185,7 @@ struct GitHubAPIClientTests {
         #expect(refreshed.count == 1)
         #expect(refreshed.first?.id == "2")
         #expect(requests.count == 2)
+        #expect(requests.last?.url?.query?.contains("all=false") == true)
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == nil)
     }
 
@@ -214,6 +223,7 @@ struct GitHubAPIClientTests {
 
         #expect(notifications.count == 101)
         #expect(requests.count == 2)
+        #expect(requests.first?.url?.query?.contains("all=false") == true)
         #expect(requests.first?.url?.query?.contains("per_page=100") == true)
         #expect(requests.first?.url?.query?.contains("page=1") == true)
         #expect(requests.last?.url?.query?.contains("page=2") == true)
@@ -254,6 +264,7 @@ struct GitHubAPIClientTests {
 
         #expect(notifications.count == 2)
         #expect(requests.count == 2)
+        #expect(requests.first?.url?.query?.contains("all=false") == true)
         #expect(requests.last?.url?.absoluteString.contains("page=2") == true)
         #expect(requests.first?.cachePolicy == .reloadIgnoringLocalCacheData)
     }
@@ -299,15 +310,17 @@ struct GitHubAPIClientTests {
 
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let initial = try await client.fetchNotifications(force: true)
+        let resolvedStates = await client.resolveSubjectStates(for: initial)
         let refreshed = try await client.fetchNotifications(force: true)
         let requests = await session.recordedRequests()
 
-        #expect(initial.first?.subjectState == .open)
+        #expect(initial.first?.subjectState == .unknown)
+        #expect(resolvedStates["1"] == .open)
         #expect(refreshed.first?.subjectState == .open)
         #expect(requests.count == 3)
     }
 
-    @Test func fetchNotificationsCapsConcurrentSubjectRequests() async throws {
+    @Test func resolveSubjectStatesCapsConcurrentRequests() async throws {
         let session = SubjectConcurrencyTrackingSession(
             notificationsPayload: Self.notificationsPayload(
                 ids: ["1", "2", "3", "4"],
@@ -322,13 +335,64 @@ struct GitHubAPIClientTests {
         )
 
         let notifications = try await client.fetchNotifications(force: true)
+        let resolvedStates = await client.resolveSubjectStates(for: notifications)
         let requests = session.recordedRequests()
         let subjectRequests = requests.filter { $0.url?.path.contains("/repos/acme/test/pulls/") == true }
 
         #expect(notifications.count == 4)
-        #expect(notifications.allSatisfy { $0.subjectState == .open })
+        #expect(resolvedStates.count == 4)
+        #expect(resolvedStates.values.allSatisfy { $0 == .open })
         #expect(subjectRequests.count == 4)
         #expect(session.recordedMaxInFlightSubjectRequests() == 2)
+    }
+
+    @Test func resolveSubjectStatesOnlyFetchesUnreadIssueAndPullRequestStates() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: true,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            ),
+            NotificationFixture(
+                id: "2",
+                unread: false,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/2"
+            ),
+            NotificationFixture(
+                id: "3",
+                unread: true,
+                subjectType: "Discussion",
+                subjectURL: "https://api.github.com/repos/acme/test/discussions/3"
+            ),
+            NotificationFixture(
+                id: "4",
+                unread: true,
+                subjectType: "Issue",
+                subjectURL: "https://api.github.com/repos/acme/test/issues/4"
+            ),
+        ]).data(using: .utf8)!
+
+        let session = SubjectConcurrencyTrackingSession(notificationsPayload: payload)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+        let subjectRequests = session.recordedRequests().filter {
+            $0.url?.path.contains("/repos/acme/test/") == true && $0.url?.path != "/notifications"
+        }
+
+        #expect(notifications.count == 4)
+        #expect(subjectRequests.count == 2)
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/1"))
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/issues/4"))
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/2") == false)
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/discussions/3") == false)
+        #expect(resolvedStates["1"] == .open)
+        #expect(resolvedStates["4"] == .open)
+        #expect(resolvedStates["2"] == nil)
+        #expect(resolvedStates["3"] == nil)
     }
 
     private static func notificationsPayload(
@@ -368,27 +432,38 @@ struct GitHubAPIClientTests {
         ids: [String],
         subjectURLPrefix: String? = nil
     ) -> String {
+        notificationsPayload(items: ids.enumerated().map { offset, id in
+            NotificationFixture(
+                id: id,
+                unread: true,
+                subjectType: "PullRequest",
+                subjectURL: subjectURLPrefix.map { "\($0)/\(id)" }
+            )
+        })
+    }
+
+    private static func notificationsPayload(items: [NotificationFixture]) -> String {
         let iso = ISO8601DateFormatter()
         let baseDate = iso.date(from: "2026-04-01T12:00:00Z") ?? Date()
 
-        let items = ids.enumerated().map { offset, id in
+        let items = items.enumerated().map { offset, item in
             let updatedAt = iso.string(from: baseDate.addingTimeInterval(TimeInterval(offset * 60)))
             let subjectURLField: String
-            if let subjectURLPrefix {
-                subjectURLField = #""url":"\#(subjectURLPrefix)/\#(id)""#
+            if let subjectURL = item.subjectURL {
+                subjectURLField = #""url":"\#(subjectURL)""#
             } else {
                 subjectURLField = #""url":null"#
             }
             return """
               {
-                "id": "\(id)",
-                "unread": true,
+                "id": "\(item.id)",
+                "unread": \(item.unread ? "true" : "false"),
                 "reason": "review_requested",
                 "updated_at": "\(updatedAt)",
                 "subject": {
-                  "title": "Test pull request \(id)",
+                  "title": "Test subject \(item.id)",
                   \(subjectURLField),
-                  "type": "PullRequest"
+                  "type": "\(item.subjectType)"
                 },
                 "repository": {
                   "full_name": "acme/test",

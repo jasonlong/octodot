@@ -95,8 +95,20 @@ struct AppStateTests {
         )!
     }
 
-    static func singleNotificationPayload(id: String, isUnread: Bool = true, updatedAt: String = "2026-04-01T12:00:00Z") -> Data {
-        """
+    static func singleNotificationPayload(
+        id: String,
+        isUnread: Bool = true,
+        updatedAt: String = "2026-04-01T12:00:00Z",
+        subjectURL: String? = nil
+    ) -> Data {
+        let subjectURLField: String
+        if let subjectURL {
+            subjectURLField = #""url":"\#(subjectURL)""#
+        } else {
+            subjectURLField = #""url":null"#
+        }
+
+        return """
         [
           {
             "id": "\(id)",
@@ -105,7 +117,7 @@ struct AppStateTests {
             "updated_at": "\(updatedAt)",
             "subject": {
               "title": "Notification \(id)",
-              "url": null,
+              \(subjectURLField),
               "type": "PullRequest"
             },
             "repository": {
@@ -321,6 +333,33 @@ struct AppStateTests {
         #expect(state.groupByRepo == false)
     }
 
+    @Test func toggleInboxModeRefreshesUsingAllFeed() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: true),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                ))
+            ],
+            count: 0
+        )
+
+        #expect(state.inboxMode == .unread)
+
+        state.toggleInboxMode()
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(state.inboxMode == .all)
+        #expect(requests.first?.url?.query?.contains("all=true") == true)
+    }
+
     // MARK: - Mark read
 
     @Test func markReadOptimisticallyMarksThreadReadAndDoesNotToggleBack() async {
@@ -432,6 +471,46 @@ struct AppStateTests {
         await Self.settleTasks()
 
         #expect((await session.recordedRequests()).isEmpty)
+    }
+
+    @Test func loadNotificationsDefersVisibleSubjectStateResolution() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.singleNotificationPayload(
+                    id: "7",
+                    subjectURL: "https://api.github.com/repos/acme/alpha/pulls/7"
+                ),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                ),
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: #"{"state":"open"}"#.data(using: .utf8)!,
+                response: Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/pulls/7",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 50_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = Self.makeState(0, apiClient: client)
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications[0].subjectState == .unknown)
+
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.subjectState == .open
+            }
+        }
+
+        #expect(state.notifications[0].subjectState == .open)
     }
 
     @Test func backgroundRefreshLoadsNotificationsWhilePanelIsClosed() async {

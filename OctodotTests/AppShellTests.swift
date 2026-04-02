@@ -43,6 +43,29 @@ struct AppShellTests {
         ) == false)
     }
 
+    @Test func outsideClickClosesPanelButStatusItemClickDoesNot() {
+        let panelFrame = CGRect(x: 100, y: 100, width: 380, height: 500)
+        let statusItemFrame = CGRect(x: 220, y: 620, width: 20, height: 24)
+
+        #expect(StatusItemController.shouldClosePanelForClick(
+            mouseLocation: CGPoint(x: 50, y: 50),
+            panelFrame: panelFrame,
+            statusItemFrame: statusItemFrame
+        ))
+
+        #expect(StatusItemController.shouldClosePanelForClick(
+            mouseLocation: CGPoint(x: 200, y: 300),
+            panelFrame: panelFrame,
+            statusItemFrame: statusItemFrame
+        ) == false)
+
+        #expect(StatusItemController.shouldClosePanelForClick(
+            mouseLocation: CGPoint(x: 225, y: 625),
+            panelFrame: panelFrame,
+            statusItemFrame: statusItemFrame
+        ) == false)
+    }
+
     @Test func appDelegateSkipsUiLaunchUnderXCTest() {
         #expect(AppDelegate.shouldLaunchUI(environment: [:]) == true)
         #expect(AppDelegate.shouldLaunchUI(environment: ["XCTestConfigurationFilePath": "/tmp/test.xctest"]) == false)

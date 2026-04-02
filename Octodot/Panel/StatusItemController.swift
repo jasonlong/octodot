@@ -25,6 +25,8 @@ final class StatusItemController {
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
 
     init(appState: AppState) {
         self.appState = appState
@@ -47,6 +49,7 @@ final class StatusItemController {
         updateStatusItemAppearance()
         observeStatusItemState()
         setupGlobalHotkey()
+        setupOutsideClickMonitors()
     }
 
     deinit {
@@ -55,6 +58,12 @@ final class StatusItemController {
         }
         if let localKeyMonitor {
             NSEvent.removeMonitor(localKeyMonitor)
+        }
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+        }
+        if let localMouseMonitor {
+            NSEvent.removeMonitor(localMouseMonitor)
         }
     }
 
@@ -72,6 +81,21 @@ final class StatusItemController {
                 DispatchQueue.main.async { self?.togglePanel() }
                 return nil
             }
+            return event
+        }
+    }
+
+    private func setupOutsideClickMonitors() {
+        let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseEvents) { [weak self] _ in
+            Task { @MainActor in
+                self?.closePanelForOutsideClickIfNeeded(mouseLocation: NSEvent.mouseLocation)
+            }
+        }
+
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseEvents) { [weak self] event in
+            self?.closePanelForOutsideClickIfNeeded(mouseLocation: NSEvent.mouseLocation)
             return event
         }
     }
@@ -108,6 +132,30 @@ final class StatusItemController {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
+    }
+
+    private func closePanelForOutsideClickIfNeeded(mouseLocation: CGPoint) {
+        guard panel.isVisible,
+              let statusItemFrame = statusItemButtonScreenFrame()
+        else { return }
+
+        let shouldClose = Self.shouldClosePanelForClick(
+            mouseLocation: mouseLocation,
+            panelFrame: panel.frame,
+            statusItemFrame: statusItemFrame
+        )
+
+        if shouldClose {
+            panel.close()
+        }
+    }
+
+    private func statusItemButtonScreenFrame() -> CGRect? {
+        guard let button = statusItem.button,
+              let buttonWindow = button.window
+        else { return nil }
+
+        return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
     }
 
     private func observeStatusItemState() {
@@ -155,5 +203,9 @@ final class StatusItemController {
     static func matchesToggleHotkey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
         keyCode == Constants.toggleHotkeyCode
             && modifierFlags.intersection([.command, .shift, .control, .option]) == Constants.toggleHotkeyModifiers
+    }
+
+    static func shouldClosePanelForClick(mouseLocation: CGPoint, panelFrame: CGRect, statusItemFrame: CGRect) -> Bool {
+        !panelFrame.contains(mouseLocation) && !statusItemFrame.contains(mouseLocation)
     }
 }

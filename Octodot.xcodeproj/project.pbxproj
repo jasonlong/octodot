@@ -25,6 +25,8 @@
 		BB0000000000000000000028 /* ThreadActionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* ThreadActionStore.swift */; };
 		BB0000000000000000000029 /* PanelInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002A /* PanelInput.swift */; };
 		BB0000000000000000000027 /* DebugTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000028 /* DebugTrace.swift */; };
+		BB000000000000000000002A /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* AppPreferences.swift */; };
+		BB000000000000000000002B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002C /* SettingsView.swift */; };
 			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
 			BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000022 /* AppStateBootstrapTests.swift */; };
 			BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* GitHubAPIClientTests.swift */; };
@@ -32,6 +34,7 @@
 			BB0000000000000000000024 /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* TestSupport.swift */; };
 			BB0000000000000000000025 /* AppShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000026 /* AppShellTests.swift */; };
 			BB0000000000000000000026 /* PanelContentViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* PanelContentViewTests.swift */; };
+			BB000000000000000000002C /* SettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* SettingsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -61,6 +64,9 @@
 		AA0000000000000000000028 /* DebugTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugTrace.swift; sourceTree = "<group>"; };
 		AA0000000000000000000029 /* ThreadActionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadActionStore.swift; sourceTree = "<group>"; };
 		AA000000000000000000002A /* PanelInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelInput.swift; sourceTree = "<group>"; };
+		AA000000000000000000002B /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
+		AA000000000000000000002C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		AA000000000000000000002D /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
 			AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
@@ -107,6 +113,7 @@
 			children = (
 				AA0000000000000000000001 /* OctodotApp.swift */,
 				AA0000000000000000000002 /* AppDelegate.swift */,
+				AA000000000000000000002B /* AppPreferences.swift */,
 				AA0000000000000000000003 /* AppState.swift */,
 				AA0000000000000000000029 /* ThreadActionStore.swift */,
 			);
@@ -130,6 +137,7 @@
 				AA0000000000000000000007 /* NotificationListView.swift */,
 				AA0000000000000000000008 /* NotificationRowView.swift */,
 				AA0000000000000000000009 /* SearchBarView.swift */,
+				AA000000000000000000002C /* SettingsView.swift */,
 				AA0000000000000000000012 /* TokenEntryView.swift */,
 			);
 			path = Views;
@@ -171,6 +179,7 @@
 					AA0000000000000000000025 /* TestSupport.swift */,
 					AA0000000000000000000026 /* AppShellTests.swift */,
 					AA0000000000000000000027 /* PanelContentViewTests.swift */,
+					AA000000000000000000002D /* SettingsTests.swift */,
 				);
 				path = OctodotTests;
 				sourceTree = "<group>";
@@ -286,6 +295,7 @@
 			files = (
 				BB0000000000000000000001 /* OctodotApp.swift in Sources */,
 				BB0000000000000000000002 /* AppDelegate.swift in Sources */,
+				BB000000000000000000002A /* AppPreferences.swift in Sources */,
 				BB0000000000000000000003 /* AppState.swift in Sources */,
 				BB0000000000000000000028 /* ThreadActionStore.swift in Sources */,
 				BB0000000000000000000004 /* StatusItemController.swift in Sources */,
@@ -295,6 +305,7 @@
 				BB0000000000000000000007 /* NotificationListView.swift in Sources */,
 				BB0000000000000000000008 /* NotificationRowView.swift in Sources */,
 				BB0000000000000000000009 /* SearchBarView.swift in Sources */,
+				BB000000000000000000002B /* SettingsView.swift in Sources */,
 				BB000000000000000000000A /* GitHubNotification.swift in Sources */,
 				BB000000000000000000000B /* MockData.swift in Sources */,
 				BB000000000000000000000D /* KeychainHelper.swift in Sources */,
@@ -315,6 +326,7 @@
 					BB0000000000000000000024 /* TestSupport.swift in Sources */,
 					BB0000000000000000000025 /* AppShellTests.swift in Sources */,
 					BB0000000000000000000026 /* PanelContentViewTests.swift in Sources */,
+					BB000000000000000000002C /* SettingsTests.swift in Sources */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};

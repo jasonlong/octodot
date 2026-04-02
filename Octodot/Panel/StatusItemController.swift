@@ -9,8 +9,6 @@ final class StatusItemController {
         static let activeAlpha: CGFloat = 1.0
         static let dimmedAlpha: CGFloat = 0.45
         static let iconSize = NSSize(width: 18, height: 18)
-        static let toggleHotkeyCode: UInt16 = 39
-        static let toggleHotkeyModifiers: NSEvent.ModifierFlags = [.command]
         static let hotKeySignature: OSType = 0x4F435444 // 'OCTD'
         static let hotKeyID: UInt32 = 1
     }
@@ -23,6 +21,7 @@ final class StatusItemController {
     private let statusItem: NSStatusItem
     private let panel: NotificationPanel
     private let appState: AppState
+    private let preferences: AppPreferences
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
@@ -31,10 +30,11 @@ final class StatusItemController {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    init(appState: AppState) {
+    init(appState: AppState, preferences: AppPreferences) {
         self.appState = appState
+        self.preferences = preferences
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        self.panel = NotificationPanel(appState: appState)
+        self.panel = NotificationPanel(appState: appState, preferences: preferences)
 
         self.contextMenu = NSMenu()
 
@@ -45,13 +45,20 @@ final class StatusItemController {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        contextMenu.addItem(settingsItem)
+        contextMenu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit Octodot", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         contextMenu.addItem(quitItem)
 
         updateStatusItemAppearance()
         observeStatusItemState()
-        setupGlobalHotkey()
+        setupGlobalHotkeyHandler()
+        observeHotkeyPreference()
+        updateRegisteredGlobalHotkey()
         setupOutsideClickMonitors()
     }
 
@@ -70,7 +77,7 @@ final class StatusItemController {
         }
     }
 
-    private func setupGlobalHotkey() {
+    private func setupGlobalHotkeyHandler() {
         var eventSpec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -117,19 +124,38 @@ final class StatusItemController {
             assertionFailure("Failed to install global hotkey handler: \(installStatus)")
             return
         }
+    }
+
+    private func updateRegisteredGlobalHotkey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
 
         let hotKeyID = EventHotKeyID(signature: Constants.hotKeySignature, id: Constants.hotKeyID)
+        let shortcut = preferences.globalShortcut
         let registerStatus = RegisterEventHotKey(
-            UInt32(Constants.toggleHotkeyCode),
-            Self.carbonModifiers(from: Constants.toggleHotkeyModifiers),
+            UInt32(shortcut.keyCode),
+            Self.carbonModifiers(from: shortcut.modifierFlags),
             hotKeyID,
-            eventTarget,
+            GetApplicationEventTarget(),
             0,
             &hotKeyRef
         )
         guard registerStatus == noErr else {
             assertionFailure("Failed to register global hotkey: \(registerStatus)")
             return
+        }
+    }
+
+    private func observeHotkeyPreference() {
+        withObservationTracking {
+            _ = preferences.globalShortcut
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.updateRegisteredGlobalHotkey()
+                self?.observeHotkeyPreference()
+            }
         }
     }
 
@@ -186,6 +212,11 @@ final class StatusItemController {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     private func showPanel() {
@@ -265,9 +296,13 @@ final class StatusItemController {
         )
     }
 
-    static func matchesToggleHotkey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
-        keyCode == Constants.toggleHotkeyCode
-            && modifierFlags.intersection([.command, .shift, .control, .option]) == Constants.toggleHotkeyModifiers
+    static func matchesToggleHotkey(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        shortcut: AppPreferences.GlobalShortcut
+    ) -> Bool {
+        keyCode == shortcut.keyCode
+            && modifierFlags.intersection([.command, .shift, .control, .option]) == shortcut.modifierFlags
     }
 
     static func shouldClosePanelForClick(mouseLocation: CGPoint, panelFrame: CGRect, statusItemFrame: CGRect) -> Bool {

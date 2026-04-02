@@ -6,7 +6,7 @@ struct OctodotApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(appState: appDelegate.appState, preferences: appDelegate.preferences)
         }
     }
 }

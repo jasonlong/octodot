@@ -3,6 +3,85 @@ import Testing
 @testable import Octodot
 
 struct GitHubAPIClientTests {
+    private final class SubjectConcurrencyTrackingSession: @unchecked Sendable, NetworkSession {
+        private let notificationsPayload: Data
+        private let subjectDelayNanoseconds: UInt64
+        private let lock = NSLock()
+        private var requests: [URLRequest] = []
+        private var inFlightSubjectRequests = 0
+        private var maxInFlightSubjectRequests = 0
+
+        init(notificationsPayload: Data, subjectDelayNanoseconds: UInt64 = 50_000_000) {
+            self.notificationsPayload = notificationsPayload
+            self.subjectDelayNanoseconds = subjectDelayNanoseconds
+        }
+
+        func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+            record(request)
+
+            guard let url = request.url else {
+                throw StubNetworkSession.StubError.missingResponse
+            }
+
+            if url.path == "/notifications" {
+                return (
+                    notificationsPayload,
+                    HTTPURLResponse(
+                        url: url,
+                        statusCode: 200,
+                        httpVersion: nil,
+                        headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                    )!
+                )
+            }
+
+            beginSubjectRequest()
+            defer { endSubjectRequest() }
+
+            try? await Task.sleep(nanoseconds: subjectDelayNanoseconds)
+            return (
+                #"{"state":"open"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: url,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )
+        }
+
+        func recordedRequests() -> [URLRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return requests
+        }
+
+        func recordedMaxInFlightSubjectRequests() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return maxInFlightSubjectRequests
+        }
+
+        private func record(_ request: URLRequest) {
+            lock.lock()
+            requests.append(request)
+            lock.unlock()
+        }
+
+        private func beginSubjectRequest() {
+            lock.lock()
+            inFlightSubjectRequests += 1
+            maxInFlightSubjectRequests = max(maxInFlightSubjectRequests, inFlightSubjectRequests)
+            lock.unlock()
+        }
+
+        private func endSubjectRequest() {
+            lock.lock()
+            inFlightSubjectRequests -= 1
+            lock.unlock()
+        }
+    }
+
     @Test func validateTokenReturnsUsername() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -228,6 +307,30 @@ struct GitHubAPIClientTests {
         #expect(requests.count == 3)
     }
 
+    @Test func fetchNotificationsCapsConcurrentSubjectRequests() async throws {
+        let session = SubjectConcurrencyTrackingSession(
+            notificationsPayload: Self.notificationsPayload(
+                ids: ["1", "2", "3", "4"],
+                subjectURLPrefix: "https://api.github.com/repos/acme/test/pulls"
+            ).data(using: .utf8)!
+        )
+
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            maxConcurrentSubjectRequests: 2
+        )
+
+        let notifications = try await client.fetchNotifications(force: true)
+        let requests = session.recordedRequests()
+        let subjectRequests = requests.filter { $0.url?.path.contains("/repos/acme/test/pulls/") == true }
+
+        #expect(notifications.count == 4)
+        #expect(notifications.allSatisfy { $0.subjectState == .open })
+        #expect(subjectRequests.count == 4)
+        #expect(session.recordedMaxInFlightSubjectRequests() == 2)
+    }
+
     private static func notificationsPayload(
         id: String,
         updatedAt: String = "2026-04-01T12:00:00Z",
@@ -261,12 +364,21 @@ struct GitHubAPIClientTests {
         """
     }
 
-    private static func notificationsPayload(ids: [String]) -> String {
+    private static func notificationsPayload(
+        ids: [String],
+        subjectURLPrefix: String? = nil
+    ) -> String {
         let iso = ISO8601DateFormatter()
         let baseDate = iso.date(from: "2026-04-01T12:00:00Z") ?? Date()
 
         let items = ids.enumerated().map { offset, id in
             let updatedAt = iso.string(from: baseDate.addingTimeInterval(TimeInterval(offset * 60)))
+            let subjectURLField: String
+            if let subjectURLPrefix {
+                subjectURLField = #""url":"\#(subjectURLPrefix)/\#(id)""#
+            } else {
+                subjectURLField = #""url":null"#
+            }
             return """
               {
                 "id": "\(id)",
@@ -275,7 +387,7 @@ struct GitHubAPIClientTests {
                 "updated_at": "\(updatedAt)",
                 "subject": {
                   "title": "Test pull request \(id)",
-                  "url": null,
+                  \(subjectURLField),
                   "type": "PullRequest"
                 },
                 "repository": {

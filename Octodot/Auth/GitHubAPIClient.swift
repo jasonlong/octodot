@@ -10,15 +10,26 @@ actor GitHubAPIClient {
     private let baseURL = URL(string: "https://api.github.com")!
     private let notificationsPerPage = 100
     private let defaultPollInterval: TimeInterval = 60
+    private let maxConcurrentSubjectRequests: Int
     private let session: any NetworkSession
     private var token: String
     private var cachedNotifications: [GitHubNotification] = []
     private var lastModifiedValue: String?
     private var nextNotificationsRefreshAt = Date.distantPast
 
-    init(token: String, session: any NetworkSession = URLSession.shared) {
+    private struct SubjectRequestContext: Sendable {
+        let token: String
+        let session: any NetworkSession
+    }
+
+    init(
+        token: String,
+        session: any NetworkSession = URLSession.shared,
+        maxConcurrentSubjectRequests: Int = 6
+    ) {
         self.token = token
         self.session = session
+        self.maxConcurrentSubjectRequests = max(1, maxConcurrentSubjectRequests)
     }
 
     func updateToken(_ token: String) {
@@ -105,27 +116,19 @@ actor GitHubAPIClient {
             }
         }
 
-        // Fetch subject states concurrently, then merge once by id.
-        await withTaskGroup(of: (String, GitHubNotification.SubjectState).self) { group in
-            for notification in notifications
-            where notification.subjectURL != nil && notification.subjectState == .unknown {
-                let subjectURL = notification.subjectURL!
-                let id = notification.id
-                group.addTask { [self] in
-                    let state = await self.fetchSubjectState(apiURL: subjectURL)
-                    return (id, state)
-                }
-            }
+        let pendingSubjectNotifications = notifications.filter {
+            $0.subjectURL != nil && $0.subjectState == .unknown
+        }
+        let subjectRequestContext = SubjectRequestContext(token: token, session: session)
+        let subjectStatesByID = await Self.fetchSubjectStates(
+            for: pendingSubjectNotifications,
+            maxConcurrent: maxConcurrentSubjectRequests,
+            context: subjectRequestContext
+        )
 
-            var subjectStatesByID: [String: GitHubNotification.SubjectState] = [:]
-            for await (id, state) in group {
-                subjectStatesByID[id] = state
-            }
-
-            for index in notifications.indices {
-                if let state = subjectStatesByID[notifications[index].id] {
-                    notifications[index].subjectState = state
-                }
+        for index in notifications.indices {
+            if let state = subjectStatesByID[notifications[index].id] {
+                notifications[index].subjectState = state
             }
         }
 
@@ -135,10 +138,57 @@ actor GitHubAPIClient {
 
     // MARK: - Fetch subject state
 
-    private func fetchSubjectState(apiURL: String) async -> GitHubNotification.SubjectState {
+    private static func fetchSubjectStates(
+        for notifications: [GitHubNotification],
+        maxConcurrent: Int,
+        context: SubjectRequestContext
+    ) async -> [String: GitHubNotification.SubjectState] {
+        guard !notifications.isEmpty else { return [:] }
+
+        let concurrencyLimit = max(1, min(maxConcurrent, notifications.count))
+        var iterator = notifications.makeIterator()
+        var subjectStatesByID: [String: GitHubNotification.SubjectState] = [:]
+
+        await withTaskGroup(of: (String, GitHubNotification.SubjectState).self) { group in
+            for _ in 0..<concurrencyLimit {
+                guard let notification = iterator.next(),
+                      let subjectURL = notification.subjectURL else {
+                    break
+                }
+
+                let id = notification.id
+                group.addTask {
+                    let state = await Self.fetchSubjectState(apiURL: subjectURL, context: context)
+                    return (id, state)
+                }
+            }
+
+            while let (id, state) = await group.next() {
+                subjectStatesByID[id] = state
+
+                guard let notification = iterator.next(),
+                      let subjectURL = notification.subjectURL else {
+                    continue
+                }
+
+                let id = notification.id
+                group.addTask {
+                    let state = await Self.fetchSubjectState(apiURL: subjectURL, context: context)
+                    return (id, state)
+                }
+            }
+        }
+
+        return subjectStatesByID
+    }
+
+    private static func fetchSubjectState(
+        apiURL: String,
+        context: SubjectRequestContext
+    ) async -> GitHubNotification.SubjectState {
         guard let url = URL(string: apiURL) else { return .unknown }
         do {
-            let data = try await request(url: url)
+            let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
             if subject.merged == true {
                 return .merged
@@ -236,11 +286,7 @@ actor GitHubAPIClient {
     // MARK: - Private
 
     private func makeRequest(url: URL) -> URLRequest {
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        return req
+        Self.makeRequest(url: url, token: token)
     }
 
     private func makeNotificationsRequest(url: URL) -> URLRequest {
@@ -251,7 +297,23 @@ actor GitHubAPIClient {
     }
 
     private func request(url: URL) async throws -> Data {
-        let req = makeRequest(url: url)
+        try await Self.request(url: url, token: token, session: session)
+    }
+
+    private static func makeRequest(url: URL, token: String) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        return req
+    }
+
+    private static func request(
+        url: URL,
+        token: String,
+        session: any NetworkSession
+    ) async throws -> Data {
+        let req = makeRequest(url: url, token: token)
         let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 

@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        DebugTrace.reset()
+        DebugTrace.log("app launch")
         let appState = AppState()
         statusItemController = StatusItemController(appState: appState)
     }

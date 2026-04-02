@@ -12,13 +12,34 @@ enum KeychainHelper {
         return dir.appendingPathComponent(".token")
     }
 
+#if DEBUG
+    private static var debugTokenURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Octodot", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent(".debug-token")
+    }
+#endif
+
     static func saveToken(_ token: String) throws {
+#if DEBUG
+        try saveDebugToken(token)
+#else
         try saveToken(token, service: service, account: account)
+#endif
         try? FileManager.default.removeItem(at: legacyTokenURL)
     }
 
     static func loadToken() -> String? {
+#if DEBUG
+        if let token = loadDebugToken() {
+            return token
+        }
+#endif
         if let token = loadToken(service: service, account: account) {
+#if DEBUG
+            try? saveDebugToken(token)
+#endif
             return token
         }
 
@@ -27,7 +48,7 @@ enum KeychainHelper {
             return nil
         }
 
-        try? saveToken(token, service: service, account: account)
+        try? saveToken(token)
         try? FileManager.default.removeItem(at: legacyTokenURL)
         return token
     }
@@ -35,6 +56,9 @@ enum KeychainHelper {
     static func deleteToken() {
         deleteToken(service: service, account: account)
         try? FileManager.default.removeItem(at: legacyTokenURL)
+#if DEBUG
+        try? FileManager.default.removeItem(at: debugTokenURL)
+#endif
     }
 
     static func saveToken(_ token: String, service: String, account: String) throws {
@@ -75,6 +99,24 @@ enum KeychainHelper {
     static func deleteToken(service: String, account: String) {
         SecItemDelete(itemQuery(service: service, account: account) as CFDictionary)
     }
+
+#if DEBUG
+    private static func saveDebugToken(_ token: String) throws {
+        guard let data = token.data(using: .utf8), !data.isEmpty else {
+            throw KeychainError.invalidData
+        }
+        try data.write(to: debugTokenURL, options: .atomic)
+    }
+
+    private static func loadDebugToken() -> String? {
+        guard let data = try? Data(contentsOf: debugTokenURL),
+              let token = String(data: data, encoding: .utf8),
+              !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+#endif
 
     private static func itemQuery(service: String, account: String) -> [String: Any] {
         [

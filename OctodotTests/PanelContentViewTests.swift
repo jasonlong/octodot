@@ -9,8 +9,6 @@ struct PanelContentViewTests {
             .init(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelContentView.routeKey(.character("d"), isSearchActive: false, pendingG: false) ==
             .init(command: .done, pendingG: false, focusDirective: .unchanged, isHandled: true))
-        #expect(PanelContentView.routeKey(.character("m"), isSearchActive: false, pendingG: false) ==
-            .init(command: .markRead, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelContentView.routeKey(.character("x"), isSearchActive: false, pendingG: false) ==
             .init(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelContentView.routeKey(.character("u"), isSearchActive: false, pendingG: false) ==
@@ -79,5 +77,57 @@ struct PanelContentViewTests {
             PanelContentView.searchFieldEffect(for: .cancel) ==
             .init(clearsQuery: true, keepsSearchActive: false, focusDirective: .list)
         )
+    }
+
+    @Test func persistentQueryKeepsSearchBarVisible() {
+        #expect(
+            PanelContentView.shouldShowSearchBar(
+                isSearchActive: true,
+                query: ""
+            ) == true
+        )
+        #expect(
+            PanelContentView.shouldShowSearchBar(
+                isSearchActive: false,
+                query: "backup"
+            ) == true
+        )
+        #expect(
+            PanelContentView.shouldShowSearchBar(
+                isSearchActive: false,
+                query: "   "
+            ) == false
+        )
+    }
+
+    @Test func repeatIsAllowedOnlyForNavigation() {
+        #expect(PanelContentView.allowsRepeat(for: .character("j")) == true)
+        #expect(PanelContentView.allowsRepeat(for: .character("k")) == true)
+        #expect(PanelContentView.allowsRepeat(for: .downArrow) == true)
+        #expect(PanelContentView.allowsRepeat(for: .upArrow) == true)
+        #expect(PanelContentView.allowsRepeat(for: .character("x")) == false)
+        #expect(PanelContentView.allowsRepeat(for: .character("d")) == false)
+        #expect(PanelContentView.allowsRepeat(for: .character("o")) == false)
+    }
+
+    @Test func destructiveAndActionKeysExecuteOnKeyUp() {
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("d")) == true)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("x")) == true)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("o")) == true)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("r")) == true)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("j")) == false)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("k")) == false)
+        #expect(PanelContentView.handlesOnKeyUp(for: .character("g")) == false)
+    }
+
+    @Test func singleFireDeduplicationAppliesOnlyToDestructiveAndOpenCommands() {
+        #expect(PanelContentView.isSingleFireListCommand(.done) == true)
+        #expect(PanelContentView.isSingleFireListCommand(.unsubscribe) == true)
+        #expect(PanelContentView.isSingleFireListCommand(.open) == true)
+        #expect(PanelContentView.isSingleFireListCommand(.undo) == true)
+        #expect(PanelContentView.isSingleFireListCommand(.moveDown) == false)
+        #expect(PanelContentView.isSingleFireListCommand(.moveUp) == false)
+        #expect(PanelContentView.isSingleFireListCommand(.forceRefresh) == false)
+        #expect(PanelContentView.singleFireCommandDeduplicationInterval == 0.2)
     }
 }

@@ -25,7 +25,6 @@ struct PanelContentView: View {
         case jumpToBottom
         case jumpToTop
         case done
-        case markRead
         case unsubscribe
         case open
         case copyURL
@@ -64,6 +63,8 @@ struct PanelContentView: View {
 
     @FocusState private var focus: Focus?
     @State private var pendingG = false
+    @State private var lastSingleFireCommand: KeyboardCommand?
+    @State private var lastSingleFireCommandAt = Date.distantPast
 
     var body: some View {
         Group {
@@ -129,22 +130,11 @@ struct PanelContentView: View {
             .padding(.top, 12)
             .padding(.bottom, 8)
 
-            // Error banner
-            if let error = appState.errorMessage {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                    Text(error)
-                        .font(.system(size: 11))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
-            }
-
             // Search bar (conditional)
-            if appState.isSearchActive {
+            if Self.shouldShowSearchBar(
+                isSearchActive: appState.isSearchActive,
+                query: appState.searchQuery
+            ) {
                 SearchBarView(
                     query: $appState.searchQuery,
                     onSubmit: commitSearch,
@@ -180,15 +170,32 @@ struct PanelContentView: View {
 
             Divider().opacity(0.5)
 
+            if let error = appState.errorMessage {
+                HStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                        Text(error)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.orange.opacity(0.08), in: Capsule())
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
+            }
+
             // Footer
             HStack(spacing: 10) {
                 shortcutHint(key: "j/k", label: "nav")
                 shortcutHint(key: "d", label: "done")
-                shortcutHint(key: "m", label: "read")
                 shortcutHint(key: "x", label: "unsub")
                 shortcutHint(key: "u", label: "undo")
                 shortcutHint(key: "o", label: "open")
-                shortcutHint(key: "a", label: "mode")
                 shortcutHint(key: "/", label: "search")
             }
             .padding(.horizontal, 14)
@@ -197,7 +204,7 @@ struct PanelContentView: View {
         .focusable()
         .focused($focus, equals: .list)
         .focusEffectDisabled()
-        .onKeyPress(phases: [.down, .repeat]) { press in
+        .onKeyPress(phases: [.down, .repeat, .up]) { press in
             handleKeyPress(press)
         }
         .onAppear {
@@ -210,12 +217,49 @@ struct PanelContentView: View {
                 focusListAndRefresh()
             }
         }
-        .animation(.easeOut(duration: 0.15), value: appState.isSearchActive)
+        .animation(
+            .easeOut(duration: 0.15),
+            value: Self.shouldShowSearchBar(
+                isSearchActive: appState.isSearchActive,
+                query: appState.searchQuery
+            )
+        )
     }
 
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        let input = Self.keyInput(for: press)
+        DebugTrace.log(
+            "key phase=\(Self.debugName(for: press.phase)) input=\(Self.debugName(for: input)) " +
+            "search=\(appState.isSearchActive) selected=\(appState.selectedNotificationID ?? "nil")"
+        )
+        if !appState.isSearchActive {
+            if Self.handlesOnKeyUp(for: input) {
+                switch press.phase {
+                case .down, .repeat:
+                    return .handled
+                case .up:
+                    break
+                default:
+                    return .handled
+                }
+            } else {
+                switch press.phase {
+                case .down:
+                    break
+                case .repeat:
+                    if !Self.allowsRepeat(for: input) {
+                        return .handled
+                    }
+                case .up:
+                    return .handled
+                default:
+                    return .handled
+                }
+            }
+        }
+
         let routing = Self.routeKey(
-            Self.keyInput(for: press),
+            input,
             isSearchActive: appState.isSearchActive,
             pendingG: pendingG
         )
@@ -231,7 +275,19 @@ struct PanelContentView: View {
         }
 
         if let command = routing.command {
+            if shouldSuppressSingleFireCommand(command) {
+                DebugTrace.log("suppressed command=\(Self.debugName(for: command))")
+                return .handled
+            }
+            DebugTrace.log(
+                "perform command=\(Self.debugName(for: command)) selected.before=\(appState.selectedNotificationID ?? "nil") " +
+                "visible.before=\(appState.filteredNotifications.map(\.id).joined(separator: ","))"
+            )
             perform(command)
+            DebugTrace.log(
+                "performed command=\(Self.debugName(for: command)) selected.after=\(appState.selectedNotificationID ?? "nil") " +
+                "visible.after=\(appState.filteredNotifications.map(\.id).joined(separator: ","))"
+            )
         }
 
         return routing.isHandled ? .handled : .ignored
@@ -275,8 +331,6 @@ struct PanelContentView: View {
             appState.jumpToTop()
         case .done:
             appState.done()
-        case .markRead:
-            appState.markRead()
         case .unsubscribe:
             appState.unsubscribeFromThread()
         case .open:
@@ -305,6 +359,24 @@ struct PanelContentView: View {
             appState.flushPendingActions()
             closePanel()
         }
+    }
+
+    private func shouldSuppressSingleFireCommand(_ command: KeyboardCommand) -> Bool {
+        guard Self.isSingleFireListCommand(command) else {
+            return false
+        }
+
+        let now = Date()
+        defer {
+            lastSingleFireCommand = command
+            lastSingleFireCommandAt = now
+        }
+
+        guard lastSingleFireCommand == command else {
+            return false
+        }
+
+        return now.timeIntervalSince(lastSingleFireCommandAt) < Self.singleFireCommandDeduplicationInterval
     }
 
     private func focusListAndRefresh() {
@@ -374,6 +446,62 @@ struct PanelContentView: View {
         }
     }
 
+    static func shouldShowSearchBar(isSearchActive: Bool, query: String) -> Bool {
+        if isSearchActive {
+            return true
+        }
+
+        return !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static let singleFireCommandDeduplicationInterval: TimeInterval = 0.2
+
+    static func isSingleFireListCommand(_ command: KeyboardCommand) -> Bool {
+        switch command {
+        case .done, .unsubscribe, .open, .copyURL, .undo:
+            return true
+        case .moveDown,
+             .moveUp,
+             .jumpToBottom,
+             .jumpToTop,
+             .toggleInboxMode,
+             .toggleGrouping,
+             .forceRefresh,
+             .activateSearch,
+             .deactivateSearch,
+             .closePanel:
+            return false
+        }
+    }
+
+    static func allowsRepeat(for input: KeyInput) -> Bool {
+        switch input {
+        case .character("j"), .character("k"), .downArrow, .upArrow:
+            return true
+        case .character, .escape, .return, .other:
+            return false
+        }
+    }
+
+    static func handlesOnKeyUp(for input: KeyInput) -> Bool {
+        switch input {
+        case .character("d"),
+             .character("x"),
+             .character("o"),
+             .character("y"),
+             .character("u"),
+             .character("a"),
+             .character("s"),
+             .character("r"),
+             .character("/"),
+             .escape,
+             .return:
+            return true
+        case .character, .downArrow, .upArrow, .other:
+            return false
+        }
+    }
+
     static func keyInput(for press: KeyPress) -> KeyInput {
         switch press.key {
         case .downArrow:
@@ -394,8 +522,6 @@ struct PanelContentView: View {
             return .character("k")
         case KeyEquivalent("d"):
             return .character("d")
-        case KeyEquivalent("m"):
-            return .character("m")
         case KeyEquivalent("x"):
             return .character("x")
         case KeyEquivalent("o"):
@@ -414,6 +540,46 @@ struct PanelContentView: View {
             return .character("/")
         default:
             return .other
+        }
+    }
+
+    static func debugName(for input: KeyInput) -> String {
+        switch input {
+        case .character(let value): return "char(\(value))"
+        case .downArrow: return "down"
+        case .upArrow: return "up"
+        case .escape: return "escape"
+        case .return: return "return"
+        case .other: return "other"
+        }
+    }
+
+    static func debugName(for command: KeyboardCommand) -> String {
+        switch command {
+        case .moveDown: return "moveDown"
+        case .moveUp: return "moveUp"
+        case .jumpToBottom: return "jumpToBottom"
+        case .jumpToTop: return "jumpToTop"
+        case .done: return "done"
+        case .unsubscribe: return "unsubscribe"
+        case .open: return "open"
+        case .copyURL: return "copyURL"
+        case .undo: return "undo"
+        case .toggleInboxMode: return "toggleInboxMode"
+        case .toggleGrouping: return "toggleGrouping"
+        case .forceRefresh: return "forceRefresh"
+        case .activateSearch: return "activateSearch"
+        case .deactivateSearch: return "deactivateSearch"
+        case .closePanel: return "closePanel"
+        }
+    }
+
+    static func debugName(for phase: KeyPress.Phases) -> String {
+        switch phase {
+        case .down: return "down"
+        case .repeat: return "repeat"
+        case .up: return "up"
+        default: return "other"
         }
     }
 
@@ -446,8 +612,6 @@ struct PanelContentView: View {
             return KeyRouting(command: nil, pendingG: true, focusDirective: .unchanged, isHandled: true)
         case .character("d"):
             return KeyRouting(command: .done, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .character("m"):
-            return KeyRouting(command: .markRead, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("x"):
             return KeyRouting(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("o"), .return:

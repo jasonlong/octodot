@@ -28,14 +28,17 @@ struct NotificationRowView: View, Equatable {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Text(notification.title)
                     .font(.system(size: 13, weight: notification.isUnread ? .medium : .regular))
                     .foregroundStyle(notification.isUnread ? .primary : .secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .layoutPriority(1)
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
             // Right side: reason + time
             VStack(alignment: .trailing, spacing: 2) {
@@ -43,11 +46,14 @@ struct NotificationRowView: View, Equatable {
                     .font(.system(size: 10))
                     .foregroundStyle(notification.reason.isDirectlyInvolved ? AnyShapeStyle(Color.green) : AnyShapeStyle(.tertiary))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
                 Text(relativeTime)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
             }
+            .frame(minWidth: 58, alignment: .trailing)
             .padding(.trailing, 10)
         }
         .frame(height: 44)

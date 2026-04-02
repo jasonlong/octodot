@@ -6,7 +6,7 @@ It is built for fast inbox processing:
 
 - native SwiftUI/AppKit shell, no Electron or web wrapper
 - unread and all views
-- optimistic `done`, `mark read`, and `unsubscribe` actions with undo
+- optimistic `done` and `unsubscribe` actions with undo
 - background unread refresh and menu bar unread indicator
 - Vim-style navigation and commands
 
@@ -36,9 +36,8 @@ The app is intentionally keyboard-centric.
 
 - `j` / `k`: move selection
 - `gg` / `G`: jump to top / bottom
-- `o` or `Return`: open in browser
+- `o` or `Return`: open in browser and mark read
 - `d`: mark done
-- `m`: mark read
 - `x`: unsubscribe
 - `u`: undo queued action
 - `a`: toggle `Unread` / `All`

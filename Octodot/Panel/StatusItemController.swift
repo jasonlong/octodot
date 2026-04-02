@@ -4,10 +4,17 @@ import SwiftUI
 
 @MainActor
 final class StatusItemController {
-    private enum Constants {
+    enum Constants {
         static let activeAlpha: CGFloat = 1.0
         static let dimmedAlpha: CGFloat = 0.45
         static let iconSize = NSSize(width: 18, height: 18)
+        static let toggleHotkeyCode: UInt16 = 45
+        static let toggleHotkeyModifiers: NSEvent.ModifierFlags = [.control, .option]
+    }
+
+    struct Appearance: Equatable {
+        let iconName: String
+        let alpha: CGFloat
     }
 
     private let statusItem: NSStatusItem
@@ -16,6 +23,8 @@ final class StatusItemController {
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
+    private var globalKeyMonitor: Any?
+    private var localKeyMonitor: Any?
 
     init(appState: AppState) {
         self.appState = appState
@@ -40,25 +49,26 @@ final class StatusItemController {
         setupGlobalHotkey()
     }
 
+    deinit {
+        if let globalKeyMonitor {
+            NSEvent.removeMonitor(globalKeyMonitor)
+        }
+        if let localKeyMonitor {
+            NSEvent.removeMonitor(localKeyMonitor)
+        }
+    }
+
     private func setupGlobalHotkey() {
         // Ctrl+Option+N toggles panel from anywhere
         // Requires Accessibility permission in System Settings → Privacy & Security → Accessibility
-        let mask: NSEvent.ModifierFlags = [.control, .option]
-        let keyCode: UInt16 = 45 // N
-
-        func isHotkey(_ event: NSEvent) -> Bool {
-            event.keyCode == keyCode
-                && event.modifierFlags.intersection([.command, .shift, .control, .option]) == mask
-        }
-
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if isHotkey(event) {
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if Self.matchesToggleHotkey(keyCode: event.keyCode, modifierFlags: event.modifierFlags) {
                 DispatchQueue.main.async { self?.togglePanel() }
             }
         }
 
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if isHotkey(event) {
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if Self.matchesToggleHotkey(keyCode: event.keyCode, modifierFlags: event.modifierFlags) {
                 DispatchQueue.main.async { self?.togglePanel() }
                 return nil
             }
@@ -80,7 +90,6 @@ final class StatusItemController {
     private func togglePanel() {
         if panel.isVisible {
             panel.close()
-            appState.isPanelVisible = false
         } else {
             showPanel()
         }
@@ -95,12 +104,7 @@ final class StatusItemController {
               let buttonWindow = button.window else { return }
 
         let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-
-        let panelWidth = panel.frame.width
-        let panelX = buttonRect.midX - panelWidth / 2
-        let panelY = buttonRect.minY - panel.frame.height
-
-        panel.setFrameOrigin(NSPoint(x: panelX, y: panelY))
+        panel.setFrameOrigin(Self.panelOrigin(buttonRect: buttonRect, panelSize: panel.frame.size))
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
@@ -121,9 +125,9 @@ final class StatusItemController {
     private func updateStatusItemAppearance() {
         guard let button = statusItem.button else { return }
 
-        let hasUnreadNotifications = appState.isSignedIn && appState.unreadNotificationCount > 0
-        button.image = hasUnreadNotifications ? unreadIcon : defaultIcon
-        button.alphaValue = hasUnreadNotifications ? Constants.activeAlpha : Constants.dimmedAlpha
+        let appearance = Self.appearance(isSignedIn: appState.isSignedIn, unreadCount: appState.unreadNotificationCount)
+        button.image = appearance.iconName == "menubar-icon-unread" ? unreadIcon : defaultIcon
+        button.alphaValue = appearance.alpha
     }
 
     private static func makeIcon(named name: String) -> NSImage? {
@@ -131,5 +135,25 @@ final class StatusItemController {
         icon?.size = Constants.iconSize
         icon?.isTemplate = true
         return icon
+    }
+
+    static func appearance(isSignedIn: Bool, unreadCount: Int) -> Appearance {
+        let hasUnreadNotifications = isSignedIn && unreadCount > 0
+        return Appearance(
+            iconName: hasUnreadNotifications ? "menubar-icon-unread" : "menubar-icon",
+            alpha: hasUnreadNotifications ? Constants.activeAlpha : Constants.dimmedAlpha
+        )
+    }
+
+    static func panelOrigin(buttonRect: CGRect, panelSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: buttonRect.midX - panelSize.width / 2,
+            y: buttonRect.minY - panelSize.height
+        )
+    }
+
+    static func matchesToggleHotkey(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) -> Bool {
+        keyCode == Constants.toggleHotkeyCode
+            && modifierFlags.intersection([.command, .shift, .control, .option]) == Constants.toggleHotkeyModifiers
     }
 }

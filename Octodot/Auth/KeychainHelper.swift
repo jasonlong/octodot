@@ -4,21 +4,12 @@ import Security
 enum KeychainHelper {
     private static let service = "com.octodot.app.github-token"
     private static let account = "github-token"
-    private static let trustedAccessRepairVersion = 1
 
     private static var legacyTokenURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Octodot", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(".token")
-    }
-
-    private static var shouldManageTrustedAccess: Bool {
-        #if DEBUG
-        false
-        #else
-        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-        #endif
     }
 
     static func saveToken(_ token: String) throws {
@@ -47,192 +38,50 @@ enum KeychainHelper {
     }
 
     static func saveToken(_ token: String, service: String, account: String) throws {
-        guard let data = token.data(using: .utf8) else {
-            throw KeychainError.invalidData
-        }
-        guard !data.isEmpty else {
+        guard let data = token.data(using: .utf8), !data.isEmpty else {
             throw KeychainError.invalidData
         }
 
-        var existingItem: SecKeychainItem?
-        let findStatus = service.withCString { serviceCString in
-            account.withCString { accountCString in
-                SecKeychainFindGenericPassword(
-                    nil,
-                    UInt32(service.utf8.count),
-                    serviceCString,
-                    UInt32(account.utf8.count),
-                    accountCString,
-                    nil,
-                    nil,
-                    &existingItem
-                )
-            }
-        }
+        var addQuery = itemQuery(service: service, account: account)
+        addQuery[kSecValueData as String] = data
 
-        if findStatus == errSecSuccess, let existingItem {
-            let updateStatus = data.withUnsafeBytes { bytes in
-                SecKeychainItemModifyAttributesAndData(
-                    existingItem,
-                    nil,
-                    UInt32(data.count),
-                    bytes.baseAddress!
-                )
-            }
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        switch status {
+        case errSecSuccess:
+            return
+        case errSecDuplicateItem:
+            let attributesToUpdate = [kSecValueData as String: data] as CFDictionary
+            let updateStatus = SecItemUpdate(itemQuery(service: service, account: account) as CFDictionary, attributesToUpdate)
             guard updateStatus == errSecSuccess else {
                 throw KeychainError.unhandledStatus(updateStatus)
             }
-
-            repairTrustedAccessIfNeeded(for: existingItem, service: service, account: account)
-            return
+        default:
+            throw KeychainError.unhandledStatus(status)
         }
-
-        guard findStatus == errSecItemNotFound else {
-            throw KeychainError.unhandledStatus(findStatus)
-        }
-
-        var item: SecKeychainItem?
-        let addStatus = service.withCString { serviceCString in
-            account.withCString { accountCString in
-                data.withUnsafeBytes { bytes in
-                    SecKeychainAddGenericPassword(
-                        nil,
-                        UInt32(service.utf8.count),
-                        serviceCString,
-                        UInt32(account.utf8.count),
-                        accountCString,
-                        UInt32(data.count),
-                        bytes.baseAddress!,
-                        &item
-                    )
-                }
-            }
-        }
-        guard addStatus == errSecSuccess else {
-            throw KeychainError.unhandledStatus(addStatus)
-        }
-
-        applyTrustedAccessIfPossible(to: item, service: service, account: account)
     }
 
     static func loadToken(service: String, account: String) -> String? {
-        var passwordLength: UInt32 = 0
-        var passwordData: UnsafeMutableRawPointer?
-        var item: SecKeychainItem?
+        var query = itemQuery(service: service, account: account)
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
 
-        let status = service.withCString { serviceCString in
-            account.withCString { accountCString in
-                SecKeychainFindGenericPassword(
-                    nil,
-                    UInt32(service.utf8.count),
-                    serviceCString,
-                    UInt32(account.utf8.count),
-                    accountCString,
-                    &passwordLength,
-                    &passwordData,
-                    &item
-                )
-            }
-        }
-        defer {
-            if passwordData != nil {
-                SecKeychainItemFreeContent(nil, passwordData)
-            }
-        }
-
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status != errSecItemNotFound else { return nil }
-        guard status == errSecSuccess,
-              let passwordData else { return nil }
-
-        let data = Data(bytes: passwordData, count: Int(passwordLength))
-        if let token = String(data: data, encoding: .utf8) {
-            repairTrustedAccessIfNeeded(for: item, service: service, account: account)
-            return token
-        }
-        return nil
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func deleteToken(service: String, account: String) {
-        var item: SecKeychainItem?
-        let status = service.withCString { serviceCString in
-            account.withCString { accountCString in
-                SecKeychainFindGenericPassword(
-                    nil,
-                    UInt32(service.utf8.count),
-                    serviceCString,
-                    UInt32(account.utf8.count),
-                    accountCString,
-                    nil,
-                    nil,
-                    &item
-                )
-            }
-        }
-        guard status == errSecSuccess, let item else { return }
-        SecKeychainItemDelete(item)
-        UserDefaults.standard.removeObject(forKey: trustedAccessRepairKey(service: service, account: account))
+        SecItemDelete(itemQuery(service: service, account: account) as CFDictionary)
     }
 
-    private static func createTrustedAccess(label: String) -> SecAccess? {
-        var trustedApplication: SecTrustedApplication?
-        let trustedApplicationStatus = Bundle.main.bundlePath.withCString { bundlePath in
-            SecTrustedApplicationCreateFromPath(bundlePath, &trustedApplication)
-        }
-        guard trustedApplicationStatus == errSecSuccess,
-              let trustedApplication else {
-            return nil
-        }
-
-        let trustedApplications = [trustedApplication] as CFArray
-        var access: SecAccess?
-        let accessStatus = SecAccessCreate(label as CFString, trustedApplications, &access)
-        guard accessStatus == errSecSuccess else {
-            return nil
-        }
-        return access
-    }
-
-    private static func repairTrustedAccessIfNeeded(
-        for item: SecKeychainItem?,
-        service: String,
-        account: String
-    ) {
-        guard shouldManageTrustedAccess else { return }
-        guard let item else { return }
-
-        let defaultsKey = trustedAccessRepairKey(service: service, account: account)
-        guard UserDefaults.standard.bool(forKey: defaultsKey) == false else { return }
-
-        if setTrustedAccess(item, label: "\(service):\(account)") {
-            UserDefaults.standard.set(true, forKey: defaultsKey)
-        }
-    }
-
-    private static func applyTrustedAccessIfPossible(
-        to item: SecKeychainItem?,
-        service: String,
-        account: String
-    ) {
-        guard shouldManageTrustedAccess else { return }
-        guard let item else { return }
-
-        let defaultsKey = trustedAccessRepairKey(service: service, account: account)
-        if setTrustedAccess(item, label: "\(service):\(account)") {
-            UserDefaults.standard.set(true, forKey: defaultsKey)
-        }
-    }
-
-    private static func setTrustedAccess(_ item: SecKeychainItem, label: String) -> Bool {
-        guard let access = createTrustedAccess(label: label) else {
-            return false
-        }
-
-        let accessStatus = SecKeychainItemSetAccess(item, access)
-        return accessStatus == errSecSuccess
-    }
-
-    private static func trustedAccessRepairKey(service: String, account: String) -> String {
-        "KeychainHelper.trustedAccessRepair.v\(trustedAccessRepairVersion).\(service).\(account)"
+    private static func itemQuery(service: String, account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
     }
 
     enum KeychainError: LocalizedError {

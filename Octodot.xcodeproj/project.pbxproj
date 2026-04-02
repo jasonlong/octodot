@@ -19,10 +19,16 @@
 		BB000000000000000000000A /* GitHubNotification.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000A /* GitHubNotification.swift */; };
 		BB000000000000000000000B /* MockData.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* MockData.swift */; };
 		BB000000000000000000000C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000C /* Assets.xcassets */; };
-		BB000000000000000000000D /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* KeychainHelper.swift */; };
-		BB000000000000000000000E /* GitHubAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* GitHubAPIClient.swift */; };
-		BB000000000000000000000F /* TokenEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* TokenEntryView.swift */; };
-		BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
+			BB000000000000000000000D /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* KeychainHelper.swift */; };
+			BB000000000000000000000E /* GitHubAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* GitHubAPIClient.swift */; };
+			BB000000000000000000000F /* TokenEntryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* TokenEntryView.swift */; };
+			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
+			BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000022 /* AppStateBootstrapTests.swift */; };
+			BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* GitHubAPIClientTests.swift */; };
+			BB0000000000000000000023 /* KeychainHelperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000024 /* KeychainHelperTests.swift */; };
+			BB0000000000000000000024 /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* TestSupport.swift */; };
+			BB0000000000000000000025 /* AppShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000026 /* AppShellTests.swift */; };
+			BB0000000000000000000026 /* PanelContentViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* PanelContentViewTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,12 +46,18 @@
 		AA000000000000000000000C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA000000000000000000000E /* Octodot.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Octodot.entitlements; sourceTree = "<group>"; };
-		AA000000000000000000000F /* Octodot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Octodot.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000020 /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
-		AA0000000000000000000021 /* OctodotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OctodotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
-		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
-		AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
+			AA000000000000000000000F /* Octodot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Octodot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+			AA0000000000000000000020 /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000021 /* OctodotTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OctodotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+			AA0000000000000000000022 /* AppStateBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateBootstrapTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000023 /* GitHubAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClientTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000024 /* KeychainHelperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelperTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000025 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
+			AA0000000000000000000026 /* AppShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000027 /* PanelContentViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelContentViewTests.swift; sourceTree = "<group>"; };
+			AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+			AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
+			AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -132,14 +144,20 @@
 			path = Auth;
 			sourceTree = "<group>";
 		};
-		CC0000000000000000000009 /* OctodotTests */ = {
-			isa = PBXGroup;
-			children = (
-				AA0000000000000000000020 /* AppStateTests.swift */,
-			);
-			path = OctodotTests;
-			sourceTree = "<group>";
-		};
+			CC0000000000000000000009 /* OctodotTests */ = {
+				isa = PBXGroup;
+				children = (
+					AA0000000000000000000020 /* AppStateTests.swift */,
+					AA0000000000000000000022 /* AppStateBootstrapTests.swift */,
+					AA0000000000000000000023 /* GitHubAPIClientTests.swift */,
+					AA0000000000000000000024 /* KeychainHelperTests.swift */,
+					AA0000000000000000000025 /* TestSupport.swift */,
+					AA0000000000000000000026 /* AppShellTests.swift */,
+					AA0000000000000000000027 /* PanelContentViewTests.swift */,
+				);
+				path = OctodotTests;
+				sourceTree = "<group>";
+			};
 		CC0000000000000000000007 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -266,14 +284,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DD0000000000000000000011 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BB0000000000000000000020 /* AppStateTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+			DD0000000000000000000011 /* Sources */ = {
+				isa = PBXSourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					BB0000000000000000000020 /* AppStateTests.swift in Sources */,
+					BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */,
+					BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */,
+					BB0000000000000000000023 /* KeychainHelperTests.swift in Sources */,
+					BB0000000000000000000024 /* TestSupport.swift in Sources */,
+					BB0000000000000000000025 /* AppShellTests.swift in Sources */,
+					BB0000000000000000000026 /* PanelContentViewTests.swift in Sources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 		DD0000000000000000000012 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;

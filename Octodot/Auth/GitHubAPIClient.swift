@@ -105,7 +105,7 @@ actor GitHubAPIClient {
             }
         }
 
-        // Fetch subject states concurrently
+        // Fetch subject states concurrently, then merge once by id.
         await withTaskGroup(of: (String, GitHubNotification.SubjectState).self) { group in
             for notification in notifications
             where notification.subjectURL != nil && notification.subjectState == .unknown {
@@ -117,8 +117,13 @@ actor GitHubAPIClient {
                 }
             }
 
+            var subjectStatesByID: [String: GitHubNotification.SubjectState] = [:]
             for await (id, state) in group {
-                if let index = notifications.firstIndex(where: { $0.id == id }) {
+                subjectStatesByID[id] = state
+            }
+
+            for index in notifications.indices {
+                if let state = subjectStatesByID[notifications[index].id] {
                     notifications[index].subjectState = state
                 }
             }
@@ -330,6 +335,8 @@ actor GitHubAPIClient {
 // MARK: - API response models
 
 private struct APINotification: Decodable {
+    private static let updatedAtFormatter = ISO8601DateFormatter()
+
     let id: String
     let unread: Bool
     let reason: String
@@ -351,7 +358,7 @@ private struct APINotification: Decodable {
     func toModel() -> GitHubNotification? {
         let reason = mapReason(reason)
         let type = mapType(subject.type)
-        let date = ISO8601DateFormatter().date(from: updatedAt) ?? Date()
+        let date = Self.updatedAtFormatter.date(from: updatedAt) ?? Date()
         let webURL = buildWebURL()
 
         return GitHubNotification(

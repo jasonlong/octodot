@@ -14,6 +14,8 @@ private let defaultSleepHandler: AppState.SleepHandler = { nanoseconds in
 final class AppState {
     typealias SleepHandler = @Sendable (UInt64) async -> Void
     typealias URLOpener = @MainActor (URL) -> Bool
+    typealias TokenDeleter = @MainActor () -> Void
+    typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
     private static let committedThreadActionsStorageKey = "AppState.committedThreadActions.v1"
 
     enum AuthStatus: Equatable {
@@ -84,10 +86,20 @@ final class AppState {
     var authStatus: AuthStatus = .signedOut
     var isPanelVisible: Bool = false
     var isSearchActive: Bool = false
-    var searchQuery: String = ""
+    var searchQuery: String = "" {
+        didSet {
+            guard searchQuery != oldValue else { return }
+            rebuildDerivedState()
+        }
+    }
     var isLoading: Bool = false
     var errorMessage: String?
-    var groupByRepo: Bool = true
+    var groupByRepo: Bool = true {
+        didSet {
+            guard groupByRepo != oldValue else { return }
+            rebuildDerivedState()
+        }
+    }
 
     private var serverNotifications: [GitHubNotification] = []
     private var selectedThreadID: String?
@@ -104,67 +116,38 @@ final class AppState {
     private let sleepHandler: SleepHandler
     private let userDefaults: UserDefaults
     private let urlOpener: URLOpener
+    private let tokenDeleter: TokenDeleter
+    private let apiClientFactory: APIClientFactory
+
+    private(set) var notifications: [GitHubNotification] = []
+    private(set) var unreadNotificationCount = 0
+    private(set) var filteredNotifications: [GitHubNotification] = []
+    private(set) var selectedNotification: GitHubNotification?
 
     var isSignedIn: Bool {
         if case .signedIn = authStatus { return true }
         return false
     }
 
-    var notifications: [GitHubNotification] {
-        projectedNotifications(from: serverNotifications)
-    }
-
-    var unreadNotificationCount: Int {
-        notifications.filter(\.isUnread).count
-    }
-
-    var filteredNotifications: [GitHubNotification] {
-        var result = notifications
-        if !searchQuery.isEmpty {
-            let query = searchQuery.lowercased()
-            result = result.filter {
-                $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
-            }
-        }
-        return orderedNotifications(result)
-    }
-
     var selectedIndex: Int {
         get {
-            let list = filteredNotifications
-            guard !list.isEmpty else { return 0 }
-
-            if let selectedThreadID,
-               let index = list.firstIndex(where: { $0.id == selectedThreadID }) {
-                return index
-            }
-
-            return min(selectedIndexStorage, list.count - 1)
+            filteredNotifications.isEmpty ? 0 : selectedIndexStorage
         }
         set {
             let list = filteredNotifications
             guard !list.isEmpty else {
                 selectedIndexStorage = 0
                 selectedThreadID = nil
+                selectedNotification = nil
                 return
             }
 
             let clamped = max(0, min(newValue, list.count - 1))
             selectedIndexStorage = clamped
-            selectedThreadID = list[clamped].id
+            let selected = list[clamped]
+            selectedThreadID = selected.id
+            selectedNotification = selected
         }
-    }
-
-    var selectedNotification: GitHubNotification? {
-        let list = filteredNotifications
-        guard !list.isEmpty else { return nil }
-
-        if let selectedThreadID,
-           let notification = list.first(where: { $0.id == selectedThreadID }) {
-            return notification
-        }
-
-        return list[min(selectedIndexStorage, list.count - 1)]
     }
 
     init(
@@ -175,7 +158,10 @@ final class AppState {
         backgroundRefreshEnabled: Bool = false,
         sleepHandler: @escaping SleepHandler = defaultSleepHandler,
         userDefaults: UserDefaults = .standard,
-        urlOpener: @escaping URLOpener = { NSWorkspace.shared.open($0) }
+        urlOpener: @escaping URLOpener = { NSWorkspace.shared.open($0) },
+        tokenDeleter: @escaping TokenDeleter = {},
+        apiClientFactory: @escaping APIClientFactory = { GitHubAPIClient(token: $0) },
+        bootstrapToken: String? = nil
     ) {
         self.authStatus = authStatus
         self.apiClient = apiClient
@@ -185,25 +171,34 @@ final class AppState {
         self.sleepHandler = sleepHandler
         self.userDefaults = userDefaults
         self.urlOpener = urlOpener
+        self.tokenDeleter = tokenDeleter
+        self.apiClientFactory = apiClientFactory
         self.committedThreadActions = Self.loadCommittedThreadActions(from: userDefaults)
         self.selectedThreadID = notifications.first?.id
+        rebuildDerivedState()
+
+        if let bootstrapToken {
+            let client = apiClientFactory(bootstrapToken)
+            self.apiClient = client
+            self.authStatus = .signedIn(username: "")
+            Task { await validateAndLoad(client: client) }
+        }
+
         startBackgroundRefreshIfNeeded()
     }
 
-    init() {
-        self.actionDispatchDelayNanoseconds = defaultActionDispatchDelayNanoseconds
-        self.backgroundRefreshEnabled = true
-        self.sleepHandler = defaultSleepHandler
-        self.userDefaults = .standard
-        self.urlOpener = { NSWorkspace.shared.open($0) }
-        self.committedThreadActions = Self.loadCommittedThreadActions(from: userDefaults)
-
-        if let token = KeychainHelper.loadToken() {
-            let client = GitHubAPIClient(token: token)
-            apiClient = client
-            authStatus = .signedIn(username: "")
-            Task { await validateAndLoad(client: client) }
-        }
+    convenience init() {
+        self.init(
+            notifications: [],
+            actionDispatchDelayNanoseconds: defaultActionDispatchDelayNanoseconds,
+            backgroundRefreshEnabled: true,
+            sleepHandler: defaultSleepHandler,
+            userDefaults: .standard,
+            urlOpener: { NSWorkspace.shared.open($0) },
+            tokenDeleter: { KeychainHelper.deleteToken() },
+            apiClientFactory: { GitHubAPIClient(token: $0) },
+            bootstrapToken: KeychainHelper.loadToken()
+        )
     }
 
     func toggleGroupByRepo() {
@@ -226,7 +221,8 @@ final class AppState {
                 self.apiClient = nil
                 self.committedThreadActions.removeAll()
                 self.persistCommittedThreadActions()
-                KeychainHelper.deleteToken()
+                tokenDeleter()
+                rebuildDerivedState()
             } else {
                 self.authStatus = .signedIn(username: "")
                 self.apiClient = client
@@ -239,7 +235,7 @@ final class AppState {
         cancelBackgroundRefresh()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
-        apiClient = GitHubAPIClient(token: token)
+        apiClient = apiClientFactory(token)
         authStatus = .signedIn(username: username)
         Task {
             await loadNotifications(force: true)
@@ -251,7 +247,7 @@ final class AppState {
         cancelBackgroundRefresh()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
-        KeychainHelper.deleteToken()
+        tokenDeleter()
         apiClient = nil
         authStatus = .signedOut
         serverNotifications = []
@@ -262,6 +258,7 @@ final class AppState {
         isSearchActive = false
         selectedIndexStorage = 0
         selectedThreadID = nil
+        rebuildDerivedState()
     }
 
     func loadNotifications(force: Bool = false) async {
@@ -276,13 +273,11 @@ final class AppState {
             reconcileCommittedThreadActions(with: fetched)
             isLoading = false
             errorMessage = nil
-            clampSelection()
-            debugLogFetchResult(force: force, fetched: fetched)
+            rebuildDerivedState()
         } catch {
             guard requestID == activeLoadRequestID else { return }
             isLoading = false
             errorMessage = error.localizedDescription
-            debugLogFetchFailure(force: force, error: error)
         }
     }
 
@@ -391,6 +386,7 @@ final class AppState {
             serverNotifications = MockData.generateNotifications()
             selectedIndexStorage = 0
             selectedThreadID = serverNotifications.first?.id
+            rebuildDerivedState()
         }
     }
 
@@ -404,21 +400,43 @@ final class AppState {
     }
 
     func clampSelection() {
-        let list = filteredNotifications
-        guard !list.isEmpty else {
+        rebuildDerivedState()
+    }
+
+    private func rebuildDerivedState() {
+        let projected = projectedNotifications(from: serverNotifications)
+        notifications = projected
+        unreadNotificationCount = projected.reduce(into: 0) { count, notification in
+            if notification.isUnread {
+                count += 1
+            }
+        }
+
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtered = query.isEmpty ? projected : projected.filter {
+            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+        }
+
+        let ordered = orderedNotifications(filtered)
+        filteredNotifications = ordered
+
+        guard !ordered.isEmpty else {
             selectedIndexStorage = 0
             selectedThreadID = nil
+            selectedNotification = nil
             return
         }
 
         if let selectedThreadID,
-           let index = list.firstIndex(where: { $0.id == selectedThreadID }) {
+           let index = ordered.firstIndex(where: { $0.id == selectedThreadID }) {
             selectedIndexStorage = index
-            return
+        } else {
+            selectedIndexStorage = min(selectedIndexStorage, ordered.count - 1)
         }
 
-        selectedIndexStorage = min(selectedIndexStorage, list.count - 1)
-        selectedThreadID = list[selectedIndexStorage].id
+        let selected = ordered[selectedIndexStorage]
+        selectedThreadID = selected.id
+        selectedNotification = selected
     }
 
     private func orderedNotifications(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
@@ -675,7 +693,7 @@ final class AppState {
         }
 
         errorMessage = nil
-        clampSelection()
+        rebuildDerivedState()
     }
 
     private func handlePendingActionFailure(_ pending: PendingThreadAction, error _: Error) {
@@ -689,7 +707,7 @@ final class AppState {
         }
 
         errorMessage = pending.kind.failureMessage
-        clampSelection()
+        rebuildDerivedState()
     }
 
     private func removeUndoEntry(for requestID: UUID) {
@@ -853,50 +871,5 @@ final class AppState {
 
         userDefaults.set(data, forKey: Self.committedThreadActionsStorageKey)
     }
-
-    #if DEBUG
-    private static let debugLogURL = URL(fileURLWithPath: "/tmp/octodot-fetch.log")
-
-    private func debugLogFetchResult(force: Bool, fetched: [GitHubNotification]) {
-        let visible = filteredNotifications.prefix(5).map {
-            "\($0.id) \($0.repository) unread=\($0.isUnread) updated=\($0.updatedAt.ISO8601Format())"
-        }.joined(separator: " | ")
-
-        let raw = fetched.prefix(5).map {
-            "\($0.id) \($0.repository) unread=\($0.isUnread) updated=\($0.updatedAt.ISO8601Format())"
-        }.joined(separator: " | ")
-
-        let line = """
-        [\(Date().ISO8601Format())] success force=\(force) count=\(fetched.count) rawTop=[\(raw)] visibleTop=[\(visible)] committed=\(committedThreadActions.count) pending=\(pendingThreadActions.count)
-        """
-        appendDebugLog(line)
-    }
-
-    private func debugLogFetchFailure(force: Bool, error: Error) {
-        let line = """
-        [\(Date().ISO8601Format())] failure force=\(force) error=\(error.localizedDescription)
-        """
-        appendDebugLog(line)
-    }
-
-    private func appendDebugLog(_ line: String) {
-        let data = (line + "\n").data(using: .utf8) ?? Data()
-        let url = Self.debugLogURL
-
-        if FileManager.default.fileExists(atPath: url.path) {
-            if let handle = try? FileHandle(forWritingTo: url) {
-                defer { try? handle.close() }
-                try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-                return
-            }
-        }
-
-        try? data.write(to: url, options: .atomic)
-    }
-    #else
-    private func debugLogFetchResult(force: Bool, fetched: [GitHubNotification]) {}
-    private func debugLogFetchFailure(force: Bool, error: Error) {}
-    #endif
 
 }

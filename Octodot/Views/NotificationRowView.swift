@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct NotificationRowView: View {
+struct NotificationRowView: View, Equatable {
     let notification: GitHubNotification
     let isSelected: Bool
 
@@ -56,7 +56,11 @@ struct NotificationRowView: View {
     }
 
     private var relativeTime: String {
-        let interval = Date().timeIntervalSince(notification.updatedAt)
+        Self.relativeTimeText(from: notification.updatedAt)
+    }
+
+    static func relativeTimeText(from updatedAt: Date, now: Date = Date()) -> String {
+        let interval = now.timeIntervalSince(updatedAt)
         if interval < 60 { return "now" }
         if interval < 3600 { return "\(Int(interval / 60))m" }
         if interval < 86400 { return "\(Int(interval / 3600))h" }

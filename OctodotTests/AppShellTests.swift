@@ -78,4 +78,50 @@ struct AppShellTests {
 
         #expect(original != reordered)
     }
+
+    @Test func notificationListBuildsRepositoryHeadersOnlyAtBoundaries() {
+        let notifications = [
+            AppStateTests.makeNotification(id: 1, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 2, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 3, repo: "acme/beta")
+        ]
+
+        let items = NotificationListView.listItems(
+            notifications: notifications,
+            selectedNotificationID: "2",
+            groupByRepo: true
+        )
+
+        #expect(items == [
+            .repositoryHeader(name: "acme/alpha", isFirst: true),
+            .notification(notifications[0], isSelected: false),
+            .notification(notifications[1], isSelected: true),
+            .repositoryHeader(name: "acme/beta", isFirst: false),
+            .notification(notifications[2], isSelected: false)
+        ])
+    }
+
+    @Test func notificationListOmitsHeadersWhenGroupingDisabled() {
+        let notifications = AppStateTests.makeNotifications(2)
+
+        let items = NotificationListView.listItems(
+            notifications: notifications,
+            selectedNotificationID: "1",
+            groupByRepo: false
+        )
+
+        #expect(items == [
+            .notification(notifications[0], isSelected: false),
+            .notification(notifications[1], isSelected: true)
+        ])
+    }
+
+    @Test func notificationRowFormatsRelativeTimeBoundaries() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-30), now: now) == "now")
+        #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-120), now: now) == "2m")
+        #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-7_200), now: now) == "2h")
+        #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-172_800), now: now) == "2d")
+    }
 }

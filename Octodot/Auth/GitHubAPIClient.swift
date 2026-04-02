@@ -9,6 +9,7 @@ extension URLSession: NetworkSession {}
 actor GitHubAPIClient {
     private let baseURL = URL(string: "https://api.github.com")!
     private let notificationsPerPage = 100
+    private let defaultPollInterval: TimeInterval = 60
     private let session: any NetworkSession
     private var token: String
     private var cachedNotifications: [GitHubNotification] = []
@@ -34,18 +35,12 @@ actor GitHubAPIClient {
         }
 
         var apiItems: [APINotification] = []
-        var page = 1
         var lastModifiedFromResponse: String?
+        var page = 1
+        var currentURL: URL? = notificationsURL(all: all, page: page)
 
-        while true {
-            var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
-            components.queryItems = [
-                URLQueryItem(name: "all", value: all ? "true" : "false"),
-                URLQueryItem(name: "per_page", value: "\(notificationsPerPage)"),
-                URLQueryItem(name: "page", value: "\(page)"),
-            ]
-
-            var request = makeRequest(url: components.url!)
+        while let requestURL = currentURL {
+            var request = makeNotificationsRequest(url: requestURL)
             if page == 1,
                !force,
                let lastModifiedValue {
@@ -69,13 +64,20 @@ actor GitHubAPIClient {
                 let pageItems = try JSONDecoder.github.decode([APINotification].self, from: data)
                 apiItems.append(contentsOf: pageItems)
 
-                if pageItems.count < notificationsPerPage {
-                    lastModifiedValue = lastModifiedFromResponse
-                    page = 0
-                    break
+                if let nextPageURL = nextPageURL(from: httpResponse) {
+                    currentURL = nextPageURL
+                    page += 1
+                    continue
                 }
 
-                page += 1
+                if pageItems.count == notificationsPerPage {
+                    page += 1
+                    currentURL = notificationsURL(all: all, page: page)
+                    continue
+                }
+
+                lastModifiedValue = lastModifiedFromResponse
+                currentURL = nil
 
             case 304 where page == 1:
                 return cachedNotifications
@@ -87,10 +89,6 @@ actor GitHubAPIClient {
                 throw APIError.rateLimited
             default:
                 throw APIError.httpError(status)
-            }
-
-            if page == 0 {
-                break
             }
         }
 
@@ -224,6 +222,12 @@ actor GitHubAPIClient {
         return user.login
     }
 
+    func suggestedRefreshDelayNanoseconds() -> UInt64 {
+        let secondsUntilRefresh = nextNotificationsRefreshAt.timeIntervalSinceNow
+        let delaySeconds = secondsUntilRefresh > 0 ? secondsUntilRefresh : defaultPollInterval
+        return UInt64(delaySeconds * 1_000_000_000)
+    }
+
     // MARK: - Private
 
     private func makeRequest(url: URL) -> URLRequest {
@@ -231,6 +235,13 @@ actor GitHubAPIClient {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        return req
+    }
+
+    private func makeNotificationsRequest(url: URL) -> URLRequest {
+        var req = makeRequest(url: url)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         return req
     }
 
@@ -262,6 +273,37 @@ actor GitHubAPIClient {
         } else {
             nextNotificationsRefreshAt = Date()
         }
+    }
+
+    private func notificationsURL(all: Bool, page: Int) -> URL {
+        var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "all", value: all ? "true" : "false"),
+            URLQueryItem(name: "per_page", value: "\(notificationsPerPage)"),
+            URLQueryItem(name: "page", value: "\(page)"),
+        ]
+        return components.url!
+    }
+
+    private func nextPageURL(from response: HTTPURLResponse?) -> URL? {
+        guard let linkHeader = response?.value(forHTTPHeaderField: "Link") else {
+            return nil
+        }
+
+        for component in linkHeader.split(separator: ",") {
+            let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.contains("rel=\"next\"") else { continue }
+            guard let start = trimmed.firstIndex(of: "<"),
+                  let end = trimmed.firstIndex(of: ">"),
+                  start < end else {
+                continue
+            }
+
+            let urlString = String(trimmed[trimmed.index(after: start)..<end])
+            return URL(string: urlString)
+        }
+
+        return nil
     }
 
     // MARK: - Error

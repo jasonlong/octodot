@@ -41,8 +41,10 @@ struct AppStateTests {
         _ count: Int = 5,
         apiClient: GitHubAPIClient? = nil,
         actionDispatchDelayNanoseconds: UInt64 = 0,
+        backgroundRefreshEnabled: Bool = false,
         sleepHandler: @escaping AppState.SleepHandler = { _ in },
-        userDefaults: UserDefaults? = nil
+        userDefaults: UserDefaults? = nil,
+        urlOpener: @escaping AppState.URLOpener = { _ in true }
     ) -> AppState {
         let resolvedUserDefaults = userDefaults ?? makeIsolatedUserDefaults()
         return AppState(
@@ -50,8 +52,10 @@ struct AppStateTests {
             authStatus: apiClient == nil ? .signedOut : .signedIn(username: "octodot"),
             apiClient: apiClient,
             actionDispatchDelayNanoseconds: actionDispatchDelayNanoseconds,
+            backgroundRefreshEnabled: backgroundRefreshEnabled,
             sleepHandler: sleepHandler,
-            userDefaults: resolvedUserDefaults
+            userDefaults: resolvedUserDefaults,
+            urlOpener: urlOpener
         )
     }
 
@@ -59,8 +63,10 @@ struct AppStateTests {
         results: [Result<(Data, HTTPURLResponse), Error>] = [],
         count: Int = 5,
         actionDispatchDelayNanoseconds: UInt64 = 0,
+        backgroundRefreshEnabled: Bool = false,
         sleepHandler: @escaping AppState.SleepHandler = { _ in },
-        userDefaults: UserDefaults? = nil
+        userDefaults: UserDefaults? = nil,
+        urlOpener: @escaping AppState.URLOpener = { _ in true }
     ) -> (AppState, StubNetworkSession) {
         let session = StubNetworkSession(results: results)
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
@@ -68,8 +74,10 @@ struct AppStateTests {
             count,
             apiClient: client,
             actionDispatchDelayNanoseconds: actionDispatchDelayNanoseconds,
+            backgroundRefreshEnabled: backgroundRefreshEnabled,
             sleepHandler: sleepHandler,
-            userDefaults: userDefaults
+            userDefaults: userDefaults,
+            urlOpener: urlOpener
         )
         return (state, session)
     }
@@ -87,14 +95,14 @@ struct AppStateTests {
         )!
     }
 
-    static func singleNotificationPayload(id: String) -> Data {
+    static func singleNotificationPayload(id: String, isUnread: Bool = true, updatedAt: String = "2026-04-01T12:00:00Z") -> Data {
         """
         [
           {
             "id": "\(id)",
-            "unread": true,
+            "unread": \(isUnread ? "true" : "false"),
             "reason": "review_requested",
-            "updated_at": "2026-04-01T12:00:00Z",
+            "updated_at": "\(updatedAt)",
             "subject": {
               "title": "Notification \(id)",
               "url": null,
@@ -156,6 +164,16 @@ struct AppStateTests {
     static let realSleep: AppState.SleepHandler = { nanoseconds in
         guard nanoseconds > 0 else { return }
         try? await Task.sleep(nanoseconds: nanoseconds)
+    }
+
+    actor BackgroundRefreshSleeper {
+        private var callCount = 0
+
+        func sleep(nanoseconds _: UInt64) async {
+            callCount += 1
+            guard callCount > 1 else { return }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
     }
 
     // MARK: - Navigation
@@ -246,11 +264,27 @@ struct AppStateTests {
 
     // MARK: - Group by repo
 
-    @Test func groupByRepoSortsByRepository() {
-        let state = Self.makeState()
+    @Test func groupByRepoSortsRepositoriesByMostRecentNotification() {
+        let notifications = [
+            Self.makeNotification(id: 4, repo: "acme/older"),
+            Self.makeNotification(id: 1, repo: "acme/newer"),
+            Self.makeNotification(id: 2, repo: "acme/newer"),
+        ]
+        let state = AppState(notifications: notifications)
         state.groupByRepo = true
         let repos = state.filteredNotifications.map(\.repository)
-        #expect(repos == repos.sorted())
+        #expect(repos == ["acme/newer", "acme/newer", "acme/older"])
+    }
+
+    @Test func groupByRepoKeepsNotificationsNewestFirstWithinRepository() {
+        let notifications = [
+            Self.makeNotification(id: 4, repo: "acme/alpha"),
+            Self.makeNotification(id: 1, repo: "acme/alpha"),
+            Self.makeNotification(id: 3, repo: "acme/beta"),
+        ]
+        let state = AppState(notifications: notifications)
+        state.groupByRepo = true
+        #expect(state.filteredNotifications.map(\.id) == ["1", "4", "3"])
     }
 
     @Test func toggleGroupByRepoFlips() {
@@ -289,6 +323,140 @@ struct AppStateTests {
         await Self.settleTasks()
         #expect((await session.recordedRequests()).count == 1)
         #expect(state.notifications[0].isUnread == false)
+    }
+
+    @Test func refreshKeepsCommittedMarkReadUntilServerCatchesUp() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 205
+                    )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: true),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200,
+                        headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                    )
+                )),
+            ],
+            count: 1
+        )
+
+        state.groupByRepo = false
+        state.selectedIndex = 0
+        state.markRead()
+        await Self.settleTasks()
+
+        #expect(state.notifications[0].isUnread == false)
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications[0].isUnread == false)
+        #expect((await session.recordedRequests()).count == 2)
+    }
+
+    @Test func openInBrowserMarksUnreadThreadReadImmediately() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 205
+                    )
+                ))
+            ],
+            count: 1,
+            actionDispatchDelayNanoseconds: 50_000_000,
+            sleepHandler: Self.realSleep,
+            urlOpener: { _ in true }
+        )
+
+        state.groupByRepo = false
+        state.selectedIndex = 0
+
+        #expect(state.openInBrowser() == true)
+        #expect(state.notifications[0].isUnread == false)
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.first?.httpMethod == "PATCH")
+    }
+
+    @Test func backgroundRefreshLoadsNotificationsWhilePanelIsClosed() async {
+        let sleeper = BackgroundRefreshSleeper()
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Self.singleNotificationPayload(id: "99"),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200,
+                        headers: ["X-Poll-Interval": "30"]
+                    )
+                ))
+            ],
+            count: 0,
+            backgroundRefreshEnabled: true,
+            sleepHandler: { nanoseconds in
+                await sleeper.sleep(nanoseconds: nanoseconds)
+            }
+        )
+
+        #expect(state.isPanelVisible == false)
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications.first?.id == "99")
+
+        state.signOut()
+    }
+
+    @Test func newerRefreshResultWinsWhenLoadsCompleteOutOfOrder() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.singleNotificationPayload(id: "old"),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                ),
+                delayNanoseconds: 80_000_000
+            ),
+            .success(
+                payload: Self.singleNotificationPayload(id: "new"),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                ),
+                delayNanoseconds: 0
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = Self.makeState(0, apiClient: client)
+        state.groupByRepo = false
+
+        async let firstLoad: Void = state.loadNotifications(force: true)
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        async let secondLoad: Void = state.loadNotifications(force: true)
+
+        _ = await (firstLoad, secondLoad)
+
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications.first?.id == "new")
     }
 
     // MARK: - Done (remove + advance)
@@ -601,13 +769,13 @@ struct AppStateTests {
             await session.recordedRequests().count == 2
         }
 
-        #expect(state.filteredNotifications.map(\.id) == ["1"])
+        #expect(state.filteredNotifications.map(\.id) == ["0"])
 
         await state.loadNotifications(force: false)
-        #expect(state.filteredNotifications.map(\.id) == ["1"])
+        #expect(state.filteredNotifications.map(\.id) == ["0"])
 
         await state.loadNotifications(force: true)
-        #expect(state.filteredNotifications.map(\.id) == ["1"])
+        #expect(state.filteredNotifications.map(\.id) == ["0"])
         #expect((await session.recordedRequests()).count == 3)
     }
 
@@ -923,6 +1091,45 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.url?.query?.contains("per_page=100") == true)
         #expect(requests.first?.url?.query?.contains("page=1") == true)
         #expect(requests.last?.url?.query?.contains("page=2") == true)
+        #expect(requests.first?.cachePolicy == .reloadIgnoringLocalCacheData)
+    }
+
+    @Test func fetchNotificationsFollowsLinkHeaderPagination() async throws {
+        let firstPage = Self.notificationsPayload(ids: ["1"]).data(using: .utf8)!
+        let secondPage = Self.notificationsPayload(ids: ["2"]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                firstPage,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?page=1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Link": #"<https://api.github.com/notifications?all=false&per_page=100&page=2>; rel="next""#,
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                    ]
+                )!
+            )),
+            .success((
+                secondPage,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?page=2")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let requests = await session.recordedRequests()
+
+        #expect(notifications.count == 2)
+        #expect(requests.count == 2)
+        #expect(requests.last?.url?.absoluteString.contains("page=2") == true)
+        #expect(requests.first?.cachePolicy == .reloadIgnoringLocalCacheData)
     }
 
     @Test func fetchNotificationsReusesSubjectStateForUnchangedItems() async throws {
@@ -1065,5 +1272,34 @@ private actor StubNetworkSession: NetworkSession {
 
     enum StubError: Error {
         case missingResponse
+    }
+}
+
+private actor DelayedStubNetworkSession: NetworkSession {
+    enum ResultEnvelope {
+        case success(payload: Data, response: HTTPURLResponse, delayNanoseconds: UInt64)
+        case failure(error: Error, delayNanoseconds: UInt64)
+    }
+
+    private var results: [ResultEnvelope]
+
+    init(results: [ResultEnvelope]) {
+        self.results = results
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard !results.isEmpty else {
+            throw StubNetworkSession.StubError.missingResponse
+        }
+
+        let result = results.removeFirst()
+        switch result {
+        case .success(let payload, let response, let delayNanoseconds):
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            return (payload, response)
+        case .failure(let error, let delayNanoseconds):
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            throw error
+        }
     }
 }

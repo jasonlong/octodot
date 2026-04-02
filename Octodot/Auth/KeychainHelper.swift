@@ -14,7 +14,11 @@ enum KeychainHelper {
     }
 
     private static var shouldManageTrustedAccess: Bool {
+        #if DEBUG
+        false
+        #else
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+        #endif
     }
 
     static func saveToken(_ token: String) throws {
@@ -50,7 +54,42 @@ enum KeychainHelper {
             throw KeychainError.invalidData
         }
 
-        deleteToken(service: service, account: account)
+        var existingItem: SecKeychainItem?
+        let findStatus = service.withCString { serviceCString in
+            account.withCString { accountCString in
+                SecKeychainFindGenericPassword(
+                    nil,
+                    UInt32(service.utf8.count),
+                    serviceCString,
+                    UInt32(account.utf8.count),
+                    accountCString,
+                    nil,
+                    nil,
+                    &existingItem
+                )
+            }
+        }
+
+        if findStatus == errSecSuccess, let existingItem {
+            let updateStatus = data.withUnsafeBytes { bytes in
+                SecKeychainItemModifyAttributesAndData(
+                    existingItem,
+                    nil,
+                    UInt32(data.count),
+                    bytes.baseAddress!
+                )
+            }
+            guard updateStatus == errSecSuccess else {
+                throw KeychainError.unhandledStatus(updateStatus)
+            }
+
+            repairTrustedAccessIfNeeded(for: existingItem, service: service, account: account)
+            return
+        }
+
+        guard findStatus == errSecItemNotFound else {
+            throw KeychainError.unhandledStatus(findStatus)
+        }
 
         var item: SecKeychainItem?
         let addStatus = service.withCString { serviceCString in

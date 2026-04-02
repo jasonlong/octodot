@@ -116,8 +116,8 @@ struct PanelContentView: View {
                 shortcutHint(key: "j/k", label: "nav")
                 shortcutHint(key: "d", label: "done")
                 shortcutHint(key: "m", label: "read")
-                shortcutHint(key: "u", label: "unsub")
-                shortcutHint(key: "z", label: "undo")
+                shortcutHint(key: "x", label: "unsub")
+                shortcutHint(key: "u", label: "undo")
                 shortcutHint(key: "o", label: "open")
                 shortcutHint(key: "/", label: "search")
             }
@@ -195,16 +195,18 @@ struct PanelContentView: View {
         case KeyEquivalent("m"):
             appState.markRead()
             return .handled
-        case KeyEquivalent("u"):
+        case KeyEquivalent("x"):
             appState.unsubscribeFromThread()
             return .handled
         case KeyEquivalent("o"), .return:
-            appState.openInBrowser()
+            if appState.openInBrowser() {
+                closePanel()
+            }
             return .handled
         case KeyEquivalent("y"):
             appState.copyURL()
             return .handled
-        case KeyEquivalent("z"):
+        case KeyEquivalent("u"):
             appState.undo()
             return .handled
         case KeyEquivalent("s"):

@@ -1,12 +1,21 @@
 import AppKit
+import Observation
 import SwiftUI
 
 @MainActor
 final class StatusItemController {
+    private enum Constants {
+        static let activeAlpha: CGFloat = 1.0
+        static let dimmedAlpha: CGFloat = 0.45
+        static let iconSize = NSSize(width: 18, height: 18)
+    }
+
     private let statusItem: NSStatusItem
     private let panel: NotificationPanel
     private let appState: AppState
     private let contextMenu: NSMenu
+    private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
+    private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
 
     init(appState: AppState) {
         self.appState = appState
@@ -16,10 +25,7 @@ final class StatusItemController {
         self.contextMenu = NSMenu()
 
         if let button = statusItem.button {
-            let icon = NSImage(named: "menubar-icon")
-            icon?.size = NSSize(width: 18, height: 18)
-            icon?.isTemplate = true
-            button.image = icon
+            button.image = defaultIcon
             button.action = #selector(handleClick)
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -29,6 +35,8 @@ final class StatusItemController {
         quitItem.target = self
         contextMenu.addItem(quitItem)
 
+        updateStatusItemAppearance()
+        observeStatusItemState()
         setupGlobalHotkey()
     }
 
@@ -96,5 +104,32 @@ final class StatusItemController {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
+    }
+
+    private func observeStatusItemState() {
+        withObservationTracking {
+            _ = appState.isSignedIn
+            _ = appState.unreadNotificationCount
+            updateStatusItemAppearance()
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.observeStatusItemState()
+            }
+        }
+    }
+
+    private func updateStatusItemAppearance() {
+        guard let button = statusItem.button else { return }
+
+        let hasUnreadNotifications = appState.isSignedIn && appState.unreadNotificationCount > 0
+        button.image = hasUnreadNotifications ? unreadIcon : defaultIcon
+        button.alphaValue = hasUnreadNotifications ? Constants.activeAlpha : Constants.dimmedAlpha
+    }
+
+    private static func makeIcon(named name: String) -> NSImage? {
+        let icon = NSImage(named: name)
+        icon?.size = Constants.iconSize
+        icon?.isTemplate = true
+        return icon
     }
 }

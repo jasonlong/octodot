@@ -1,6 +1,7 @@
 # Xcode
 build/
 DerivedData/
+.deriveddata/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcworkspace/xcuserdata/
@@ -11,3 +12,6 @@ DerivedData/
 # SwiftPM
 .build/
 Package.resolved
+
+# Coverage
+*.profraw

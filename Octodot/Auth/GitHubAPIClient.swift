@@ -56,6 +56,7 @@ actor GitHubAPIClient {
     func fetchNotifications(all: Bool = false, force: Bool = false) async throws -> [GitHubNotification] {
         let scope = FeedScope(all: all)
         let cachedFeed = feedCache(for: scope)
+        var shouldUseConditionalRequest = !force && cachedFeed.lastModifiedValue != nil
         DebugTrace.log(
             "fetch start scope=\(Self.debugName(for: scope)) force=\(force) " +
             "cached.count=\(cachedFeed.notifications.count) ifModified=\(cachedFeed.lastModifiedValue ?? "nil")"
@@ -79,7 +80,7 @@ actor GitHubAPIClient {
         while let requestURL = currentURL {
             var request = makeNotificationsRequest(url: requestURL)
             if page == 1,
-               !force,
+               shouldUseConditionalRequest,
                let lastModifiedValue = cachedFeed.lastModifiedValue {
                 request.setValue(lastModifiedValue, forHTTPHeaderField: "If-Modified-Since")
             }
@@ -98,11 +99,29 @@ actor GitHubAPIClient {
 
             switch status {
             case 200...299:
+                if page == 1,
+                   shouldUseConditionalRequest {
+                    DebugTrace.log(
+                        "fetch conditional-hit scope=\(Self.debugName(for: scope)) " +
+                        "decoded.count=pending refetch-full-snapshot=true"
+                    )
+                    shouldUseConditionalRequest = false
+                    apiItems.removeAll()
+                    lastModifiedFromResponse = nil
+                    page = 1
+                    currentURL = notificationsURL(all: all, page: 1)
+                    continue
+                }
+
                 if page == 1 {
                     lastModifiedFromResponse = httpResponse?.value(forHTTPHeaderField: "Last-Modified")
                 }
 
                 let pageItems = try JSONDecoder.github.decode([APINotification].self, from: data)
+                DebugTrace.log(
+                    "fetch page scope=\(Self.debugName(for: scope)) page=\(page) decoded.count=\(pageItems.count) " +
+                    "decoded.top=\(Self.topIDs(in: pageItems.map(\.id))) link=\(httpResponse?.value(forHTTPHeaderField: "Link") ?? "nil")"
+                )
                 apiItems.append(contentsOf: pageItems)
 
                 if let nextPageURL = nextPageURL(from: httpResponse) {
@@ -158,7 +177,7 @@ actor GitHubAPIClient {
         }
         DebugTrace.log(
             "fetch complete scope=\(Self.debugName(for: scope)) count=\(notifications.count) " +
-            "top=\(Self.topIDs(in: notifications))"
+            "top=\(Self.topIDs(in: notifications)) bodyHint=\(Self.debugFeedHint(for: notifications))"
         )
         return notifications
     }
@@ -293,14 +312,6 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
         }
-        updateFeedCache(.all) { cache in
-            if let index = cache.notifications.firstIndex(where: { $0.threadId == threadId }) {
-                cache.notifications[index].isUnread = false
-            }
-        }
-        updateFeedCache(.unread) { cache in
-            cache.notifications.removeAll { $0.threadId == threadId }
-        }
         invalidateFeedCaches([.all, .unread])
     }
 
@@ -315,7 +326,6 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
         }
-        removeActivity(notification, from: FeedScope.allCases)
         invalidateFeedCaches(FeedScope.allCases)
     }
 
@@ -343,11 +353,10 @@ actor GitHubAPIClient {
             throw APIError.httpError(doneStatus)
         }
 
-        removeActivity(notification, from: FeedScope.allCases)
         invalidateFeedCaches(FeedScope.allCases)
     }
 
-    func restoreSubscription(threadId: String, notification: GitHubNotification, originalIndex: Int) async throws {
+    func restoreSubscription(threadId: String, notification _: GitHubNotification) async throws {
         let traceID = UUID().uuidString
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
         var req = makeRequest(url: url)
@@ -362,16 +371,6 @@ actor GitHubAPIClient {
             throw APIError.httpError(status)
         }
 
-        updateFeedCache(.all) { cache in
-            upsertThread(notification, originalIndex: originalIndex, into: &cache.notifications)
-        }
-        updateFeedCache(.unread) { cache in
-            if notification.isUnread {
-                upsertThread(notification, originalIndex: originalIndex, into: &cache.notifications)
-            } else {
-                cache.notifications.removeAll { $0.threadId == threadId }
-            }
-        }
         invalidateFeedCaches(FeedScope.allCases)
     }
 
@@ -473,27 +472,6 @@ actor GitHubAPIClient {
         }
     }
 
-    private func removeActivity(_ notification: GitHubNotification, from scopes: some Sequence<FeedScope>) {
-        for scope in scopes {
-            updateFeedCache(scope) { cache in
-                cache.notifications.removeAll { $0.matchesActivity(as: notification) }
-            }
-        }
-    }
-
-    private func upsertThread(
-        _ notification: GitHubNotification,
-        originalIndex: Int,
-        into notifications: inout [GitHubNotification]
-    ) {
-        if let index = notifications.firstIndex(where: { $0.threadId == notification.threadId }) {
-            notifications[index] = notification
-        } else {
-            let insertAt = min(max(0, originalIndex), notifications.count)
-            notifications.insert(notification, at: insertAt)
-        }
-    }
-
     private func logActionResponse(
         traceID: String,
         action: String,
@@ -525,6 +503,18 @@ actor GitHubAPIClient {
     private static func topIDs(in notifications: [GitHubNotification], limit: Int = 10) -> String {
         let ids = notifications.prefix(limit).map(\.id)
         return ids.isEmpty ? "none" : ids.joined(separator: ",")
+    }
+
+    private static func topIDs(in ids: [String], limit: Int = 10) -> String {
+        let top = ids.prefix(limit)
+        return top.isEmpty ? "none" : top.joined(separator: ",")
+    }
+
+    private static func debugFeedHint(for notifications: [GitHubNotification], limit: Int = 5) -> String {
+        let preview = notifications.prefix(limit).map {
+            "\($0.id)@\(ISO8601DateFormatter().string(from: $0.updatedAt))"
+        }
+        return preview.isEmpty ? "none" : preview.joined(separator: ",")
     }
 
     private static func debugName(for scope: FeedScope) -> String {

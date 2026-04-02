@@ -149,6 +149,58 @@ struct GitHubAPIClientTests {
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
     }
 
+    @Test func conditional200TriggersFullSnapshotRefetch() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1", "2"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "0",
+                    ]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["3"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "0",
+                    ]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["1", "2", "3", "4"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let initial = try await client.fetchNotifications(force: true)
+        let refreshed = try await client.fetchNotifications(force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(initial.map(\.id) == ["2", "1"])
+        #expect(refreshed.map(\.id) == ["4", "3", "2", "1"])
+        #expect(requests.count == 3)
+        #expect(requests[1].value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
+        #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
     @Test func forceRefreshBypassesConditionalHeaders() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -562,6 +614,141 @@ struct GitHubAPIClientTests {
         #expect(requests[1].url?.path == "/notifications/threads/thread-1")
     }
 
+    @Test func doneInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1", "2"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1")!,
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["2", "3"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:05:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let initial = try await client.fetchNotifications(all: false, force: true)
+        try await client.markAsDone(notification: notification)
+        let refreshed = try await client.fetchNotifications(all: false, force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(initial.map(\.id) == ["2", "1"])
+        #expect(refreshed.map(\.id) == ["3", "2"])
+        #expect(requests.count == 3)
+        #expect(requests[2].httpMethod == "GET")
+        #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
+    @Test func unsubscribeInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1", "2"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+            .success((
+                #"{"subscribed":true,"ignored":true}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1")!,
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["2", "3"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:05:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let initial = try await client.fetchNotifications(all: false, force: true)
+        try await client.unsubscribe(notification: notification)
+        let refreshed = try await client.fetchNotifications(all: false, force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(initial.map(\.id) == ["2", "1"])
+        #expect(refreshed.map(\.id) == ["3", "2"])
+        #expect(requests.count == 4)
+        #expect(requests[3].httpMethod == "GET")
+        #expect(requests[3].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
     @Test func restoreSubscriptionClearsIgnoredThreadSubscription() async throws {
         let notification = GitHubNotification(
             id: "1",
@@ -589,7 +776,7 @@ struct GitHubAPIClientTests {
         ])
 
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
-        try await client.restoreSubscription(threadId: "thread-1", notification: notification, originalIndex: 0)
+        try await client.restoreSubscription(threadId: "thread-1", notification: notification)
         let requests = await session.recordedRequests()
         let request = try #require(requests.first)
         let body = try #require(request.httpBody)

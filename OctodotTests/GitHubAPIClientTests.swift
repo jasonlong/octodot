@@ -459,6 +459,149 @@ struct GitHubAPIClientTests {
         #expect(resolvedStates["3"] == nil)
     }
 
+    @Test func markAsReadInvalidatesUnreadCacheForNextRefresh() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1", "2"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/1")!,
+                    statusCode: 205,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["2", "3"]).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:05:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let initial = try await client.fetchNotifications(all: false, force: true)
+        try await client.markAsRead(threadId: "1")
+        let refreshed = try await client.fetchNotifications(all: false, force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(initial.map(\.id) == ["2", "1"])
+        #expect(refreshed.map(\.id) == ["3", "2"])
+        #expect(requests.count == 3)
+        #expect(requests[2].httpMethod == "GET")
+        #expect(requests[2].url?.query?.contains("all=false") == true)
+        #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
+    @Test func unsubscribeIgnoresFutureUpdatesAndRemovesThreadFromInbox() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"subscribed":true,"ignored":true}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1")!,
+                    statusCode: 204,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        try await client.unsubscribe(notification: notification)
+        let requests = await session.recordedRequests()
+        let request = try #require(requests.first)
+        let body = try #require(request.httpBody)
+        let bodyObject = try #require(JSONSerialization.jsonObject(with: body) as? [String: Bool])
+
+        #expect(requests.count == 2)
+        #expect(request.httpMethod == "PUT")
+        #expect(request.url?.path == "/notifications/threads/thread-1/subscription")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(bodyObject["ignored"] == true)
+        #expect(bodyObject["subscribed"] == nil)
+        #expect(requests[1].httpMethod == "DELETE")
+        #expect(requests[1].url?.path == "/notifications/threads/thread-1")
+    }
+
+    @Test func restoreSubscriptionClearsIgnoredThreadSubscription() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"subscribed":true,"ignored":false}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        try await client.restoreSubscription(threadId: "thread-1", notification: notification, originalIndex: 0)
+        let requests = await session.recordedRequests()
+        let request = try #require(requests.first)
+        let body = try #require(request.httpBody)
+        let bodyObject = try #require(JSONSerialization.jsonObject(with: body) as? [String: Bool])
+
+        #expect(request.httpMethod == "PUT")
+        #expect(request.url?.path == "/notifications/threads/thread-1/subscription")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(bodyObject["ignored"] == false)
+        #expect(bodyObject["subscribed"] == nil)
+    }
+
     private static func notificationsPayload(
         id: String,
         updatedAt: String = "2026-04-01T12:00:00Z",

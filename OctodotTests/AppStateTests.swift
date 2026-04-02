@@ -951,6 +951,300 @@ struct AppStateTests {
         #expect((await session.recordedRequests()).count == 1)
     }
 
+    @Test func unsubscribeOnlyRemovesSelectedNotificationWhenTwoRowsShareARepository() async {
+        let notifications = [
+            GitHubNotification(
+                id: "top",
+                threadId: "top",
+                title: "Add TM to Database Traffic Control",
+                repository: "planetscale/www",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: Date(),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/www/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "second",
+                threadId: "second",
+                title: "Add pricing link to docs llms.txt",
+                repository: "planetscale/www",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: Date().addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/www/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"ignored":true}"#.data(using: .utf8)!,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/top/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/top",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "top")
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.map(\.id) == ["second"])
+        #expect(state.selectedNotification?.id == "second")
+
+        await Self.settleTasks()
+        #expect((await session.recordedRequests()).count == 2)
+    }
+
+    @Test func groupedUnsubscribeDoesNotReorderOtherRepositoryBlocksDuringLocalHide() {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "a-top",
+                threadId: "a-top",
+                title: "Top in repo A",
+                repository: "acme/a",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/a/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "b-top",
+                threadId: "b-top",
+                title: "Top in repo B",
+                repository: "acme/b",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/b/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "a-second",
+                threadId: "a-second",
+                title: "Second in repo A",
+                repository: "acme/a",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-120),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/a/pull/3")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "c-top",
+                threadId: "c-top",
+                title: "Top in repo C",
+                repository: "acme/c",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-180),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/c/pull/4")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 2_500_000_000,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "a-top")
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.map(\.id) == ["a-second", "b-top", "c-top"])
+    }
+
+    @Test func groupedUnsubscribeDoesNotReorderOtherRepositoryBlocksAfterSuccess() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "a-top",
+                threadId: "a-top",
+                title: "Top in repo A",
+                repository: "acme/a",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/a/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "b-top",
+                threadId: "b-top",
+                title: "Top in repo B",
+                repository: "acme/b",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/b/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "a-second",
+                threadId: "a-second",
+                title: "Second in repo A",
+                repository: "acme/a",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-120),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/a/pull/3")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "c-top",
+                threadId: "c-top",
+                title: "Top in repo C",
+                repository: "acme/c",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-180),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/c/pull/4")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"ignored":true}"#.data(using: .utf8)!,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/a-top/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/a-top",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "a-top")
+        state.unsubscribeFromThread()
+
+        await Self.settleTasks()
+
+        #expect(state.filteredNotifications.map(\.id) == ["a-second", "b-top", "c-top"])
+    }
+
+    @Test func unsubscribeOnlyRemovesSelectedActivitySnapshotWhenRowsShareAThread() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "first",
+                threadId: "shared-thread",
+                title: "Add TM to Database Traffic Control",
+                repository: "planetscale/www",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/www/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "second",
+                threadId: "shared-thread",
+                title: "Add pricing link to docs llms.txt",
+                repository: "planetscale/www",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/www/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"ignored":true}"#.data(using: .utf8)!,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/shared-thread/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/shared-thread",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = true
+        state.selectNotification(id: "first")
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.map(\.id) == ["second"])
+        #expect(state.selectedNotification?.id == "second")
+
+        await Self.settleTasks()
+        #expect((await session.recordedRequests()).count == 2)
+    }
+
     // MARK: - Undo
 
     @Test func undoRestoresPendingDoneBeforeItHitsTheAPI() async {
@@ -1314,7 +1608,7 @@ struct AppStateTests {
 
         await state.loadNotifications(force: true)
         #expect(state.filteredNotifications.map(\.id) == ["0"])
-        #expect((await session.recordedRequests()).count == 3)
+        #expect((await session.recordedRequests()).count == 4)
     }
 
     @Test func newerActivityRevivesCommittedDoneThread() async {
@@ -1375,13 +1669,20 @@ struct AppStateTests {
         #expect((await session.recordedRequests()).count == 2)
     }
 
-    @Test func refreshKeepsCommittedUnsubscribeHiddenAndUndoStillRestores() async {
+    @Test func refreshKeepsCommittedUnsubscribeHiddenAfterSuccess() async {
         let (state, session) = Self.makeAuthedState(
             results: [
                 .success((
-                    Data(),
+                    #"{"ignored":true}"#.data(using: .utf8)!,
                     Self.httpResponse(
                         url: "https://api.github.com/notifications/threads/0/subscription",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
                         statusCode: 204
                     )
                 )),
@@ -1391,13 +1692,6 @@ struct AppStateTests {
                         url: "https://api.github.com/notifications?page=1",
                         statusCode: 200,
                         headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
-                    )
-                )),
-                .success((
-                    Data(),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications/threads/0/subscription",
-                        statusCode: 200
                     )
                 )),
             ],
@@ -1415,7 +1709,7 @@ struct AppStateTests {
         #expect(state.filteredNotifications.isEmpty)
 
         state.undo()
-        #expect(state.notifications.contains(where: { $0.id == "0" }))
+        #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
 
         await Self.waitUntil {
             await session.recordedRequests().count == 3
@@ -1423,25 +1717,32 @@ struct AppStateTests {
 
         let requests = await session.recordedRequests()
         #expect(requests.count == 3)
-        #expect(requests[0].httpMethod == "DELETE")
-        #expect(requests[1].httpMethod == "GET")
-        #expect(requests[2].httpMethod == "PUT")
+        #expect(requests[0].httpMethod == "PUT")
+        if let body = requests[0].httpBody,
+           let bodyObject = try? JSONSerialization.jsonObject(with: body) as? [String: Bool] {
+            #expect(bodyObject["ignored"] == true)
+            #expect(bodyObject["subscribed"] == nil)
+        } else {
+            Issue.record("Expected unsubscribe request body")
+        }
+        #expect(requests[1].httpMethod == "DELETE")
+        #expect(requests[2].httpMethod == "GET")
     }
 
-    @Test func unsubscribeSuccessCanBeUndoneWithRestoreSubscription() async {
+    @Test func unsubscribeSuccessIsNotUndoableAfterDispatch() async {
         let (state, session) = Self.makeAuthedState(results: [
             .success((
-                Data(),
+                #"{"ignored":true}"#.data(using: .utf8)!,
                 Self.httpResponse(
                     url: "https://api.github.com/notifications/threads/0/subscription",
-                    statusCode: 204
+                    statusCode: 200
                 )
             )),
             .success((
                 Data(),
                 Self.httpResponse(
-                    url: "https://api.github.com/notifications/threads/0/subscription",
-                    statusCode: 200
+                    url: "https://api.github.com/notifications/threads/0",
+                    statusCode: 204
                 )
             )),
         ])
@@ -1455,7 +1756,7 @@ struct AppStateTests {
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
 
         state.undo()
-        #expect(state.notifications.contains(where: { $0.id == "0" }))
+        #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
 
         await Self.waitUntil {
             await session.recordedRequests().count == 2
@@ -1463,8 +1764,15 @@ struct AppStateTests {
 
         let requests = await session.recordedRequests()
         #expect(requests.count == 2)
-        #expect(requests.first?.httpMethod == "DELETE")
-        #expect(requests.last?.httpMethod == "PUT")
-        #expect(state.notifications.contains(where: { $0.id == "0" }))
+        #expect(requests.first?.httpMethod == "PUT")
+        if let body = requests.first?.httpBody,
+           let bodyObject = try? JSONSerialization.jsonObject(with: body) as? [String: Bool] {
+            #expect(bodyObject["ignored"] == true)
+            #expect(bodyObject["subscribed"] == nil)
+        } else {
+            Issue.record("Expected unsubscribe request body")
+        }
+        #expect(requests.last?.httpMethod == "DELETE")
+        #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
     }
 }

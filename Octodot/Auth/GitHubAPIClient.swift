@@ -56,10 +56,18 @@ actor GitHubAPIClient {
     func fetchNotifications(all: Bool = false, force: Bool = false) async throws -> [GitHubNotification] {
         let scope = FeedScope(all: all)
         let cachedFeed = feedCache(for: scope)
+        DebugTrace.log(
+            "fetch start scope=\(Self.debugName(for: scope)) force=\(force) " +
+            "cached.count=\(cachedFeed.notifications.count) ifModified=\(cachedFeed.lastModifiedValue ?? "nil")"
+        )
 
         if !force,
            !cachedFeed.notifications.isEmpty,
            Date() < cachedFeed.nextNotificationsRefreshAt {
+            DebugTrace.log(
+                "fetch cache-hit scope=\(Self.debugName(for: scope)) count=\(cachedFeed.notifications.count) " +
+                "top=\(Self.topIDs(in: cachedFeed.notifications))"
+            )
             return cachedFeed.notifications
         }
 
@@ -79,6 +87,10 @@ actor GitHubAPIClient {
             let (data, response) = try await session.data(for: request)
             let httpResponse = response as? HTTPURLResponse
             let status = httpResponse?.statusCode ?? 0
+            DebugTrace.log(
+                "fetch response scope=\(Self.debugName(for: scope)) page=\(page) status=\(status) " +
+                "ifModified=\(request.value(forHTTPHeaderField: "If-Modified-Since") ?? "nil")"
+            )
 
             if page == 1 {
                 updatePollingHeaders(from: httpResponse, scope: scope)
@@ -111,6 +123,10 @@ actor GitHubAPIClient {
                 currentURL = nil
 
             case 304 where page == 1:
+                DebugTrace.log(
+                    "fetch not-modified scope=\(Self.debugName(for: scope)) cached.count=\(cachedFeed.notifications.count) " +
+                    "top=\(Self.topIDs(in: cachedFeed.notifications))"
+                )
                 return cachedFeed.notifications
             case 401:
                 throw APIError.unauthorized
@@ -140,6 +156,10 @@ actor GitHubAPIClient {
             cache.notifications = notifications
             cache.lastModifiedValue = lastModifiedFromResponse
         }
+        DebugTrace.log(
+            "fetch complete scope=\(Self.debugName(for: scope)) count=\(notifications.count) " +
+            "top=\(Self.topIDs(in: notifications))"
+        )
         return notifications
     }
 
@@ -263,11 +283,13 @@ actor GitHubAPIClient {
     // MARK: - Mark as read
 
     func markAsRead(threadId: String) async throws {
+        let traceID = UUID().uuidString
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)")
         var req = makeRequest(url: url)
         req.httpMethod = "PATCH"
-        let (_, response) = try await session.data(for: req)
+        let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "mark-read", step: "patch-thread", threadId: threadId, request: req, response: response, data: data)
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
         }
@@ -279,41 +301,63 @@ actor GitHubAPIClient {
         updateFeedCache(.unread) { cache in
             cache.notifications.removeAll { $0.threadId == threadId }
         }
+        invalidateFeedCaches([.all, .unread])
     }
 
     func markAsDone(notification: GitHubNotification) async throws {
+        let traceID = UUID().uuidString
         let url = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
         var req = makeRequest(url: url)
         req.httpMethod = "DELETE"
-        let (_, response) = try await session.data(for: req)
+        let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "done", step: "delete-thread", threadId: notification.threadId, request: req, response: response, data: data)
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.httpError(status)
         }
         removeActivity(notification, from: FeedScope.allCases)
+        invalidateFeedCaches(FeedScope.allCases)
     }
 
     func unsubscribe(notification: GitHubNotification) async throws {
-        let url = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)/subscription")
-        var req = makeRequest(url: url)
-        req.httpMethod = "DELETE"
-        let (_, response) = try await session.data(for: req)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200...299).contains(status) || status == 304 else {
-            throw APIError.httpError(status)
+        let traceID = UUID().uuidString
+        let subscriptionURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)/subscription")
+        var subscriptionRequest = makeRequest(url: subscriptionURL)
+        subscriptionRequest.httpMethod = "PUT"
+        subscriptionRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        subscriptionRequest.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: true))
+        let (subscriptionData, subscriptionResponse) = try await session.data(for: subscriptionRequest)
+        let subscriptionStatus = (subscriptionResponse as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "unsubscribe", step: "ignore-thread", threadId: notification.threadId, request: subscriptionRequest, response: subscriptionResponse, data: subscriptionData)
+        guard (200...299).contains(subscriptionStatus) || subscriptionStatus == 304 else {
+            throw APIError.httpError(subscriptionStatus)
         }
+
+        let doneURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
+        var doneRequest = makeRequest(url: doneURL)
+        doneRequest.httpMethod = "DELETE"
+        let (doneData, doneResponse) = try await session.data(for: doneRequest)
+        let doneStatus = (doneResponse as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "unsubscribe", step: "remove-from-inbox", threadId: notification.threadId, request: doneRequest, response: doneResponse, data: doneData)
+        guard (200...299).contains(doneStatus) || doneStatus == 304 else {
+            throw APIError.httpError(doneStatus)
+        }
+
         removeActivity(notification, from: FeedScope.allCases)
+        invalidateFeedCaches(FeedScope.allCases)
     }
 
     func restoreSubscription(threadId: String, notification: GitHubNotification, originalIndex: Int) async throws {
+        let traceID = UUID().uuidString
         let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
         var req = makeRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: false, subscribed: true))
+        req.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: false))
 
-        let (_, response) = try await session.data(for: req)
+        let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "restore-subscription", step: "restore-thread", threadId: threadId, request: req, response: response, data: data)
         guard (200...299).contains(status) else {
             throw APIError.httpError(status)
         }
@@ -328,6 +372,7 @@ actor GitHubAPIClient {
                 cache.notifications.removeAll { $0.threadId == threadId }
             }
         }
+        invalidateFeedCaches(FeedScope.allCases)
     }
 
     // MARK: - Validate token
@@ -419,6 +464,15 @@ actor GitHubAPIClient {
         cachedFeeds[scope] = cache
     }
 
+    private func invalidateFeedCaches(_ scopes: some Sequence<FeedScope>) {
+        for scope in scopes {
+            updateFeedCache(scope) { cache in
+                cache.nextNotificationsRefreshAt = .distantPast
+                cache.lastModifiedValue = nil
+            }
+        }
+    }
+
     private func removeActivity(_ notification: GitHubNotification, from scopes: some Sequence<FeedScope>) {
         for scope in scopes {
             updateFeedCache(scope) { cache in
@@ -437,6 +491,46 @@ actor GitHubAPIClient {
         } else {
             let insertAt = min(max(0, originalIndex), notifications.count)
             notifications.insert(notification, at: insertAt)
+        }
+    }
+
+    private func logActionResponse(
+        traceID: String,
+        action: String,
+        step: String,
+        threadId: String,
+        request: URLRequest,
+        response: URLResponse,
+        data: Data
+    ) {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        DebugTrace.log(
+            "action trace=\(traceID) kind=\(action) step=\(step) thread=\(threadId) " +
+            "method=\(request.httpMethod ?? "GET") path=\(request.url?.path ?? "unknown") " +
+            "status=\(status) body=\(Self.debugSnippet(for: data))"
+        )
+    }
+
+    private static func debugSnippet(for data: Data, limit: Int = 160) -> String {
+        guard !data.isEmpty else { return "empty" }
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        if text.count <= limit {
+            return text
+        }
+        return String(text.prefix(limit)) + "..."
+    }
+
+    private static func topIDs(in notifications: [GitHubNotification], limit: Int = 10) -> String {
+        let ids = notifications.prefix(limit).map(\.id)
+        return ids.isEmpty ? "none" : ids.joined(separator: ",")
+    }
+
+    private static func debugName(for scope: FeedScope) -> String {
+        switch scope {
+        case .unread: return "unread"
+        case .all: return "all"
         }
     }
 
@@ -599,7 +693,6 @@ private struct APIUser: Decodable {
 
 private struct ThreadSubscriptionRequest: Encodable {
     let ignored: Bool
-    let subscribed: Bool
 }
 
 extension JSONDecoder {

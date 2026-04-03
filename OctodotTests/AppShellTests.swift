@@ -30,7 +30,15 @@ struct AppShellTests {
     @Test func usableStatusItemFrameRejectsZeroOriginPlaceholderFrame() {
         #expect(StatusItemController.isUsableStatusItemFrame(.zero) == false)
         #expect(StatusItemController.isUsableStatusItemFrame(CGRect(x: 0, y: 0, width: 24, height: 24)) == false)
-        #expect(StatusItemController.isUsableStatusItemFrame(CGRect(x: 200, y: 900, width: 24, height: 24)))
+        let screenFrame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let validFrame = CGRect(
+            x: screenFrame.midX,
+            y: max(screenFrame.minY + 1, screenFrame.maxY - 30),
+            width: 24,
+            height: 24
+        )
+
+        #expect(StatusItemController.isUsableStatusItemFrame(validFrame))
     }
 
     @Test func toggleHotkeyMatchesConfiguredShortcut() {

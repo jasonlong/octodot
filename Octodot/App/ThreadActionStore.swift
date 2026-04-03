@@ -63,12 +63,14 @@ struct ThreadActionStore {
     enum UndoEntry {
         case cancelPending(threadId: String, requestID: UUID)
         case restoreSubscription(notification: GitHubNotification, originalServerIndex: Int)
+        case restoreSecurityAlert(notification: GitHubNotification, originalVisibleIndex: Int)
     }
 
     enum UndoEffect {
         case none
         case cancelQueued(PendingAction)
         case restoreSubscription(notification: GitHubNotification, originalServerIndex: Int)
+        case restoreSecurityAlert(notification: GitHubNotification, originalVisibleIndex: Int)
     }
 
     private let userDefaults: UserDefaults
@@ -158,10 +160,26 @@ struct ThreadActionStore {
                     notification: notification,
                     originalServerIndex: originalServerIndex
                 )
+
+            case .restoreSecurityAlert(let notification, let originalVisibleIndex):
+                return .restoreSecurityAlert(
+                    notification: notification,
+                    originalVisibleIndex: originalVisibleIndex
+                )
             }
         }
 
         return .none
+    }
+
+    mutating func pushSecurityAlertDismissUndo(
+        notification: GitHubNotification,
+        originalVisibleIndex: Int
+    ) {
+        pushUndo(.restoreSecurityAlert(
+            notification: notification,
+            originalVisibleIndex: originalVisibleIndex
+        ))
     }
 
     mutating func handleSuccess(

@@ -153,6 +153,31 @@ struct AppStateTests {
         return "[\n\(items)\n]".data(using: .utf8)!
     }
 
+    static func dependabotAlertsPayload(updatedAt: String = "2026-04-01T12:00:00Z") -> Data {
+        """
+        [
+          {
+            "number": 7,
+            "html_url": "https://github.com/acme/alpha/security/dependabot/7",
+            "updated_at": "\(updatedAt)",
+            "repository": {
+              "full_name": "acme/alpha",
+              "html_url": "https://github.com/acme/alpha"
+            },
+            "dependency": {
+              "package": {
+                "name": "electron"
+              }
+            },
+            "security_advisory": {
+              "ghsa_id": "GHSA-1234",
+              "summary": "Upgrade electron"
+            }
+          }
+        ]
+        """.data(using: .utf8)!
+    }
+
     static func settleTasks() async {
         for _ in 0..<5 {
             await Task.yield()
@@ -364,6 +389,248 @@ struct AppStateTests {
         state.clampSelection()
 
         #expect(state.filteredNotifications.map(\.id) == ["old"])
+    }
+
+    @Test func inboxModeIncludesDependabotAlertsButUnreadModeDoesNot() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.count == 2)
+        #expect(state.filteredNotifications.contains { $0.source == GitHubNotification.Source.dependabotAlert })
+        #expect(state.filteredNotifications.first(where: { $0.source == .dependabotAlert })?.isUnread == true)
+        #expect(state.unreadNotificationCount == 1)
+
+        state.inboxMode = AppState.InboxMode.unread
+
+        #expect(state.filteredNotifications.count == 1)
+        #expect(state.filteredNotifications.allSatisfy { $0.source == GitHubNotification.Source.thread })
+    }
+
+    @Test func doneDismissesSecurityAlertLocallyUntilItUpdates() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 02 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-02T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        let alertID = "dependabot:acme/alpha:7"
+        #expect(state.filteredNotifications.contains { $0.id == alertID })
+
+        state.selectNotification(id: alertID)
+        state.done()
+        #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
+
+        await state.loadNotifications(force: true)
+        #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
+
+        await state.loadNotifications(force: true)
+        #expect(state.filteredNotifications.contains { $0.id == alertID })
+    }
+
+    @Test func undoRestoresDismissedSecurityAlert() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        let alertID = "dependabot:acme/alpha:7"
+        state.selectNotification(id: alertID)
+        state.done()
+        #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
+
+        state.undo()
+        #expect(state.filteredNotifications.contains { $0.id == alertID })
+        #expect(state.selectedNotification?.id == alertID)
+    }
+
+    @Test func openInBrowserMarksSecurityAlertReadLocally() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults(),
+            urlOpener: { _ in true }
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        let alertID = "dependabot:acme/alpha:7"
+        state.selectNotification(id: alertID)
+
+        #expect(state.selectedNotification?.isUnread == true)
+        #expect(state.openInBrowser() == true)
+        #expect(state.selectedNotification?.isUnread == false)
+
+        await state.loadNotifications(force: true)
+        #expect(state.filteredNotifications.first(where: { $0.id == alertID })?.isUnread == false)
+        #expect((await session.recordedRequests()).allSatisfy { $0.httpMethod == "GET" })
     }
 
     @Test func searchIsCaseInsensitive() {
@@ -2029,8 +2296,8 @@ struct AppStateTests {
         } else {
             Issue.record("Expected unsubscribe request body")
         }
-        #expect(requests[1].httpMethod == "DELETE")
-        #expect(requests[2].httpMethod == "GET")
+        #expect(requests.dropFirst().contains { $0.httpMethod == "DELETE" })
+        #expect(requests.dropFirst().contains { $0.httpMethod == "GET" })
     }
 
     @Test func unsubscribeSuccessIsNotUndoableAfterDispatch() async {

@@ -34,6 +34,31 @@ struct GitHubAPIClientTests {
         }
     }
 
+    private struct DependabotAlertFixture {
+        let number: Int
+        let repositoryFullName: String
+        let repositoryHTMLURL: String
+        let summary: String
+        let ghsaID: String
+        let updatedAt: String
+
+        init(
+            number: Int,
+            repositoryFullName: String,
+            repositoryHTMLURL: String,
+            summary: String,
+            ghsaID: String,
+            updatedAt: String = "2026-04-01T12:00:00Z"
+        ) {
+            self.number = number
+            self.repositoryFullName = repositoryFullName
+            self.repositoryHTMLURL = repositoryHTMLURL
+            self.summary = summary
+            self.ghsaID = ghsaID
+            self.updatedAt = updatedAt
+        }
+    }
+
     private final class SubjectConcurrencyTrackingSession: @unchecked Sendable, NetworkSession {
         private let notificationsPayload: Data
         private let subjectDelayNanoseconds: UInt64
@@ -523,6 +548,151 @@ struct GitHubAPIClientTests {
 
         #expect(notifications.count == 100)
         #expect(requests.count == 1)
+    }
+
+    @Test func fetchDependabotAlertsUsesRepositoryEndpointsForAllRepositories() async throws {
+        let firstPayload = Self.dependabotAlertsPayload(items: [
+            DependabotAlertFixture(
+                number: 7,
+                repositoryFullName: "acme/api",
+                repositoryHTMLURL: "https://github.com/acme/api",
+                summary: "Upgrade electron",
+                ghsaID: "GHSA-1234"
+            )
+        ]).data(using: .utf8)!
+        let secondPayload = Self.dependabotAlertsPayload(items: [
+            DependabotAlertFixture(
+                number: 3,
+                repositoryFullName: "octodot/personal",
+                repositoryHTMLURL: "https://github.com/octodot/personal",
+                summary: "Bump lodash",
+                ghsaID: "GHSA-9999"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                firstPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/api/dependabot/alerts")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                secondPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/octodot/personal/dependabot/alerts")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let alerts = try await client.fetchDependabotAlerts(
+            repositoryNames: ["acme/api", "octodot/personal"],
+            currentUsername: "octodot",
+            force: true
+        )
+        let requests = await session.recordedRequests()
+
+        #expect(alerts.count == 2)
+        #expect(alerts.map(\.repository).contains("acme/api"))
+        #expect(alerts.map(\.repository).contains("octodot/personal"))
+        #expect(alerts.allSatisfy { $0.source == .dependabotAlert })
+        #expect(alerts.allSatisfy { $0.isUnread })
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.path == "/repos/acme/api/dependabot/alerts")
+        #expect(requests[1].url?.path == "/repos/octodot/personal/dependabot/alerts")
+    }
+
+    @Test func fetchDependabotAlertsSkipsForbiddenRepositories() async throws {
+        let payload = Self.dependabotAlertsPayload(items: [
+            DependabotAlertFixture(
+                number: 3,
+                repositoryFullName: "octodot/personal",
+                repositoryHTMLURL: "https://github.com/octodot/personal",
+                summary: "Bump lodash",
+                ghsaID: "GHSA-9999"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(#"{"message":"Forbidden"}"#.utf8),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/api/dependabot/alerts")!,
+                    statusCode: 403,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/octodot/personal/dependabot/alerts")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let alerts = try await client.fetchDependabotAlerts(
+            repositoryNames: ["acme/api", "octodot/personal"],
+            currentUsername: "octodot",
+            force: true
+        )
+
+        #expect(alerts.count == 1)
+        #expect(alerts.first?.repository == "octodot/personal")
+    }
+
+    @Test func fetchDependabotAlertsFiltersOutOldAlerts() async throws {
+        let payload = Self.dependabotAlertsPayload(items: [
+            DependabotAlertFixture(
+                number: 7,
+                repositoryFullName: "acme/api",
+                repositoryHTMLURL: "https://github.com/acme/api",
+                summary: "Recent electron issue",
+                ghsaID: "GHSA-1234",
+                updatedAt: "2026-04-01T12:00:00Z"
+            ),
+            DependabotAlertFixture(
+                number: 8,
+                repositoryFullName: "acme/api",
+                repositoryHTMLURL: "https://github.com/acme/api",
+                summary: "Ancient electron issue",
+                ghsaID: "GHSA-5678",
+                updatedAt: "2025-12-01T12:00:00Z"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/api/dependabot/alerts")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let alerts = try await client.fetchDependabotAlerts(
+            repositoryNames: ["acme/api"],
+            currentUsername: "octodot",
+            force: true
+        )
+
+        #expect(alerts.count == 1)
+        #expect(alerts.first?.id == "dependabot:acme/api:7")
     }
 
     @Test func resolveSubjectStatesCapsConcurrentRequests() async throws {
@@ -1078,5 +1248,32 @@ struct GitHubAPIClientTests {
         }.joined(separator: ",\n")
 
         return "[\n\(items)\n]"
+    }
+
+    private static func dependabotAlertsPayload(items: [DependabotAlertFixture]) -> String {
+        let alerts = items.map { fixture in
+            """
+              {
+                "number": \(fixture.number),
+                "html_url": "https://github.com/\(fixture.repositoryFullName)/security/dependabot/\(fixture.number)",
+                "updated_at": "\(fixture.updatedAt)",
+                "repository": {
+                  "full_name": "\(fixture.repositoryFullName)",
+                  "html_url": "\(fixture.repositoryHTMLURL)"
+                },
+                "dependency": {
+                  "package": {
+                    "name": "electron"
+                  }
+                },
+                "security_advisory": {
+                  "ghsa_id": "\(fixture.ghsaID)",
+                  "summary": "\(fixture.summary)"
+                }
+              }
+            """
+        }.joined(separator: ",\n")
+
+        return "[\n\(alerts)\n]"
     }
 }

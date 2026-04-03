@@ -72,6 +72,7 @@ final class AppState {
 
     private var serverNotifications: [GitHubNotification] = []
     private var serverRecentInboxNotifications: [GitHubNotification] = []
+    private var serverSecurityAlerts: [GitHubNotification] = []
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
@@ -264,6 +265,7 @@ final class AppState {
         authStatus = .signedOut
         serverNotifications = []
         serverRecentInboxNotifications = []
+        serverSecurityAlerts = []
         repositoryOrderAnchor = []
         inboxStore.clearSessionState()
         threadActions.clearCommittedActions()
@@ -294,10 +296,30 @@ final class AppState {
             } else {
                 fetchedRecentInbox = []
             }
+            let fetchedSecurityAlerts: [GitHubNotification]
+            if inboxMode == .inbox && isPanelVisible {
+                let repositoryNames = securityAlertRepositoryCandidates(
+                    unreadNotifications: fetched,
+                    recentInboxNotifications: fetchedRecentInbox.isEmpty ? serverRecentInboxNotifications : fetchedRecentInbox
+                )
+                do {
+                    fetchedSecurityAlerts = try await client.fetchDependabotAlerts(
+                        repositoryNames: repositoryNames,
+                        currentUsername: signedInUsername,
+                        force: force
+                    )
+                } catch {
+                    DebugTrace.log("security fetch failed error=\(error.localizedDescription)")
+                    fetchedSecurityAlerts = []
+                }
+            } else {
+                fetchedSecurityAlerts = serverSecurityAlerts
+            }
             guard requestID == activeLoadRequestID else { return }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox,
+                securityAlerts: fetchedSecurityAlerts,
                 didFetchRecentInboxSeed: shouldFetchRecentInboxSeed
             )
             isLoading = false
@@ -306,6 +328,7 @@ final class AppState {
             DebugTrace.log(
                 "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
                 "recent.count=\(serverRecentInboxNotifications.count) " +
+                "security.count=\(serverSecurityAlerts.count) " +
                 "visible.count=\(filteredNotifications.count) visible.top=\(Self.topIDs(in: filteredNotifications))"
             )
             logLastActionSnapshot(context: "after-load")
@@ -362,6 +385,9 @@ final class AppState {
     }
 
     func done() {
+        if dismissSelectedSecurityAlertIfNeeded() {
+            return
+        }
         startThreadAction(.done)
     }
 
@@ -382,8 +408,13 @@ final class AppState {
     func openInBrowser() -> Bool {
         guard let notification = selectedNotification else { return false }
         let didOpen = urlOpener(notification.url)
-        if didOpen, notification.isUnread {
-            startThreadAction(.markRead, delayNanosecondsOverride: 0, pushesUndo: false)
+        if didOpen {
+            if notification.source == .thread, notification.isUnread {
+                startThreadAction(.markRead, delayNanosecondsOverride: 0, pushesUndo: false)
+            } else if notification.source == .dependabotAlert, notification.isUnread {
+                inboxStore.markSecurityAlertRead(notification)
+                clampSelection()
+            }
         }
         return didOpen
     }
@@ -402,6 +433,12 @@ final class AppState {
             clampSelection()
         case .restoreSubscription(let notification, let originalServerIndex):
             startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
+        case .restoreSecurityAlert(let notification, let originalVisibleIndex):
+            inboxStore.restoreDismissedSecurityAlert(notification)
+            errorMessage = nil
+            selectedThreadID = notification.id
+            selectedIndexStorage = originalVisibleIndex
+            clampSelection()
         }
     }
 
@@ -450,9 +487,11 @@ final class AppState {
     private func rebuildDerivedState() {
         let projectedUnread = threadActions.projectedNotifications(from: serverNotifications)
         let projectedRecentInbox = threadActions.projectedNotifications(from: serverRecentInboxNotifications)
+        let projectedSecurityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
         let modeFiltered = filteredNotificationsForCurrentMode(
             unreadNotifications: projectedUnread,
-            recentInboxNotifications: projectedRecentInbox
+            recentInboxNotifications: projectedRecentInbox,
+            securityAlerts: projectedSecurityAlerts
         )
         let serverModeFiltered = serverNotificationsForCurrentMode()
         notifications = modeFiltered
@@ -487,7 +526,8 @@ final class AppState {
 
     private func filteredNotificationsForCurrentMode(
         unreadNotifications: [GitHubNotification],
-        recentInboxNotifications: [GitHubNotification]
+        recentInboxNotifications: [GitHubNotification],
+        securityAlerts: [GitHubNotification]
     ) -> [GitHubNotification] {
         switch inboxMode {
         case .unread:
@@ -497,7 +537,7 @@ final class AppState {
                 unreadNotifications: unreadNotifications,
                 recentInboxNotifications: recentInboxNotifications,
                 projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
-            )
+            ) + securityAlerts
         }
     }
 
@@ -510,7 +550,7 @@ final class AppState {
                 unreadNotifications: serverNotifications,
                 recentInboxNotifications: serverRecentInboxNotifications,
                 projectedNotifications: { $0 }
-            )
+            ) + inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
         }
     }
 
@@ -596,6 +636,10 @@ final class AppState {
               let target = selectedNotification else {
             return
         }
+        guard target.source == .thread else {
+            errorMessage = "Security alerts can only be opened for now"
+            return
+        }
         guard !threadActions.hasPendingAction(for: target.threadId) else { return }
         if kind == .markRead && !target.isUnread { return }
 
@@ -632,6 +676,28 @@ final class AppState {
         } else {
             scheduleBatchDispatch(client: client, delayNanoseconds: delayNanoseconds)
         }
+    }
+
+    @discardableResult
+    private func dismissSelectedSecurityAlertIfNeeded() -> Bool {
+        guard let target = selectedNotification,
+              target.source == .dependabotAlert else {
+            return false
+        }
+
+        let originalVisibleIndex = selectedIndex
+        threadActions.pushSecurityAlertDismissUndo(
+            notification: target,
+            originalVisibleIndex: originalVisibleIndex
+        )
+        inboxStore.dismissSecurityAlert(target)
+        errorMessage = nil
+
+        let visibleBeforeMutation = filteredNotifications
+        selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
+        selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
+        clampSelection()
+        return true
     }
 
     private func startRestoreSubscriptionUndo(notification: GitHubNotification, originalServerIndex: Int) {
@@ -990,20 +1056,35 @@ final class AppState {
     private func applyLoadedNotifications(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
+        securityAlerts: [GitHubNotification],
         didFetchRecentInboxSeed: Bool
     ) {
         serverNotifications = unreadNotifications
         let loadedState = inboxStore.applyLoaded(
             unreadNotifications: unreadNotifications,
             recentInboxNotifications: recentInboxNotifications,
+            projectedSecurityAlerts: securityAlerts,
             didFetchRecentInboxSeed: didFetchRecentInboxSeed,
             username: signedInUsername,
             projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
         )
         serverRecentInboxNotifications = loadedState.recentInboxNotifications
+        serverSecurityAlerts = securityAlerts
         unreadNotificationCount = loadedState.unreadCount
         threadActions.reconcileCommittedActions(with: unreadNotifications)
         repositoryOrderAnchor = Self.repositoryOrder(from: serverNotificationsForCurrentMode())
+    }
+
+    private func securityAlertRepositoryCandidates(
+        unreadNotifications: [GitHubNotification],
+        recentInboxNotifications: [GitHubNotification]
+    ) -> [String] {
+        let inboxNotifications = inboxStore.mergedInboxNotifications(
+            unreadNotifications: unreadNotifications,
+            recentInboxNotifications: recentInboxNotifications,
+            projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
+        )
+        return Array(Set(inboxNotifications.map(\.repository))).sorted()
     }
 
     private static func loadInboxMode(from userDefaults: UserDefaults) -> InboxMode {

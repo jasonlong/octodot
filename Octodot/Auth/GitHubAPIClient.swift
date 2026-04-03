@@ -11,6 +11,8 @@ actor GitHubAPIClient {
     private let notificationsPerPage = 100
     private let defaultPollInterval: TimeInterval = 60
     private let defaultRecentInboxMaxPages = 2
+    private let defaultSecurityRefreshInterval: TimeInterval = 5 * 60
+    private let defaultSecurityLookbackInterval: TimeInterval = 14 * 24 * 60 * 60
     private let maxConcurrentSubjectRequests: Int
     private let maxSubjectResolutionBatchSize = 40
     private let session: any NetworkSession
@@ -32,7 +34,14 @@ actor GitHubAPIClient {
         var nextNotificationsRefreshAt = Date.distantPast
     }
 
+    private struct SecurityAlertsCache {
+        var alerts: [GitHubNotification] = []
+        var sourceSignature = ""
+        var nextRefreshAt = Date.distantPast
+    }
+
     private var cachedFeeds: [FeedScope: FeedCache] = [:]
+    private var cachedDependabotAlerts = SecurityAlertsCache()
 
     private struct SubjectRequestContext: Sendable {
         let token: String
@@ -77,6 +86,57 @@ actor GitHubAPIClient {
             force: force,
             maxPages: maxPages ?? defaultRecentInboxMaxPages
         )
+    }
+
+    func fetchDependabotAlerts(
+        repositoryNames: [String],
+        currentUsername _: String?,
+        force: Bool = false
+    ) async throws -> [GitHubNotification] {
+        let repositories = Array(Set(repositoryNames)).sorted()
+        let signature = repositories.joined(separator: ",")
+
+        if !force,
+           cachedDependabotAlerts.sourceSignature == signature,
+           Date() < cachedDependabotAlerts.nextRefreshAt {
+            return cachedDependabotAlerts.alerts
+        }
+
+        guard !repositories.isEmpty else {
+            cachedDependabotAlerts = SecurityAlertsCache()
+            return []
+        }
+
+        DebugTrace.log(
+            "security fetch start repos=\(repositories.joined(separator: ",")) force=\(force)"
+        )
+
+        var alerts: [GitHubNotification] = []
+
+        for repositoryFullName in repositories {
+            do {
+                alerts.append(contentsOf: try await fetchDependabotAlertsForRepository(repositoryFullName))
+            } catch APIError.forbidden {
+                DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=forbidden")
+            } catch APIError.httpError(let status) where status == 404 {
+                DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=http-\(status)")
+            }
+        }
+
+        let deduped = Self.sortedAndDedupedAlerts(alerts)
+        let recentAlerts = Self.recentAlerts(
+            from: deduped,
+            lookbackInterval: defaultSecurityLookbackInterval
+        )
+        cachedDependabotAlerts = SecurityAlertsCache(
+            alerts: recentAlerts,
+            sourceSignature: signature,
+            nextRefreshAt: Date().addingTimeInterval(defaultSecurityRefreshInterval)
+        )
+        DebugTrace.log(
+            "security fetch complete raw=\(deduped.count) recent=\(recentAlerts.count) top=\(Self.topIDs(in: recentAlerts))"
+        )
+        return recentAlerts
     }
 
     private func fetchNotifications(
@@ -318,6 +378,22 @@ actor GitHubAPIClient {
             return true
         case .release, .discussion, .commit, .securityAlert:
             return false
+        }
+    }
+
+    private func fetchDependabotAlertsForRepository(_ repositoryFullName: String) async throws -> [GitHubNotification] {
+        let parts = repositoryFullName.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return [] }
+        var components = URLComponents(url: baseURL.appendingPathComponent("repos/\(parts[0])/\(parts[1])/dependabot/alerts"), resolvingAgainstBaseURL: false)!
+        components.queryItems = Self.dependabotAlertsQueryItems
+        let url = components.url!
+        let data = try await request(url: url)
+        let alerts = try JSONDecoder.github.decode([APIDependabotAlert].self, from: data)
+        return alerts.compactMap {
+            $0.toModel(
+                fallbackRepositoryFullName: repositoryFullName,
+                fallbackRepositoryHTMLURL: "https://github.com/\(repositoryFullName)"
+            )
         }
     }
 
@@ -587,6 +663,34 @@ actor GitHubAPIClient {
         return nil
     }
 
+    private static let dependabotAlertsQueryItems = [
+        URLQueryItem(name: "state", value: "open"),
+        URLQueryItem(name: "sort", value: "updated"),
+        URLQueryItem(name: "direction", value: "desc"),
+        URLQueryItem(name: "per_page", value: "100"),
+    ]
+
+    private static func sortedAndDedupedAlerts(_ alerts: [GitHubNotification]) -> [GitHubNotification] {
+        let deduped = Dictionary(alerts.map { ($0.id, $0) }, uniquingKeysWith: { lhs, rhs in
+            lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
+        })
+        return deduped.values.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            return lhs.id > rhs.id
+        }
+    }
+
+    private static func recentAlerts(
+        from alerts: [GitHubNotification],
+        lookbackInterval: TimeInterval,
+        now: Date = Date()
+    ) -> [GitHubNotification] {
+        let cutoff = now.addingTimeInterval(-lookbackInterval)
+        return alerts.filter { $0.updatedAt >= cutoff }
+    }
+
     // MARK: - Error
 
     enum APIError: LocalizedError {
@@ -756,6 +860,72 @@ private struct APIUser: Decodable {
 
 private struct ThreadSubscriptionRequest: Encodable {
     let ignored: Bool
+}
+
+private struct APIDependabotAlert: Decodable {
+    private static let updatedAtFormatter = ISO8601DateFormatter()
+
+    struct Repository: Decodable {
+        let fullName: String
+        let htmlUrl: String
+    }
+
+    struct Dependency: Decodable {
+        struct Package: Decodable {
+            let name: String?
+        }
+
+        let package: Package?
+    }
+
+    struct SecurityAdvisory: Decodable {
+        let ghsaId: String?
+        let summary: String?
+    }
+
+    let number: Int
+    let htmlUrl: String
+    let updatedAt: String
+    let repository: Repository?
+    let dependency: Dependency?
+    let securityAdvisory: SecurityAdvisory?
+
+    func toModel(
+        fallbackRepositoryFullName: String? = nil,
+        fallbackRepositoryHTMLURL: String? = nil
+    ) -> GitHubNotification? {
+        let repositoryFullName = repository?.fullName ?? fallbackRepositoryFullName
+        let repositoryHTMLURL = repository?.htmlUrl ?? fallbackRepositoryHTMLURL
+        guard let repositoryFullName,
+              let repositoryHTMLURL,
+              let url = URL(string: htmlUrl.isEmpty ? repositoryHTMLURL : htmlUrl) else {
+            return nil
+        }
+
+        let updated = Self.updatedAtFormatter.date(from: updatedAt) ?? Date()
+        let summary = securityAdvisory?.summary ?? dependency?.package?.name.map { "Dependabot alert for \($0)" } ?? "Dependabot alert"
+        let title: String
+        if let advisoryID = securityAdvisory?.ghsaId, !advisoryID.isEmpty {
+            title = "\(advisoryID) \(summary)"
+        } else {
+            title = summary
+        }
+
+        return GitHubNotification(
+            id: "dependabot:\(repositoryFullName):\(number)",
+            threadId: "dependabot:\(repositoryFullName):\(number)",
+            title: title,
+            repository: repositoryFullName,
+            reason: .securityAlert,
+            type: .securityAlert,
+            updatedAt: updated,
+            isUnread: true,
+            url: url,
+            subjectURL: nil,
+            subjectState: .open,
+            source: .dependabotAlert
+        )
+    }
 }
 
 extension JSONDecoder {

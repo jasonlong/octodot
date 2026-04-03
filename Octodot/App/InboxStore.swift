@@ -4,6 +4,8 @@ import Foundation
 final class InboxStore {
     private static let recentInboxReadsStorageKey = "AppState.recentInboxReads.v1"
     private static let recentInboxBootstrapUsersStorageKey = "AppState.recentInboxBootstrapUsers.v1"
+    private static let dismissedSecurityAlertsStorageKey = "AppState.dismissedSecurityAlerts.v1"
+    private static let readSecurityAlertsStorageKey = "AppState.readSecurityAlerts.v1"
     private static let recentInboxReadRetentionInterval: TimeInterval = 14 * 24 * 60 * 60
     private static let recentInboxReadLimit = 100
     private static let inboxRecentReadFallbackWindow: TimeInterval = 12 * 60 * 60
@@ -23,6 +25,7 @@ final class InboxStore {
         let url: URL
         let subjectURL: String?
         let subjectState: GitHubNotification.SubjectState
+        let source: GitHubNotification.Source
 
         init(notification: GitHubNotification) {
             self.id = notification.id
@@ -36,6 +39,23 @@ final class InboxStore {
             self.url = notification.url
             self.subjectURL = notification.subjectURL
             self.subjectState = notification.subjectState
+            self.source = notification.source
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            threadId = try container.decode(String.self, forKey: .threadId)
+            title = try container.decode(String.self, forKey: .title)
+            repository = try container.decode(String.self, forKey: .repository)
+            reason = try container.decode(GitHubNotification.Reason.self, forKey: .reason)
+            type = try container.decode(GitHubNotification.SubjectType.self, forKey: .type)
+            updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+            isUnread = try container.decode(Bool.self, forKey: .isUnread)
+            url = try container.decode(URL.self, forKey: .url)
+            subjectURL = try container.decodeIfPresent(String.self, forKey: .subjectURL)
+            subjectState = try container.decode(GitHubNotification.SubjectState.self, forKey: .subjectState)
+            source = try container.decodeIfPresent(GitHubNotification.Source.self, forKey: .source) ?? .thread
         }
 
         var notification: GitHubNotification {
@@ -50,7 +70,8 @@ final class InboxStore {
                 isUnread: isUnread,
                 url: url,
                 subjectURL: subjectURL,
-                subjectState: subjectState
+                subjectState: subjectState,
+                source: source
             )
         }
     }
@@ -60,9 +81,16 @@ final class InboxStore {
         let unreadCount: Int
     }
 
+    private struct PersistedDismissedSecurityAlert: Codable {
+        let id: String
+        let updatedAt: Date
+    }
+
     private let userDefaults: UserDefaults
     private var recentInboxReadNotifications: [String: GitHubNotification]
     private var recentInboxBootstrapUsers: Set<String>
+    private var dismissedSecurityAlerts: [String: Date]
+    private var readSecurityAlerts: [String: Date]
     private(set) var lastFetchedUnreadNotifications: [GitHubNotification]
     private(set) var unreadNotificationCount: Int
 
@@ -70,6 +98,8 @@ final class InboxStore {
         self.userDefaults = userDefaults
         self.recentInboxReadNotifications = Self.loadRecentInboxReadNotifications(from: userDefaults)
         self.recentInboxBootstrapUsers = Self.loadRecentInboxBootstrapUsers(from: userDefaults)
+        self.dismissedSecurityAlerts = Self.loadDismissedSecurityAlerts(from: userDefaults)
+        self.readSecurityAlerts = Self.loadReadSecurityAlerts(from: userDefaults)
         self.lastFetchedUnreadNotifications = initialNotifications.filter(\.isUnread)
         self.unreadNotificationCount = initialNotifications.reduce(into: 0) { count, notification in
             if notification.isUnread {
@@ -97,6 +127,7 @@ final class InboxStore {
     func applyLoaded(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
+        projectedSecurityAlerts: [GitHubNotification],
         didFetchRecentInboxSeed: Bool,
         username: String?,
         projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
@@ -115,6 +146,8 @@ final class InboxStore {
         }
         lastFetchedUnreadNotifications = unreadNotifications
         unreadNotificationCount = unreadCount(in: unreadNotifications)
+        reconcileDismissedSecurityAlerts(with: projectedSecurityAlerts)
+        reconcileReadSecurityAlerts(with: projectedSecurityAlerts)
         pruneRecentInboxReadNotifications(
             using: unreadNotifications,
             projectedNotifications: projectedNotifications
@@ -168,11 +201,55 @@ final class InboxStore {
         persistRecentInboxReadNotifications()
     }
 
+    func dismissSecurityAlert(_ notification: GitHubNotification) {
+        dismissedSecurityAlerts[notification.id] = notification.updatedAt
+        persistDismissedSecurityAlerts()
+    }
+
+    func restoreDismissedSecurityAlert(_ notification: GitHubNotification) {
+        guard dismissedSecurityAlerts.removeValue(forKey: notification.id) != nil else {
+            return
+        }
+        persistDismissedSecurityAlerts()
+    }
+
+    func markSecurityAlertRead(_ notification: GitHubNotification) {
+        guard notification.source == .dependabotAlert else { return }
+        if let existing = readSecurityAlerts[notification.id], existing >= notification.updatedAt {
+            return
+        }
+        readSecurityAlerts[notification.id] = notification.updatedAt
+        persistReadSecurityAlerts()
+    }
+
+    func projectedSecurityAlerts(from alerts: [GitHubNotification]) -> [GitHubNotification] {
+        alerts.compactMap { alert in
+            if let dismissedAt = dismissedSecurityAlerts[alert.id],
+               alert.updatedAt <= dismissedAt {
+                return nil
+            }
+
+            var projected = alert
+            if let readAt = readSecurityAlerts[alert.id],
+               alert.updatedAt <= readAt {
+                projected.isUnread = false
+            } else {
+                projected.isUnread = true
+            }
+
+            return projected
+        }
+    }
+
     func clearSessionState() {
         lastFetchedUnreadNotifications = []
         unreadNotificationCount = 0
         recentInboxReadNotifications.removeAll()
         persistRecentInboxReadNotifications()
+        dismissedSecurityAlerts.removeAll()
+        persistDismissedSecurityAlerts()
+        readSecurityAlerts.removeAll()
+        persistReadSecurityAlerts()
     }
 
     func updateUnreadCountOnly(from unreadNotifications: [GitHubNotification]) {
@@ -229,6 +306,26 @@ final class InboxStore {
                 count += 1
             }
         }
+    }
+
+    private func reconcileDismissedSecurityAlerts(with alerts: [GitHubNotification]) {
+        dismissedSecurityAlerts = dismissedSecurityAlerts.filter { id, dismissedAt in
+            guard let currentUpdatedAt = alerts.first(where: { $0.id == id })?.updatedAt else {
+                return true
+            }
+            return currentUpdatedAt <= dismissedAt
+        }
+        persistDismissedSecurityAlerts()
+    }
+
+    private func reconcileReadSecurityAlerts(with alerts: [GitHubNotification]) {
+        readSecurityAlerts = readSecurityAlerts.filter { id, readAt in
+            guard let currentUpdatedAt = alerts.first(where: { $0.id == id })?.updatedAt else {
+                return true
+            }
+            return currentUpdatedAt <= readAt
+        }
+        persistReadSecurityAlerts()
     }
 
     private func markRecentInboxBootstrapCompleted(for username: String?) {
@@ -380,6 +477,36 @@ final class InboxStore {
         return Set(usernames)
     }
 
+    private static func loadDismissedSecurityAlerts(from userDefaults: UserDefaults) -> [String: Date] {
+        guard let data = userDefaults.data(forKey: dismissedSecurityAlertsStorageKey) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let persisted = try? decoder.decode([PersistedDismissedSecurityAlert].self, from: data) else {
+            return [:]
+        }
+
+        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0.updatedAt) })
+    }
+
+    private static func loadReadSecurityAlerts(from userDefaults: UserDefaults) -> [String: Date] {
+        guard let data = userDefaults.data(forKey: readSecurityAlertsStorageKey) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let persisted = try? decoder.decode([PersistedDismissedSecurityAlert].self, from: data) else {
+            return [:]
+        }
+
+        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0.updatedAt) })
+    }
+
     private func persistRecentInboxBootstrapUsers() {
         userDefaults.set(
             Array(recentInboxBootstrapUsers).sorted(),
@@ -398,5 +525,35 @@ final class InboxStore {
         let persisted = recentInboxReadNotifications.values.map(PersistedInboxNotification.init(notification:))
         guard let data = try? encoder.encode(persisted) else { return }
         userDefaults.set(data, forKey: Self.recentInboxReadsStorageKey)
+    }
+
+    private func persistDismissedSecurityAlerts() {
+        guard !dismissedSecurityAlerts.isEmpty else {
+            userDefaults.removeObject(forKey: Self.dismissedSecurityAlertsStorageKey)
+            return
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let persisted = dismissedSecurityAlerts.map { id, updatedAt in
+            PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
+        }
+        guard let data = try? encoder.encode(persisted) else { return }
+        userDefaults.set(data, forKey: Self.dismissedSecurityAlertsStorageKey)
+    }
+
+    private func persistReadSecurityAlerts() {
+        guard !readSecurityAlerts.isEmpty else {
+            userDefaults.removeObject(forKey: Self.readSecurityAlertsStorageKey)
+            return
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let persisted = readSecurityAlerts.map { id, updatedAt in
+            PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
+        }
+        guard let data = try? encoder.encode(persisted) else { return }
+        userDefaults.set(data, forKey: Self.readSecurityAlertsStorageKey)
     }
 }

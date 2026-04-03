@@ -13,6 +13,7 @@ struct GitHubNotification: Identifiable, Hashable {
     let url: URL
     let subjectURL: String?
     var subjectState: SubjectState
+    var source: Source = .thread
 
     var iconName: String {
         switch type {
@@ -32,7 +33,7 @@ struct GitHubNotification: Identifiable, Hashable {
         case .release: "octicon-tag"
         case .discussion: "octicon-discussion"
         case .commit: "octicon-commit"
-        case .securityAlert: "octicon-issue"
+        case .securityAlert: "octicon-alert"
         }
     }
 
@@ -76,6 +77,11 @@ struct GitHubNotification: Identifiable, Hashable {
         case unknown
     }
 
+    enum Source: String, Hashable, Codable {
+        case thread
+        case dependabotAlert
+    }
+
     enum Reason: String, CaseIterable, Codable {
         case mentioned = "Mentioned"
         case reviewRequested = "Review requested"
@@ -93,8 +99,6 @@ struct GitHubNotification: Identifiable, Hashable {
 
         var tintColor: Color? {
             switch self {
-            case .securityAlert:
-                return .orange
             case .mentioned, .assigned:
                 return .green
             default:

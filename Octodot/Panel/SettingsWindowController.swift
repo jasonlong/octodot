@@ -5,19 +5,13 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     private let appState: AppState
     private let preferences: AppPreferences
-    private let settingsViewState: SettingsViewState
 
-    init(appState: AppState, preferences: AppPreferences, settingsViewState: SettingsViewState) {
+    init(appState: AppState, preferences: AppPreferences) {
         self.appState = appState
         self.preferences = preferences
-        self.settingsViewState = settingsViewState
 
         super.init(window: nil)
-        self.window = Self.makeWindow(
-            appState: appState,
-            preferences: preferences,
-            settingsViewState: settingsViewState
-        )
+        self.window = Self.makeWindow(appState: appState, preferences: preferences)
     }
 
     @available(*, unavailable)
@@ -27,22 +21,21 @@ final class SettingsWindowController: NSWindowController {
 
     func show() {
         guard let window else { return }
-        window.makeKeyAndOrderFront(nil)
+        DebugTrace.log("settings window show visible=\(window.isVisible) key=\(window.isKeyWindow)")
+        window.orderFrontRegardless()
+        window.makeKey()
         NSApp.activate(ignoringOtherApps: true)
+        DebugTrace.log("settings window shown visible=\(window.isVisible) key=\(window.isKeyWindow)")
     }
 
     func updateAppearance() {
         guard let existingWindow = window else {
             return
         }
+
         let frame = existingWindow.frame
         let wasVisible = existingWindow.isVisible
-
-        let newWindow = Self.makeWindow(
-            appState: appState,
-            preferences: preferences,
-            settingsViewState: settingsViewState
-        )
+        let newWindow = Self.makeWindow(appState: appState, preferences: preferences)
         newWindow.setFrame(frame, display: false)
         window = newWindow
 
@@ -52,15 +45,10 @@ final class SettingsWindowController: NSWindowController {
         }
     }
 
-    private static func makeWindow(
-        appState: AppState,
-        preferences: AppPreferences,
-        settingsViewState: SettingsViewState
-    ) -> NSWindow {
-        let hostingController = makeHostingController(
-            appState: appState,
-            preferences: preferences,
-            settingsViewState: settingsViewState
+    private static func makeWindow(appState: AppState, preferences: AppPreferences) -> NSWindow {
+        let hostingController = NSHostingController(
+            rootView: SettingsView(appState: appState, preferences: preferences)
+                .preferredColorScheme(preferences.appearanceMode.resolvedColorScheme)
         )
 
         let window = NSWindow(contentViewController: hostingController)
@@ -77,23 +65,5 @@ final class SettingsWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.appearance = preferences.appearanceMode.resolvedWindowAppearance
         return window
-    }
-
-    private static func makeHostingController(
-        appState: AppState,
-        preferences: AppPreferences,
-        settingsViewState: SettingsViewState
-    ) -> NSHostingController<AnyView> {
-        let rootView = AnyView(
-            SettingsView(
-                appState: appState,
-                preferences: preferences,
-                selection: Binding(
-                    get: { settingsViewState.selectedTab },
-                    set: { settingsViewState.selectedTab = $0 }
-                )
-            )
-        )
-        return NSHostingController(rootView: rootView)
     }
 }

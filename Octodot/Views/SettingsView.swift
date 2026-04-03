@@ -5,34 +5,100 @@ struct SettingsView: View {
         case account
         case appearance
         case shortcuts
+
+        var title: String {
+            switch self {
+            case .account:
+                "Account"
+            case .appearance:
+                "Appearance"
+            case .shortcuts:
+                "Shortcuts"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .account:
+                "person.crop.circle"
+            case .appearance:
+                "circle.lefthalf.filled"
+            case .shortcuts:
+                "keyboard"
+            }
+        }
     }
 
     @Bindable var appState: AppState
     @Bindable var preferences: AppPreferences
-    @Binding var selection: Tab
+    @AppStorage("SettingsView.selectedTab") private var selectedTabRawValue = Tab.account.rawValue
 
     var body: some View {
-        TabView(selection: $selection) {
-            AccountSettingsPane(appState: appState)
-                .tag(Tab.account)
-                .tabItem {
-                    Label("Account", systemImage: "person.crop.circle")
-                }
+        VStack(spacing: 0) {
+            SettingsTabBar(selection: selection)
 
-            AppearanceSettingsPane(preferences: preferences)
-                .tag(Tab.appearance)
-                .tabItem {
-                    Label("Appearance", systemImage: "circle.lefthalf.filled")
-                }
+            Divider()
 
-            ShortcutsSettingsPane(preferences: preferences)
-                .tag(Tab.shortcuts)
-                .tabItem {
-                    Label("Shortcuts", systemImage: "keyboard")
+            Group {
+                switch selection.wrappedValue {
+                case .account:
+                    AccountSettingsPane(appState: appState)
+                case .appearance:
+                    AppearanceSettingsPane(preferences: preferences)
+                case .shortcuts:
+                    ShortcutsSettingsPane(preferences: preferences)
                 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(20)
         .frame(width: 540, height: 390)
+    }
+
+    private var selection: Binding<Tab> {
+        Binding(
+            get: { Tab(rawValue: selectedTabRawValue) ?? .account },
+            set: { selectedTabRawValue = $0.rawValue }
+        )
+    }
+}
+
+private struct SettingsTabBar: View {
+    @Binding var selection: SettingsView.Tab
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            ForEach([
+                SettingsView.Tab.account,
+                .appearance,
+                .shortcuts
+            ], id: \.self) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 18, weight: .medium))
+                        Text(tab.title)
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .frame(width: 96, height: 56)
+                    .foregroundStyle(selection == tab ? Color.accentColor : Color.primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(selection == tab ? Color.accentColor.opacity(0.14) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

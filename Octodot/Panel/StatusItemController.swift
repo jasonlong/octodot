@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 
 @MainActor
-final class StatusItemController {
+final class StatusItemController: NSObject {
     enum Constants {
         static let activeAlpha: CGFloat = 1.0
         static let dimmedAlpha: CGFloat = 0.45
@@ -23,7 +23,6 @@ final class StatusItemController {
     private let settingsWindowController: SettingsWindowController
     private let appState: AppState
     private let preferences: AppPreferences
-    private let settingsViewState: SettingsViewState
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
@@ -32,19 +31,15 @@ final class StatusItemController {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    init(appState: AppState, preferences: AppPreferences, settingsViewState: SettingsViewState) {
+    init(appState: AppState, preferences: AppPreferences) {
         self.appState = appState
         self.preferences = preferences
-        self.settingsViewState = settingsViewState
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.panel = NotificationPanel(appState: appState, preferences: preferences)
-        self.settingsWindowController = SettingsWindowController(
-            appState: appState,
-            preferences: preferences,
-            settingsViewState: settingsViewState
-        )
+        self.settingsWindowController = SettingsWindowController(appState: appState, preferences: preferences)
 
         self.contextMenu = NSMenu()
+        super.init()
 
         if let button = statusItem.button {
             button.image = defaultIcon
@@ -215,12 +210,17 @@ final class StatusItemController {
     @objc private func handleClick() {
         guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseUp {
-            statusItem.menu = contextMenu
-            statusItem.button?.performClick(nil)
-            statusItem.menu = nil
+            showContextMenu()
         } else {
             togglePanel()
         }
+    }
+
+    private func showContextMenu() {
+        guard let button = statusItem.button else { return }
+
+        let menuOrigin = NSPoint(x: 0, y: button.bounds.height + 4)
+        contextMenu.popUp(positioning: nil, at: menuOrigin, in: button)
     }
 
     private func togglePanel() {
@@ -236,7 +236,12 @@ final class StatusItemController {
     }
 
     @objc private func openSettings() {
-        settingsWindowController.show()
+        DispatchQueue.main.async { [self] in
+            DebugTrace.log("settings menu action fired")
+            NSApp.activate(ignoringOtherApps: true)
+            DebugTrace.log("settings opening custom window directly")
+            settingsWindowController.show()
+        }
     }
 
     private func showPanel() {

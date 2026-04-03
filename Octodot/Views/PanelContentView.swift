@@ -74,6 +74,7 @@ struct PanelContentView: View {
 
                     Spacer()
                 }
+                .frame(height: 16, alignment: .center)
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
@@ -274,6 +275,14 @@ struct PanelContentView: View {
             appState.moveDown()
         case .moveUp:
             appState.moveUp()
+        case .pageDown:
+            appState.pageDown()
+        case .pageUp:
+            appState.pageUp()
+        case .halfPageDown:
+            appState.halfPageDown()
+        case .halfPageUp:
+            appState.halfPageUp()
         case .jumpToBottom:
             appState.jumpToBottom()
         case .jumpToTop:

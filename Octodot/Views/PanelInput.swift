@@ -3,6 +3,10 @@ import SwiftUI
 enum PanelInput {
     enum KeyInput: Equatable {
         case character(String)
+        case controlF
+        case controlB
+        case controlD
+        case controlU
         case downArrow
         case upArrow
         case escape
@@ -13,6 +17,10 @@ enum PanelInput {
     enum KeyboardCommand: Equatable {
         case moveDown
         case moveUp
+        case pageDown
+        case pageUp
+        case halfPageDown
+        case halfPageUp
         case jumpToBottom
         case jumpToTop
         case done
@@ -98,6 +106,10 @@ enum PanelInput {
             return true
         case .moveDown,
              .moveUp,
+             .pageDown,
+             .pageUp,
+             .halfPageDown,
+             .halfPageUp,
              .jumpToBottom,
              .jumpToTop,
              .toggleInboxMode,
@@ -112,7 +124,7 @@ enum PanelInput {
 
     static func allowsRepeat(for input: KeyInput) -> Bool {
         switch input {
-        case .character("j"), .character("k"), .downArrow, .upArrow:
+        case .character("j"), .character("k"), .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
         case .character, .escape, .return, .other:
             return false
@@ -133,12 +145,27 @@ enum PanelInput {
              .escape,
              .return:
             return true
-        case .character, .downArrow, .upArrow, .other:
+        case .character, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
 
     static func keyInput(for press: KeyPress) -> KeyInput {
+        if press.modifiers.contains(.control) {
+            switch press.key {
+            case KeyEquivalent("f"), KeyEquivalent("F"):
+                return .controlF
+            case KeyEquivalent("b"), KeyEquivalent("B"):
+                return .controlB
+            case KeyEquivalent("d"), KeyEquivalent("D"):
+                return .controlD
+            case KeyEquivalent("u"), KeyEquivalent("U"):
+                return .controlU
+            default:
+                break
+            }
+        }
+
         switch press.key {
         case .downArrow:
             return .downArrow
@@ -182,6 +209,10 @@ enum PanelInput {
     static func debugName(for input: KeyInput) -> String {
         switch input {
         case .character(let value): return "char(\(value))"
+        case .controlF: return "ctrl-f"
+        case .controlB: return "ctrl-b"
+        case .controlD: return "ctrl-d"
+        case .controlU: return "ctrl-u"
         case .downArrow: return "down"
         case .upArrow: return "up"
         case .escape: return "escape"
@@ -194,6 +225,10 @@ enum PanelInput {
         switch command {
         case .moveDown: return "moveDown"
         case .moveUp: return "moveUp"
+        case .pageDown: return "pageDown"
+        case .pageUp: return "pageUp"
+        case .halfPageDown: return "halfPageDown"
+        case .halfPageUp: return "halfPageUp"
         case .jumpToBottom: return "jumpToBottom"
         case .jumpToTop: return "jumpToTop"
         case .done: return "done"
@@ -240,6 +275,14 @@ enum PanelInput {
             return KeyRouting(command: .moveDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("k"), .upArrow:
             return KeyRouting(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .controlF:
+            return KeyRouting(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .controlB:
+            return KeyRouting(command: .pageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .controlD:
+            return KeyRouting(command: .halfPageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .controlU:
+            return KeyRouting(command: .halfPageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("G"):
             return KeyRouting(command: .jumpToBottom, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("g"):

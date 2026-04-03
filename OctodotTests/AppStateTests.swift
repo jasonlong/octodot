@@ -220,6 +220,34 @@ struct AppStateTests {
         #expect(state.selectedIndex == 0)
     }
 
+    @Test func pageDownAdvancesByFixedJumpCount() {
+        let state = Self.makeState(20)
+        state.selectedIndex = 1
+        state.pageDown()
+        #expect(state.selectedIndex == 1 + AppState.pageJumpCount)
+    }
+
+    @Test func pageUpClampsAtTop() {
+        let state = Self.makeState(20)
+        state.selectedIndex = 3
+        state.pageUp()
+        #expect(state.selectedIndex == 0)
+    }
+
+    @Test func halfPageDownAdvancesByFixedJumpCount() {
+        let state = Self.makeState(20)
+        state.selectedIndex = 1
+        state.halfPageDown()
+        #expect(state.selectedIndex == 1 + AppState.halfPageJumpCount)
+    }
+
+    @Test func halfPageUpClampsAtTop() {
+        let state = Self.makeState(20)
+        state.selectedIndex = 3
+        state.halfPageUp()
+        #expect(state.selectedIndex == 0)
+    }
+
     @Test func jumpToTop() {
         let state = Self.makeState()
         state.selectedIndex = 4

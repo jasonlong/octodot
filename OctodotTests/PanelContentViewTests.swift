@@ -7,6 +7,14 @@ struct PanelContentViewTests {
             .init(command: .moveDown, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("k"), isSearchActive: false, pendingG: false) ==
             .init(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true))
+        #expect(PanelInput.routeKey(.controlF, isSearchActive: false, pendingG: false) ==
+            .init(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true))
+        #expect(PanelInput.routeKey(.controlB, isSearchActive: false, pendingG: false) ==
+            .init(command: .pageUp, pendingG: false, focusDirective: .unchanged, isHandled: true))
+        #expect(PanelInput.routeKey(.controlD, isSearchActive: false, pendingG: false) ==
+            .init(command: .halfPageDown, pendingG: false, focusDirective: .unchanged, isHandled: true))
+        #expect(PanelInput.routeKey(.controlU, isSearchActive: false, pendingG: false) ==
+            .init(command: .halfPageUp, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("d"), isSearchActive: false, pendingG: false) ==
             .init(command: .done, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("x"), isSearchActive: false, pendingG: false) ==
@@ -103,6 +111,10 @@ struct PanelContentViewTests {
     @Test func repeatIsAllowedOnlyForNavigation() {
         #expect(PanelInput.allowsRepeat(for: .character("j")) == true)
         #expect(PanelInput.allowsRepeat(for: .character("k")) == true)
+        #expect(PanelInput.allowsRepeat(for: .controlF) == true)
+        #expect(PanelInput.allowsRepeat(for: .controlB) == true)
+        #expect(PanelInput.allowsRepeat(for: .controlD) == true)
+        #expect(PanelInput.allowsRepeat(for: .controlU) == true)
         #expect(PanelInput.allowsRepeat(for: .downArrow) == true)
         #expect(PanelInput.allowsRepeat(for: .upArrow) == true)
         #expect(PanelInput.allowsRepeat(for: .character("x")) == false)

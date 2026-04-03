@@ -27,6 +27,8 @@ final class AppState {
     private static let inboxRecentReadGraceBeforeOldestUnread: TimeInterval = 6 * 60 * 60
     private static let inboxRecentReadMaxPages = 1
     private static let inboxRecentReadMaxItems = 25
+    static let pageJumpCount = 8
+    static let halfPageJumpCount = 4
 
     private struct PersistedInboxNotification: Codable {
         let id: String
@@ -383,6 +385,28 @@ final class AppState {
     func moveUp() {
         guard !filteredNotifications.isEmpty else { return }
         selectedIndex = max(selectedIndex - 1, 0)
+    }
+
+    func pageDown() {
+        let count = filteredNotifications.count
+        guard count > 0 else { return }
+        selectedIndex = min(selectedIndex + Self.pageJumpCount, count - 1)
+    }
+
+    func pageUp() {
+        guard !filteredNotifications.isEmpty else { return }
+        selectedIndex = max(selectedIndex - Self.pageJumpCount, 0)
+    }
+
+    func halfPageDown() {
+        let count = filteredNotifications.count
+        guard count > 0 else { return }
+        selectedIndex = min(selectedIndex + Self.halfPageJumpCount, count - 1)
+    }
+
+    func halfPageUp() {
+        guard !filteredNotifications.isEmpty else { return }
+        selectedIndex = max(selectedIndex - Self.halfPageJumpCount, 0)
     }
 
     func jumpToTop() {

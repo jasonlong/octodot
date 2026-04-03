@@ -294,7 +294,7 @@ actor GitHubAPIClient {
         switch notification.type {
         case .pullRequest, .issue:
             return true
-        case .release, .discussion, .commit:
+        case .release, .discussion, .commit, .securityAlert:
             return false
         }
     }
@@ -601,9 +601,9 @@ private struct APINotification: Decodable {
 
     func toModel() -> GitHubNotification? {
         let reason = mapReason(reason)
-        let type = mapType(subject.type)
+        let type = mapType(subject.type, reason: reason)
         let date = Self.updatedAtFormatter.date(from: updatedAt) ?? Date()
-        let webURL = buildWebURL()
+        let webURL = buildWebURL(type: type)
 
         return GitHubNotification(
             id: id,
@@ -620,7 +620,12 @@ private struct APINotification: Decodable {
         )
     }
 
-    private func buildWebURL() -> URL {
+    private func buildWebURL(type: GitHubNotification.SubjectType) -> URL {
+        if type == .securityAlert,
+           let advisoryURL = buildSecurityAlertURL() {
+            return advisoryURL
+        }
+
         if let apiURLString = subject.url,
            let apiURL = URL(string: apiURLString) {
             let path = apiURL.pathComponents
@@ -645,6 +650,17 @@ private struct APINotification: Decodable {
         return URL(string: repository.htmlUrl) ?? URL(string: "https://github.com")!
     }
 
+    private func buildSecurityAlertURL() -> URL? {
+        if let titleToken = subject.title
+            .split(separator: " ")
+            .first(where: { $0.hasPrefix("GHSA-") }),
+           let url = URL(string: "https://github.com/advisories/\(titleToken)") {
+            return url
+        }
+
+        return URL(string: repository.htmlUrl + "/security")
+    }
+
     private func mapReason(_ reason: String) -> GitHubNotification.Reason {
         switch reason {
         case "mention": .mentioned
@@ -655,18 +671,24 @@ private struct APINotification: Decodable {
         case "author": .author
         case "comment": .comment
         case "state_change": .stateChange
+        case "security_alert": .securityAlert
         default: .subscribed
         }
     }
 
-    private func mapType(_ type: String) -> GitHubNotification.SubjectType {
+    private func mapType(
+        _ type: String,
+        reason: GitHubNotification.Reason
+    ) -> GitHubNotification.SubjectType {
         switch type {
         case "PullRequest": .pullRequest
         case "Issue": .issue
         case "Release": .release
         case "Discussion": .discussion
         case "Commit": .commit
-        default: .issue
+        case "RepositoryVulnerabilityAlert", "RepositoryAdvisory": .securityAlert
+        default:
+            reason == .securityAlert ? .securityAlert : .issue
         }
     }
 }

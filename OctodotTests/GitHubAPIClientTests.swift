@@ -6,8 +6,32 @@ struct GitHubAPIClientTests {
     private struct NotificationFixture {
         let id: String
         let unread: Bool
+        let reason: String
+        let title: String
         let subjectType: String
         let subjectURL: String?
+        let repositoryFullName: String
+        let repositoryHTMLURL: String
+
+        init(
+            id: String,
+            unread: Bool,
+            reason: String = "review_requested",
+            title: String? = nil,
+            subjectType: String,
+            subjectURL: String?,
+            repositoryFullName: String = "acme/test",
+            repositoryHTMLURL: String = "https://github.com/acme/test"
+        ) {
+            self.id = id
+            self.unread = unread
+            self.reason = reason
+            self.title = title ?? "Test subject \(id)"
+            self.subjectType = subjectType
+            self.subjectURL = subjectURL
+            self.repositoryFullName = repositoryFullName
+            self.repositoryHTMLURL = repositoryHTMLURL
+        }
     }
 
     private final class SubjectConcurrencyTrackingSession: @unchecked Sendable, NetworkSession {
@@ -488,6 +512,14 @@ struct GitHubAPIClientTests {
                 subjectType: "Issue",
                 subjectURL: "https://api.github.com/repos/acme/test/issues/4"
             ),
+            NotificationFixture(
+                id: "5",
+                unread: true,
+                reason: "security_alert",
+                title: "GHSA-532v-xpq5-8h95",
+                subjectType: "RepositoryVulnerabilityAlert",
+                subjectURL: "https://api.github.com/repos/acme/test/dependabot/alerts/5"
+            ),
         ]).data(using: .utf8)!
 
         let session = SubjectConcurrencyTrackingSession(notificationsPayload: payload)
@@ -499,16 +531,53 @@ struct GitHubAPIClientTests {
             $0.url?.path.contains("/repos/acme/test/") == true && $0.url?.path != "/notifications"
         }
 
-        #expect(notifications.count == 4)
+        #expect(notifications.count == 5)
         #expect(subjectRequests.count == 2)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/1"))
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/issues/4"))
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/2") == false)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/discussions/3") == false)
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/dependabot/alerts/5") == false)
         #expect(resolvedStates["1"] == .open)
         #expect(resolvedStates["4"] == .open)
         #expect(resolvedStates["2"] == nil)
         #expect(resolvedStates["3"] == nil)
+        #expect(resolvedStates["5"] == nil)
+    }
+
+    @Test func fetchNotificationsMapsSecurityAlertsExplicitly() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "sec-1",
+                unread: true,
+                reason: "security_alert",
+                title: "GHSA-532v-xpq5-8h95",
+                subjectType: "RepositoryVulnerabilityAlert",
+                subjectURL: "https://api.github.com/repos/electron/electron/dependabot/alerts/1",
+                repositoryFullName: "electron/electron",
+                repositoryHTMLURL: "https://github.com/electron/electron"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let notification = try #require(notifications.first)
+
+        #expect(notification.reason == .securityAlert)
+        #expect(notification.type == .securityAlert)
+        #expect(notification.url.absoluteString == "https://github.com/advisories/GHSA-532v-xpq5-8h95")
     }
 
     @Test func markAsReadInvalidatesUnreadCacheForNextRefresh() async throws {
@@ -852,16 +921,16 @@ struct GitHubAPIClientTests {
               {
                 "id": "\(item.id)",
                 "unread": \(item.unread ? "true" : "false"),
-                "reason": "review_requested",
+                "reason": "\(item.reason)",
                 "updated_at": "\(updatedAt)",
                 "subject": {
-                  "title": "Test subject \(item.id)",
+                  "title": "\(item.title)",
                   \(subjectURLField),
                   "type": "\(item.subjectType)"
                 },
                 "repository": {
-                  "full_name": "acme/test",
-                  "html_url": "https://github.com/acme/test"
+                  "full_name": "\(item.repositoryFullName)",
+                  "html_url": "\(item.repositoryHTMLURL)"
                 }
               }
             """

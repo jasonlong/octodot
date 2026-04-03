@@ -44,7 +44,7 @@ struct NotificationRowView: View, Equatable {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(notification.reason.rawValue)
                     .font(.system(size: 10))
-                    .foregroundStyle(notification.reason.isDirectlyInvolved ? AnyShapeStyle(Color.green) : AnyShapeStyle(.tertiary))
+                    .foregroundStyle(notification.reason.tintColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
 

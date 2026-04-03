@@ -31,6 +31,7 @@ struct GitHubNotification: Identifiable, Hashable {
         case .release: "octicon-tag"
         case .discussion: "octicon-discussion"
         case .commit: "octicon-commit"
+        case .securityAlert: "octicon-issue"
         }
     }
 
@@ -51,6 +52,7 @@ struct GitHubNotification: Identifiable, Hashable {
         case .release: .blue
         case .discussion: .yellow
         case .commit: .gray
+        case .securityAlert: .orange
         }
     }
 
@@ -80,9 +82,21 @@ struct GitHubNotification: Identifiable, Hashable {
         case author = "Author"
         case comment = "Comment"
         case stateChange = "State change"
+        case securityAlert = "Security alert"
 
         var isDirectlyInvolved: Bool {
             self == .mentioned || self == .assigned
+        }
+
+        var tintColor: Color? {
+            switch self {
+            case .securityAlert:
+                return .orange
+            case .mentioned, .assigned:
+                return .green
+            default:
+                return nil
+            }
         }
     }
 
@@ -92,5 +106,6 @@ struct GitHubNotification: Identifiable, Hashable {
         case release = "Release"
         case discussion = "Discussion"
         case commit = "Commit"
+        case securityAlert = "Security Alert"
     }
 }

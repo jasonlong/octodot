@@ -50,8 +50,16 @@ jobs:
             .deriveddata-release/Build/Products/Release/Octodot.app \
             Octodot-${TAG_NAME}-macos.zip
 
+      - name: Generate release notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          chmod +x scripts/generate_release_notes.sh
+          scripts/generate_release_notes.sh "${TAG_NAME}" RELEASE_NOTES.md
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: Octodot-${{ github.ref_name }}-macos.zip
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md

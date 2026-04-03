@@ -32,42 +32,15 @@ final class AppPreferences {
             }
         }
 
-        @MainActor
-        var resolvedColorScheme: ColorScheme {
+        var windowAppearance: NSAppearance? {
             switch self {
             case .system:
-                Self.currentSystemColorScheme
-            case .light:
-                .light
-            case .dark:
-                .dark
-            }
-        }
-
-        @MainActor
-        var resolvedWindowAppearance: NSAppearance {
-            switch self {
-            case .system:
-                Self.currentSystemWindowAppearance
+                nil
             case .light:
                 NSAppearance(named: .aqua) ?? .init(named: .aqua)!
             case .dark:
                 NSAppearance(named: .darkAqua) ?? .init(named: .darkAqua)!
             }
-        }
-
-        @MainActor
-        private static var currentSystemColorScheme: ColorScheme {
-            currentSystemWindowAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
-        }
-
-        @MainActor
-        private static var currentSystemWindowAppearance: NSAppearance {
-            let appearance = NSApp?.effectiveAppearance ?? NSApplication.shared.effectiveAppearance
-            if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                return NSAppearance(named: .darkAqua) ?? appearance
-            }
-            return NSAppearance(named: .aqua) ?? appearance
         }
     }
 

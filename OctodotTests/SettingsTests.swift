@@ -44,15 +44,9 @@ struct SettingsTests {
     }
 
     @Test func appearanceModeMapsToExpectedWindowAppearance() {
-        #expect(AppPreferences.AppearanceMode.system.resolvedWindowAppearance.name == .aqua || AppPreferences.AppearanceMode.system.resolvedWindowAppearance.name == .darkAqua)
-        #expect(AppPreferences.AppearanceMode.light.resolvedWindowAppearance.name == .aqua)
-        #expect(AppPreferences.AppearanceMode.dark.resolvedWindowAppearance.name == .darkAqua)
-    }
-
-    @Test func appearanceModeMapsToExpectedResolvedColorScheme() {
-        #expect(AppPreferences.AppearanceMode.system.resolvedColorScheme == .light || AppPreferences.AppearanceMode.system.resolvedColorScheme == .dark)
-        #expect(AppPreferences.AppearanceMode.light.resolvedColorScheme == .light)
-        #expect(AppPreferences.AppearanceMode.dark.resolvedColorScheme == .dark)
+        #expect(AppPreferences.AppearanceMode.system.windowAppearance == nil)
+        #expect(AppPreferences.AppearanceMode.light.windowAppearance?.name == .aqua)
+        #expect(AppPreferences.AppearanceMode.dark.windowAppearance?.name == .darkAqua)
     }
 
     @Test func preferencesMigrateLegacyShortcutValues() {

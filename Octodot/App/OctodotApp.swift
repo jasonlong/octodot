@@ -7,7 +7,15 @@ struct OctodotApp: App {
     var body: some Scene {
         Settings {
             SettingsView(appState: appDelegate.appState, preferences: appDelegate.preferences)
-                .preferredColorScheme(appDelegate.preferences.appearanceMode.resolvedColorScheme)
+                .preferredColorScheme(appDelegate.preferences.appearanceMode.colorScheme)
+        }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appDelegate.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }

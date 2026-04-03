@@ -5,13 +5,17 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     private let appState: AppState
     private let preferences: AppPreferences
+    private let hostingController: NSHostingController<AnyView>
 
     init(appState: AppState, preferences: AppPreferences) {
         self.appState = appState
         self.preferences = preferences
+        self.hostingController = NSHostingController(
+            rootView: Self.makeRootView(appState: appState, preferences: preferences)
+        )
 
         super.init(window: nil)
-        self.window = Self.makeWindow(appState: appState, preferences: preferences)
+        self.window = Self.makeWindow(contentViewController: hostingController, preferences: preferences)
     }
 
     @available(*, unavailable)
@@ -29,29 +33,17 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func updateAppearance() {
-        guard let existingWindow = window else {
+        guard let window else {
             return
         }
-
-        let frame = existingWindow.frame
-        let wasVisible = existingWindow.isVisible
-        let newWindow = Self.makeWindow(appState: appState, preferences: preferences)
-        newWindow.setFrame(frame, display: false)
-        window = newWindow
-
-        existingWindow.orderOut(nil)
-        if wasVisible {
-            show()
-        }
+        hostingController.rootView = Self.makeRootView(appState: appState, preferences: preferences)
+        window.appearance = preferences.appearanceMode.windowAppearance
+        window.invalidateShadow()
+        window.displayIfNeeded()
     }
 
-    private static func makeWindow(appState: AppState, preferences: AppPreferences) -> NSWindow {
-        let hostingController = NSHostingController(
-            rootView: SettingsView(appState: appState, preferences: preferences)
-                .preferredColorScheme(preferences.appearanceMode.resolvedColorScheme)
-        )
-
-        let window = NSWindow(contentViewController: hostingController)
+    private static func makeWindow(contentViewController: NSViewController, preferences: AppPreferences) -> NSWindow {
+        let window = NSWindow(contentViewController: contentViewController)
         window.title = "Settings"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.titleVisibility = .hidden
@@ -63,7 +55,14 @@ final class SettingsWindowController: NSWindowController {
         window.setContentSize(NSSize(width: 600, height: 560))
         window.center()
         window.isReleasedWhenClosed = false
-        window.appearance = preferences.appearanceMode.resolvedWindowAppearance
+        window.appearance = preferences.appearanceMode.windowAppearance
         return window
+    }
+
+    private static func makeRootView(appState: AppState, preferences: AppPreferences) -> AnyView {
+        AnyView(
+            SettingsView(appState: appState, preferences: preferences)
+                .preferredColorScheme(preferences.appearanceMode.colorScheme)
+        )
     }
 }

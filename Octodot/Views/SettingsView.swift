@@ -99,24 +99,41 @@ private struct SettingsTabItem: View {
     let action: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            Image(systemName: tab.systemImage)
-                .font(.system(size: 18, weight: .medium))
-            Text(tab.title)
-                .font(.system(size: 11.5, weight: .medium))
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: tab.systemImage)
+                    .font(.system(size: 18, weight: .medium))
+                Text(tab.title)
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .frame(width: 96, height: 56)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .frame(width: 96, height: 56)
-        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture(perform: action)
+        .buttonStyle(SettingsTabButtonStyle(isSelected: isSelected))
+        .focusEffectDisabled()
         .accessibilityElement()
         .accessibilityLabel(tab.title)
-        .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct SettingsTabButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(backgroundColor(isPressed: configuration.isPressed))
+            )
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        if isPressed {
+            return Color.accentColor.opacity(isSelected ? 0.20 : 0.08)
+        }
+        return isSelected ? Color.accentColor.opacity(0.14) : Color.clear
     }
 }
 

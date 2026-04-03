@@ -69,6 +69,6 @@ private struct PanelRootView: View {
 
     var body: some View {
         PanelContentView(appState: appState, closePanel: closePanel)
-            .preferredColorScheme(preferences.appearanceMode.resolvedColorScheme)
+            .preferredColorScheme(preferences.appearanceMode.colorScheme)
     }
 }

@@ -31,12 +31,12 @@ final class StatusItemController: NSObject {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    init(appState: AppState, preferences: AppPreferences) {
+    init(appState: AppState, preferences: AppPreferences, settingsWindowController: SettingsWindowController) {
         self.appState = appState
         self.preferences = preferences
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.panel = NotificationPanel(appState: appState, preferences: preferences)
-        self.settingsWindowController = SettingsWindowController(appState: appState, preferences: preferences)
+        self.settingsWindowController = settingsWindowController
 
         self.contextMenu = NSMenu()
         super.init()

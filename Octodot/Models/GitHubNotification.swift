@@ -13,6 +13,7 @@ struct GitHubNotification: Identifiable, Hashable {
     let url: URL
     let subjectURL: String?
     var subjectState: SubjectState
+    var ciStatus: CIStatus?
     var source: Source = .thread
 
     var iconName: String {
@@ -68,6 +69,37 @@ struct GitHubNotification: Identifiable, Hashable {
         activityIdentity == other.activityIdentity
     }
 
+    var needsSubjectMetadataResolution: Bool {
+        guard subjectURL != nil else { return false }
+
+        switch type {
+        case .pullRequest:
+            return subjectState == .unknown || (subjectState == .open && ciStatus == nil)
+        case .issue:
+            return subjectState == .unknown
+        case .release, .discussion, .commit, .securityAlert:
+            return false
+        }
+    }
+
+    var ciStatusIconName: String? {
+        switch ciStatus {
+        case .success: "octicon-check"
+        case .failure: "octicon-x"
+        case .pending: "octicon-dot-fill"
+        case nil: nil
+        }
+    }
+
+    var ciStatusColor: Color? {
+        switch ciStatus {
+        case .success: .green
+        case .failure: .red
+        case .pending: .yellow
+        case nil: nil
+        }
+    }
+
     enum SubjectState: String, Hashable, Codable {
         case open
         case closed
@@ -75,6 +107,17 @@ struct GitHubNotification: Identifiable, Hashable {
         case draft
         case closedNotPlanned
         case unknown
+    }
+
+    enum CIStatus: String, Hashable, Codable {
+        case success
+        case failure
+        case pending
+    }
+
+    struct SubjectMetadata: Hashable {
+        let state: SubjectState
+        let ciStatus: CIStatus?
     }
 
     enum Source: String, Hashable, Codable {

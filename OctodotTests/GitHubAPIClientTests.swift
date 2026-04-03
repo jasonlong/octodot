@@ -411,12 +411,12 @@ struct GitHubAPIClientTests {
 
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let initial = try await client.fetchNotifications(force: true)
-        let resolvedStates = await client.resolveSubjectStates(for: initial)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: initial)
         let refreshed = try await client.fetchNotifications(force: true)
         let requests = await session.recordedRequests()
 
         #expect(initial.first?.subjectState == .unknown)
-        #expect(resolvedStates["1"] == .open)
+        #expect(resolvedMetadata["1"]?.state == .open)
         #expect(refreshed.first?.subjectState == .open)
         #expect(requests.count == 3)
     }
@@ -697,7 +697,7 @@ struct GitHubAPIClientTests {
         #expect(alerts.first?.id == "dependabot:acme/api:7")
     }
 
-    @Test func resolveSubjectStatesCapsConcurrentRequests() async throws {
+    @Test func resolveSubjectMetadataCapsConcurrentRequests() async throws {
         let session = SubjectConcurrencyTrackingSession(
             notificationsPayload: Self.notificationsPayload(
                 ids: ["1", "2", "3", "4"],
@@ -712,18 +712,18 @@ struct GitHubAPIClientTests {
         )
 
         let notifications = try await client.fetchNotifications(force: true)
-        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
         let requests = session.recordedRequests()
         let subjectRequests = requests.filter { $0.url?.path.contains("/repos/acme/test/pulls/") == true }
 
         #expect(notifications.count == 4)
-        #expect(resolvedStates.count == 4)
-        #expect(resolvedStates.values.allSatisfy { $0 == .open })
+        #expect(resolvedMetadata.count == 4)
+        #expect(resolvedMetadata.values.allSatisfy { $0.state == .open })
         #expect(subjectRequests.count == 4)
         #expect(session.recordedMaxInFlightSubjectRequests() == 2)
     }
 
-    @Test func resolveSubjectStatesOnlyFetchesIssueAndPullRequestStates() async throws {
+    @Test func resolveSubjectMetadataOnlyFetchesIssueAndPullRequestStates() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
                 id: "1",
@@ -763,7 +763,7 @@ struct GitHubAPIClientTests {
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
 
         let notifications = try await client.fetchNotifications(force: true)
-        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
         let subjectRequests = session.recordedRequests().filter {
             $0.url?.path.contains("/repos/acme/test/") == true && $0.url?.path != "/notifications"
         }
@@ -775,14 +775,14 @@ struct GitHubAPIClientTests {
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/issues/4"))
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/discussions/3") == false)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/dependabot/alerts/5") == false)
-        #expect(resolvedStates["1"] == .open)
-        #expect(resolvedStates["2"] == .open)
-        #expect(resolvedStates["4"] == .open)
-        #expect(resolvedStates["3"] == nil)
-        #expect(resolvedStates["5"] == nil)
+        #expect(resolvedMetadata["1"]?.state == .open)
+        #expect(resolvedMetadata["2"]?.state == .open)
+        #expect(resolvedMetadata["4"]?.state == .open)
+        #expect(resolvedMetadata["3"] == nil)
+        #expect(resolvedMetadata["5"] == nil)
     }
 
-    @Test func resolveSubjectStatesTreatsMergedAtAsMergedPullRequest() async throws {
+    @Test func resolveSubjectMetadataTreatsMergedAtAsMergedPullRequest() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
                 id: "1",
@@ -815,12 +815,12 @@ struct GitHubAPIClientTests {
 
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let notifications = try await client.fetchNotifications(force: true)
-        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
 
-        #expect(resolvedStates["1"] == .merged)
+        #expect(resolvedMetadata["1"]?.state == .merged)
     }
 
-    @Test func resolveSubjectStatesTreatsDraftPullRequestAsDraft() async throws {
+    @Test func resolveSubjectMetadataTreatsDraftPullRequestAsDraft() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
                 id: "1",
@@ -853,9 +853,114 @@ struct GitHubAPIClientTests {
 
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let notifications = try await client.fetchNotifications(force: true)
-        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
 
-        #expect(resolvedStates["1"] == .draft)
+        #expect(resolvedMetadata["1"]?.state == .draft)
+    }
+
+    @Test func resolveSubjectMetadataMapsOpenPullRequestCheckRunsToCIStatus() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: true,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                #"{"state":"open","head":{"sha":"abc123"}}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                #"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/commits/abc123/check-runs?per_page=100")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
+
+        #expect(resolvedMetadata["1"]?.state == .open)
+        #expect(resolvedMetadata["1"]?.ciStatus == .success)
+    }
+
+    @Test func resolveSubjectMetadataPersistsCIStatusAcrossRefreshes() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(
+                    id: "1",
+                    updatedAt: "2026-04-01T12:00:00Z",
+                    subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+                ).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                #"{"state":"open","head":{"sha":"abc123"}}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                #"{"check_runs":[{"status":"queued","conclusion":null}]}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/commits/abc123/check-runs?per_page=100")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(
+                    id: "1",
+                    updatedAt: "2026-04-01T12:00:00Z",
+                    subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+                ).data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let initial = try await client.fetchNotifications(force: true)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: initial)
+        let refreshed = try await client.fetchNotifications(force: true)
+
+        #expect(resolvedMetadata["1"]?.ciStatus == .pending)
+        #expect(refreshed.first?.ciStatus == .pending)
     }
 
     @Test func fetchNotificationsMapsSecurityAlertsExplicitly() async throws {

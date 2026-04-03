@@ -25,6 +25,7 @@ final class InboxStore {
         let url: URL
         let subjectURL: String?
         let subjectState: GitHubNotification.SubjectState
+        let ciStatus: GitHubNotification.CIStatus?
         let source: GitHubNotification.Source
 
         init(notification: GitHubNotification) {
@@ -39,6 +40,7 @@ final class InboxStore {
             self.url = notification.url
             self.subjectURL = notification.subjectURL
             self.subjectState = notification.subjectState
+            self.ciStatus = notification.ciStatus
             self.source = notification.source
         }
 
@@ -55,6 +57,7 @@ final class InboxStore {
             url = try container.decode(URL.self, forKey: .url)
             subjectURL = try container.decodeIfPresent(String.self, forKey: .subjectURL)
             subjectState = try container.decode(GitHubNotification.SubjectState.self, forKey: .subjectState)
+            ciStatus = try container.decodeIfPresent(GitHubNotification.CIStatus.self, forKey: .ciStatus)
             source = try container.decodeIfPresent(GitHubNotification.Source.self, forKey: .source) ?? .thread
         }
 
@@ -71,6 +74,7 @@ final class InboxStore {
                 url: url,
                 subjectURL: subjectURL,
                 subjectState: subjectState,
+                ciStatus: ciStatus,
                 source: source
             )
         }
@@ -257,19 +261,20 @@ final class InboxStore {
     }
 
     @discardableResult
-    func applyResolvedSubjectStates(
-        _ resolvedStates: [String: GitHubNotification.SubjectState]
+    func applyResolvedSubjectMetadata(
+        _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata]
     ) -> Bool {
         var didChange = false
 
         for (threadID, notification) in recentInboxReadNotifications {
-            guard let resolvedState = resolvedStates[notification.id],
-                  notification.subjectState != resolvedState else {
+            guard let metadata = resolvedMetadata[notification.id],
+                  notification.subjectState != metadata.state || notification.ciStatus != metadata.ciStatus else {
                 continue
             }
 
             var updated = notification
-            updated.subjectState = resolvedState
+            updated.subjectState = metadata.state
+            updated.ciStatus = metadata.ciStatus
             recentInboxReadNotifications[threadID] = updated
             didChange = true
         }
@@ -282,18 +287,20 @@ final class InboxStore {
     }
 
     @discardableResult
-    func applyResolvedSubjectStatesToLastFetchedUnread(
-        _ resolvedStates: [String: GitHubNotification.SubjectState]
+    func applyResolvedSubjectMetadataToLastFetchedUnread(
+        _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata]
     ) -> Bool {
         var didChange = false
 
         for index in lastFetchedUnreadNotifications.indices {
-            guard let resolvedState = resolvedStates[lastFetchedUnreadNotifications[index].id],
-                  lastFetchedUnreadNotifications[index].subjectState != resolvedState else {
+            guard let metadata = resolvedMetadata[lastFetchedUnreadNotifications[index].id],
+                  lastFetchedUnreadNotifications[index].subjectState != metadata.state ||
+                    lastFetchedUnreadNotifications[index].ciStatus != metadata.ciStatus else {
                 continue
             }
 
-            lastFetchedUnreadNotifications[index].subjectState = resolvedState
+            lastFetchedUnreadNotifications[index].subjectState = metadata.state
+            lastFetchedUnreadNotifications[index].ciStatus = metadata.ciStatus
             didChange = true
         }
 

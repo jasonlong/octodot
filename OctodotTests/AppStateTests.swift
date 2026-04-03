@@ -1431,7 +1431,9 @@ struct AppStateTests {
         #expect(state.selectedNotification?.id == "second")
 
         await Self.settleTasks()
-        #expect((await session.recordedRequests()).count == 1)
+        #expect((await session.recordedRequests()).contains {
+            $0.url?.path == "/notifications/threads/first"
+        })
     }
 
     @Test func doneOnlyRemovesSelectedActivitySnapshotWhenRowsShareAThread() async {
@@ -1503,7 +1505,9 @@ struct AppStateTests {
         #expect(state.selectedNotification?.id == "second")
 
         await Self.settleTasks()
-        #expect((await session.recordedRequests()).count == 1)
+        #expect((await session.recordedRequests()).contains {
+            $0.url?.path == "/notifications/threads/shared-thread"
+        })
     }
 
     @Test func unsubscribeOnlyRemovesSelectedNotificationWhenTwoRowsShareARepository() async {

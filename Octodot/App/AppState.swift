@@ -85,6 +85,7 @@ final class AppState {
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
+    private var shouldRefreshVisibleCIMetadataAfterNextRebuild = false
     private var lastActionDebugThreadID: String?
     private var lastActionDebugKind: String?
     private var activeLoadRequestID = UUID()
@@ -232,8 +233,7 @@ final class AppState {
 
     func notificationBecameVisible(id: String) {
         guard let notification = filteredNotifications.first(where: { $0.id == id }),
-              notification.subjectURL != nil,
-              notification.subjectState == .unknown,
+              notification.needsSubjectMetadataResolution,
               !pendingVisibleSubjectStateIDs.contains(id),
               !visibleSubjectStateInFlightIDs.contains(id) else {
             return
@@ -336,6 +336,7 @@ final class AppState {
             resetSelectionToTopOnNextLoadIfNeeded()
             isLoading = false
             errorMessage = nil
+            shouldRefreshVisibleCIMetadataAfterNextRebuild = true
             rebuildDerivedState()
             scheduleSecurityAlertsRefreshIfNeeded(
                 requestID: requestID,
@@ -535,6 +536,11 @@ final class AppState {
 
         let selected = filtered[selectedIndexStorage]
         selectedThreadID = selected.id
+
+        enqueueVisibleSubjectMetadataRefreshIfNeeded(
+            forceOpenPRRefresh: shouldRefreshVisibleCIMetadataAfterNextRebuild
+        )
+        shouldRefreshVisibleCIMetadataAfterNextRebuild = false
     }
 
     private func filteredNotificationsForCurrentMode(
@@ -935,23 +941,23 @@ final class AppState {
         }
 
         subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs] in
-            let resolvedStates = await client.resolveSubjectStates(for: candidates)
+            let resolvedMetadata = await client.resolveSubjectMetadata(for: candidates)
             guard !Task.isCancelled else { return }
-            self?.applyResolvedSubjectStates(resolvedStates, expectedIDs: candidateIDs)
+            self?.applyResolvedSubjectMetadata(resolvedMetadata, expectedIDs: candidateIDs)
         }
     }
 
-    private func applyResolvedSubjectStates(
-        _ resolvedStates: [String: GitHubNotification.SubjectState],
+    private func applyResolvedSubjectMetadata(
+        _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata],
         expectedIDs: [String]
     ) {
         subjectStateResolutionTask = nil
         visibleSubjectStateInFlightIDs.subtract(expectedIDs)
 
-        let unreadChanged = applyResolvedSubjectStates(resolvedStates, to: &serverNotifications)
-        let recentInboxChanged = applyResolvedSubjectStates(resolvedStates, to: &serverRecentInboxNotifications)
-        let recentReadChanged = inboxStore.applyResolvedSubjectStates(resolvedStates)
-        let lastFetchedUnreadChanged = inboxStore.applyResolvedSubjectStatesToLastFetchedUnread(resolvedStates)
+        let unreadChanged = applyResolvedSubjectMetadata(resolvedMetadata, to: &serverNotifications)
+        let recentInboxChanged = applyResolvedSubjectMetadata(resolvedMetadata, to: &serverRecentInboxNotifications)
+        let recentReadChanged = inboxStore.applyResolvedSubjectMetadata(resolvedMetadata)
+        let lastFetchedUnreadChanged = inboxStore.applyResolvedSubjectMetadataToLastFetchedUnread(resolvedMetadata)
         let didChange = unreadChanged || recentInboxChanged || recentReadChanged || lastFetchedUnreadChanged
 
         if didChange {
@@ -962,19 +968,21 @@ final class AppState {
     }
 
     @discardableResult
-    private func applyResolvedSubjectStates(
-        _ resolvedStates: [String: GitHubNotification.SubjectState],
+    private func applyResolvedSubjectMetadata(
+        _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata],
         to notifications: inout [GitHubNotification]
     ) -> Bool {
         var didChange = false
 
         for index in notifications.indices {
-            guard let resolvedState = resolvedStates[notifications[index].id],
-                  notifications[index].subjectState != resolvedState else {
+            guard let metadata = resolvedMetadata[notifications[index].id],
+                  notifications[index].subjectState != metadata.state ||
+                    notifications[index].ciStatus != metadata.ciStatus else {
                 continue
             }
 
-            notifications[index].subjectState = resolvedState
+            notifications[index].subjectState = metadata.state
+            notifications[index].ciStatus = metadata.ciStatus
             didChange = true
         }
 
@@ -982,25 +990,48 @@ final class AppState {
     }
 
     @discardableResult
-    private func applyResolvedSubjectStates(
-        _ resolvedStates: [String: GitHubNotification.SubjectState],
+    private func applyResolvedSubjectMetadata(
+        _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata],
         to notificationsByThreadID: inout [String: GitHubNotification]
     ) -> Bool {
         var didChange = false
 
         for (threadID, notification) in notificationsByThreadID {
-            guard let resolvedState = resolvedStates[notification.id],
-                  notification.subjectState != resolvedState else {
+            guard let metadata = resolvedMetadata[notification.id],
+                  notification.subjectState != metadata.state || notification.ciStatus != metadata.ciStatus else {
                 continue
             }
 
             var updated = notification
-            updated.subjectState = resolvedState
+            updated.subjectState = metadata.state
+            updated.ciStatus = metadata.ciStatus
             notificationsByThreadID[threadID] = updated
             didChange = true
         }
 
         return didChange
+    }
+
+    private func enqueueVisibleSubjectMetadataRefreshIfNeeded(forceOpenPRRefresh: Bool = false) {
+        guard isPanelVisible else { return }
+
+        for notification in filteredNotifications.prefix(Self.visibleSubjectStateBatchSize) {
+            let shouldQueue = notification.needsSubjectMetadataResolution || (
+                forceOpenPRRefresh &&
+                notification.type == .pullRequest &&
+                notification.subjectState == .open
+            )
+
+            guard shouldQueue else { continue }
+            let id = notification.id
+            guard !pendingVisibleSubjectStateIDs.contains(id),
+                  !visibleSubjectStateInFlightIDs.contains(id) else {
+                continue
+            }
+            pendingVisibleSubjectStateIDs.append(id)
+        }
+
+        scheduleVisibleSubjectStateResolutionIfNeeded()
     }
 
     private func selectionAfterRemoving(threadId: String, from list: [GitHubNotification]) -> String? {

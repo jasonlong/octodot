@@ -257,6 +257,7 @@ actor GitHubAPIClient {
             if let previous = previousNotifications[notifications[index].id],
                previous.updatedAt == notifications[index].updatedAt {
                 notifications[index].subjectState = previous.subjectState
+                notifications[index].ciStatus = previous.ciStatus
             }
         }
 
@@ -271,51 +272,52 @@ actor GitHubAPIClient {
         return notifications
     }
 
-    func resolveSubjectStates(
+    func resolveSubjectMetadata(
         for notifications: [GitHubNotification]
-    ) async -> [String: GitHubNotification.SubjectState] {
+    ) async -> [String: GitHubNotification.SubjectMetadata] {
         let pendingSubjectNotifications = notifications
-            .filter(Self.shouldResolveSubjectState)
+            .filter(Self.shouldResolveSubjectMetadata)
             .prefix(maxSubjectResolutionBatchSize)
         let candidateNotifications = Array(pendingSubjectNotifications)
         guard !candidateNotifications.isEmpty else { return [:] }
 
         let subjectRequestContext = SubjectRequestContext(token: token, session: session)
-        let subjectStatesByID = await Self.fetchSubjectStates(
+        let subjectMetadataByID = await Self.fetchSubjectMetadata(
             for: candidateNotifications,
             maxConcurrent: maxConcurrentSubjectRequests,
             context: subjectRequestContext
         )
 
-        guard !subjectStatesByID.isEmpty else { return [:] }
+        guard !subjectMetadataByID.isEmpty else { return [:] }
 
         for scope in FeedScope.allCases {
             updateFeedCache(scope) { cache in
                 for index in cache.notifications.indices {
-                    if let state = subjectStatesByID[cache.notifications[index].id] {
-                        cache.notifications[index].subjectState = state
+                    if let metadata = subjectMetadataByID[cache.notifications[index].id] {
+                        cache.notifications[index].subjectState = metadata.state
+                        cache.notifications[index].ciStatus = metadata.ciStatus
                     }
                 }
             }
         }
 
-        return subjectStatesByID
+        return subjectMetadataByID
     }
 
-    // MARK: - Fetch subject state
+    // MARK: - Fetch subject metadata
 
-    private static func fetchSubjectStates(
+    private static func fetchSubjectMetadata(
         for notifications: [GitHubNotification],
         maxConcurrent: Int,
         context: SubjectRequestContext
-    ) async -> [String: GitHubNotification.SubjectState] {
+    ) async -> [String: GitHubNotification.SubjectMetadata] {
         guard !notifications.isEmpty else { return [:] }
 
         let concurrencyLimit = max(1, min(maxConcurrent, notifications.count))
         var iterator = notifications.makeIterator()
-        var subjectStatesByID: [String: GitHubNotification.SubjectState] = [:]
+        var subjectMetadataByID: [String: GitHubNotification.SubjectMetadata] = [:]
 
-        await withTaskGroup(of: (String, GitHubNotification.SubjectState).self) { group in
+        await withTaskGroup(of: (String, GitHubNotification.SubjectMetadata).self) { group in
             for _ in 0..<concurrencyLimit {
                 guard let notification = iterator.next(),
                       let subjectURL = notification.subjectURL else {
@@ -324,13 +326,13 @@ actor GitHubAPIClient {
 
                 let id = notification.id
                 group.addTask {
-                    let state = await Self.fetchSubjectState(apiURL: subjectURL, context: context)
-                    return (id, state)
+                    let metadata = await Self.fetchSubjectMetadata(apiURL: subjectURL, context: context)
+                    return (id, metadata)
                 }
             }
 
-            while let (id, state) = await group.next() {
-                subjectStatesByID[id] = state
+            while let (id, metadata) = await group.next() {
+                subjectMetadataByID[id] = metadata
 
                 guard let notification = iterator.next(),
                       let subjectURL = notification.subjectURL else {
@@ -339,41 +341,75 @@ actor GitHubAPIClient {
 
                 let id = notification.id
                 group.addTask {
-                    let state = await Self.fetchSubjectState(apiURL: subjectURL, context: context)
-                    return (id, state)
+                    let metadata = await Self.fetchSubjectMetadata(apiURL: subjectURL, context: context)
+                    return (id, metadata)
                 }
             }
         }
 
-        return subjectStatesByID
+        return subjectMetadataByID
     }
 
-    private static func fetchSubjectState(
+    private static func fetchSubjectMetadata(
         apiURL: String,
         context: SubjectRequestContext
-    ) async -> GitHubNotification.SubjectState {
-        guard let url = URL(string: apiURL) else { return .unknown }
+    ) async -> GitHubNotification.SubjectMetadata {
+        guard let url = URL(string: apiURL) else { return .init(state: .unknown, ciStatus: nil) }
         do {
             let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
-            return subject.resolvedState
+            let resolvedState = subject.resolvedState
+            let ciStatus: GitHubNotification.CIStatus?
+            if resolvedState == .open, let headSHA = subject.head?.sha {
+                ciStatus = await fetchCIStatus(subjectURL: url, headSHA: headSHA, context: context)
+            } else {
+                ciStatus = nil
+            }
+            return .init(state: resolvedState, ciStatus: ciStatus)
         } catch {
-            return .unknown
+            return .init(state: .unknown, ciStatus: nil)
         }
     }
 
-    private static func shouldResolveSubjectState(_ notification: GitHubNotification) -> Bool {
-        guard notification.subjectURL != nil,
-              notification.subjectState == .unknown else {
-            return false
+    private static func fetchCIStatus(
+        subjectURL: URL,
+        headSHA: String,
+        context: SubjectRequestContext
+    ) async -> GitHubNotification.CIStatus? {
+        let repositoryAPIURL = subjectURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+
+        var checkRunsComponents = URLComponents(
+            url: repositoryAPIURL
+                .appendingPathComponent("commits")
+                .appendingPathComponent(headSHA)
+                .appendingPathComponent("check-runs"),
+            resolvingAgainstBaseURL: false
+        )
+        checkRunsComponents?.queryItems = [URLQueryItem(name: "per_page", value: "100")]
+
+        if let checkRunsURL = checkRunsComponents?.url,
+           let data = try? await request(url: checkRunsURL, token: context.token, session: context.session),
+           let response = try? JSONDecoder.github.decode(APICheckRunsResponse.self, from: data),
+           let status = response.resolvedCIStatus {
+            return status
         }
 
-        switch notification.type {
-        case .pullRequest, .issue:
-            return true
-        case .release, .discussion, .commit, .securityAlert:
-            return false
+        let combinedStatusURL = repositoryAPIURL
+            .appendingPathComponent("commits")
+            .appendingPathComponent(headSHA)
+            .appendingPathComponent("status")
+        if let data = try? await request(url: combinedStatusURL, token: context.token, session: context.session),
+           let response = try? JSONDecoder.github.decode(APICombinedStatus.self, from: data) {
+            return response.resolvedCIStatus
         }
+
+        return nil
+    }
+
+    private static func shouldResolveSubjectMetadata(_ notification: GitHubNotification) -> Bool {
+        notification.needsSubjectMetadataResolution
     }
 
     private func fetchDependabotAlertsForRepository(_ repositoryFullName: String) async throws -> [GitHubNotification] {
@@ -866,11 +902,16 @@ private struct APINotification: Decodable {
 }
 
 private struct APISubjectState: Decodable {
+    struct Head: Decodable {
+        let sha: String
+    }
+
     let state: String?
     let merged: Bool?
     let mergedAt: String?
     let draft: Bool?
     let stateReason: String?
+    let head: Head?
 
     var resolvedState: GitHubNotification.SubjectState {
         if merged == true || mergedAt != nil {
@@ -886,6 +927,58 @@ private struct APISubjectState: Decodable {
             return stateReason == "not_planned" ? .closedNotPlanned : .closed
         default:
             return .unknown
+        }
+    }
+}
+
+private struct APICheckRunsResponse: Decodable {
+    struct CheckRun: Decodable {
+        let status: String
+        let conclusion: String?
+    }
+
+    let checkRuns: [CheckRun]
+
+    var resolvedCIStatus: GitHubNotification.CIStatus? {
+        guard !checkRuns.isEmpty else { return nil }
+
+        if checkRuns.contains(where: { $0.status != "completed" }) {
+            return .pending
+        }
+
+        let failureConclusions: Set<String> = [
+            "action_required",
+            "cancelled",
+            "failure",
+            "stale",
+            "startup_failure",
+            "timed_out",
+        ]
+
+        if checkRuns.contains(where: {
+            guard let conclusion = $0.conclusion else { return true }
+            return failureConclusions.contains(conclusion)
+        }) {
+            return .failure
+        }
+
+        return .success
+    }
+}
+
+private struct APICombinedStatus: Decodable {
+    let state: String
+
+    var resolvedCIStatus: GitHubNotification.CIStatus? {
+        switch state {
+        case "success":
+            return .success
+        case "failure", "error":
+            return .failure
+        case "pending":
+            return .pending
+        default:
+            return nil
         }
     }
 }

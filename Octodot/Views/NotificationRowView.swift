@@ -48,10 +48,23 @@ struct NotificationRowView: View, Equatable {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
 
-                Text(relativeTime)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
+                HStack(spacing: 4) {
+                    if let ciIconName = notification.ciStatusIconName,
+                       let ciColor = notification.ciStatusColor,
+                       notification.type == .pullRequest,
+                       notification.subjectState == .open {
+                        Image(ciIconName)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 10, height: 10)
+                            .foregroundStyle(ciColor)
+                    }
+
+                    Text(relativeTime)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
             .frame(minWidth: 58, alignment: .trailing)
             .padding(.trailing, 10)

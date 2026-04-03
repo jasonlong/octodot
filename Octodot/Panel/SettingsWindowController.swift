@@ -60,7 +60,7 @@ final class SettingsWindowController: NSWindowController {
         window.toolbarStyle = .preference
         window.isMovableByWindowBackground = true
         window.tabbingMode = .disallowed
-        window.setContentSize(NSSize(width: 540, height: 390))
+        window.setContentSize(NSSize(width: 600, height: 560))
         window.center()
         window.isReleasedWhenClosed = false
         window.appearance = preferences.appearanceMode.resolvedWindowAppearance

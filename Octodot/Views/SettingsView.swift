@@ -51,7 +51,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 540, height: 390)
+        .frame(width: 600, height: 560)
     }
 
     private var selection: Binding<Tab> {
@@ -74,23 +74,14 @@ private struct SettingsTabBar: View {
                 .appearance,
                 .shortcuts
             ], id: \.self) { tab in
-                Button {
-                    selection = tab
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 18, weight: .medium))
-                        Text(tab.title)
-                            .font(.system(size: 11.5, weight: .medium))
+                SettingsTabItem(
+                    tab: tab,
+                    isSelected: selection == tab
+                ) {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        selection = tab
                     }
-                    .frame(width: 96, height: 56)
-                    .foregroundStyle(selection == tab ? Color.accentColor : Color.primary)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(selection == tab ? Color.accentColor.opacity(0.14) : Color.clear)
-                    )
                 }
-                .buttonStyle(.plain)
             }
 
             Spacer()
@@ -99,6 +90,33 @@ private struct SettingsTabBar: View {
         .padding(.top, 12)
         .padding(.bottom, 10)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct SettingsTabItem: View {
+    let tab: SettingsView.Tab
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: tab.systemImage)
+                .font(.system(size: 18, weight: .medium))
+            Text(tab.title)
+                .font(.system(size: 11.5, weight: .medium))
+        }
+        .frame(width: 96, height: 56)
+        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture(perform: action)
+        .accessibilityElement()
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -120,7 +138,7 @@ private struct AccountSettingsPane: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
 
-                Text("Use a classic Personal Access Token with the notifications scope.")
+                Text("Use a classic Personal Access Token with the notifications and repo scopes.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
@@ -197,6 +215,37 @@ private struct AppearanceSettingsPane: View {
 
 private struct ShortcutsSettingsPane: View {
     @Bindable var preferences: AppPreferences
+    private let vimColumnWidth: CGFloat = 138
+    private let standardColumnWidth: CGFloat = 120
+
+    private struct BindingRow: Identifiable {
+        let id: String
+        let action: String
+        let vim: String
+        let standard: String
+    }
+
+    private let bindingRows: [BindingRow] = [
+        .init(id: "move", action: "Move selection", vim: "j / k", standard: "Up / Down"),
+        .init(id: "page-down", action: "Page down", vim: "ctrl-f / space", standard: "Page Down"),
+        .init(id: "page-up", action: "Page up", vim: "ctrl-b", standard: "Page Up"),
+        .init(id: "half-down", action: "Half page down", vim: "ctrl-d", standard: "—"),
+        .init(id: "half-up", action: "Half page up", vim: "ctrl-u", standard: "—"),
+        .init(id: "top", action: "Jump to top", vim: "gg", standard: "Home"),
+        .init(id: "bottom", action: "Jump to bottom", vim: "G", standard: "End"),
+        .init(id: "open", action: "Open selected", vim: "o", standard: "Return"),
+        .init(id: "done", action: "Done", vim: "d", standard: "—"),
+        .init(id: "unsub", action: "Unsubscribe", vim: "x", standard: "—"),
+        .init(id: "undo", action: "Undo pending action", vim: "u", standard: "—"),
+        .init(id: "copy", action: "Copy URL", vim: "y", standard: "—"),
+        .init(id: "search", action: "Focus search", vim: "/", standard: "—"),
+        .init(id: "search-submit", action: "Apply search and return to list", vim: "return / tab", standard: "Return / Tab"),
+        .init(id: "search-cancel", action: "Cancel search", vim: "esc", standard: "Escape"),
+        .init(id: "refresh", action: "Refresh", vim: "r", standard: "—"),
+        .init(id: "mode", action: "Toggle Inbox / Unread", vim: "a", standard: "—"),
+        .init(id: "group", action: "Toggle repo grouping", vim: "s", standard: "—"),
+        .init(id: "close", action: "Close panel", vim: "esc", standard: "Escape"),
+    ]
 
     var body: some View {
         Form {
@@ -211,26 +260,51 @@ private struct ShortcutsSettingsPane: View {
             }
 
             Section("Panel Keybindings") {
-                shortcutRow("j / k", "Move selection")
-                shortcutRow("gg / G", "Jump to top or bottom")
-                shortcutRow("o", "Open and mark read")
-                shortcutRow("d", "Done")
-                shortcutRow("x", "Unsubscribe")
-                shortcutRow("u", "Undo pending actions")
-                shortcutRow("/", "Search")
-                shortcutRow("r", "Refresh")
-                shortcutRow("a", "Toggle Inbox / Unread")
-                shortcutRow("Esc", "Exit search or close panel")
+                VStack(alignment: .leading, spacing: 0) {
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                        GridRow {
+                            tableHeader("Action")
+                            tableHeader("Vim")
+                            tableHeader("Standard")
+                        }
+
+                        ForEach(bindingRows) { row in
+                            Divider()
+                                .gridCellColumns(3)
+
+                            GridRow(alignment: .top) {
+                                Text(row.action)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .lineLimit(1)
+
+                                shortcutText(row.vim)
+                                    .frame(width: vimColumnWidth, alignment: .leading)
+
+                                shortcutText(row.standard)
+                                    .frame(width: standardColumnWidth, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             }
         }
         .formStyle(.grouped)
     }
 
-    private func shortcutRow(_ shortcut: String, _ description: String) -> some View {
-        LabeledContent(shortcut) {
-            Text(description)
-                .foregroundStyle(.secondary)
-        }
+    private func tableHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+    }
+
+    private func shortcutText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11.5, design: .monospaced))
+            .foregroundStyle(text == "—" ? .tertiary : .primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .lineLimit(1)
     }
 }
 

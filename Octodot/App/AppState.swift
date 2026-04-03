@@ -20,13 +20,14 @@ final class AppState {
     private static let inboxModeStorageKey = "AppState.inboxMode.v1"
     private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
     private static let recentInboxReadsStorageKey = "AppState.recentInboxReads.v1"
+    private static let recentInboxBootstrapUsersStorageKey = "AppState.recentInboxBootstrapUsers.v1"
     private static let visibleSubjectStateBatchSize = 20
     private static let recentInboxReadRetentionInterval: TimeInterval = 14 * 24 * 60 * 60
     private static let recentInboxReadLimit = 100
-    private static let inboxRecentReadFallbackWindow: TimeInterval = 36 * 60 * 60
-    private static let inboxRecentReadGraceBeforeOldestUnread: TimeInterval = 6 * 60 * 60
+    private static let inboxRecentReadFallbackWindow: TimeInterval = 12 * 60 * 60
+    private static let inboxRecentReadGraceBeforeOldestUnread: TimeInterval = 2 * 60 * 60
     private static let inboxRecentReadMaxPages = 1
-    private static let inboxRecentReadMaxItems = 25
+    private static let inboxRecentReadMaxItems = 10
     static let pageJumpCount = 8
     static let halfPageJumpCount = 4
 
@@ -138,6 +139,7 @@ final class AppState {
     private var activeLoadRequestID = UUID()
     private var lastKnownUnreadCount = 0
     private var recentInboxReadNotifications: [String: GitHubNotification] = [:]
+    private var recentInboxBootstrapUsers: Set<String>
     private var lastFetchedUnreadNotifications: [GitHubNotification] = []
     private var apiClient: GitHubAPIClient?
     private let actionDispatchDelayNanoseconds: UInt64
@@ -205,6 +207,7 @@ final class AppState {
         self.inboxMode = Self.loadInboxMode(from: userDefaults)
         self.groupByRepo = Self.loadGroupByRepo(from: userDefaults)
         self.recentInboxReadNotifications = Self.loadRecentInboxReadNotifications(from: userDefaults)
+        self.recentInboxBootstrapUsers = Self.loadRecentInboxBootstrapUsers(from: userDefaults)
         self.repositoryOrderAnchor = Self.repositoryOrder(from: notifications)
         self.selectedThreadID = notifications.first?.id
         self.lastKnownUnreadCount = notifications.reduce(into: 0) { count, notification in
@@ -345,7 +348,8 @@ final class AppState {
             async let unreadFetch = client.fetchNotifications(all: false, force: force)
             let fetched = try await unreadFetch
             let fetchedRecentInbox: [GitHubNotification]
-            if inboxMode == .inbox {
+            let shouldFetchRecentInboxSeed = inboxMode == .inbox && shouldFetchRecentInboxSeed()
+            if shouldFetchRecentInboxSeed {
                 fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
                     since: recentInboxSinceDate(relativeTo: fetched),
                     force: force,
@@ -357,7 +361,8 @@ final class AppState {
             guard requestID == activeLoadRequestID else { return }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
-                recentInboxNotifications: fetchedRecentInbox
+                recentInboxNotifications: fetchedRecentInbox,
+                didFetchRecentInboxSeed: shouldFetchRecentInboxSeed
             )
             isLoading = false
             errorMessage = nil
@@ -1045,7 +1050,8 @@ final class AppState {
 
     private func applyLoadedNotifications(
         unreadNotifications: [GitHubNotification],
-        recentInboxNotifications: [GitHubNotification]
+        recentInboxNotifications: [GitHubNotification],
+        didFetchRecentInboxSeed: Bool
     ) {
         recordRecentInboxReadTransitions(from: lastFetchedUnreadNotifications, to: unreadNotifications)
         serverNotifications = unreadNotifications
@@ -1053,6 +1059,9 @@ final class AppState {
             recentInboxNotifications,
             using: unreadNotifications
         )
+        if didFetchRecentInboxSeed {
+            markRecentInboxBootstrapCompleted()
+        }
         lastFetchedUnreadNotifications = unreadNotifications
         lastKnownUnreadCount = unreadCount(in: unreadNotifications)
         threadActions.reconcileCommittedActions(with: unreadNotifications)
@@ -1262,6 +1271,35 @@ final class AppState {
         }
 
         return Dictionary(uniqueKeysWithValues: persisted.map { ($0.threadId, $0.notification) })
+    }
+
+    private static func loadRecentInboxBootstrapUsers(from userDefaults: UserDefaults) -> Set<String> {
+        let usernames = userDefaults.stringArray(forKey: recentInboxBootstrapUsersStorageKey) ?? []
+        return Set(usernames)
+    }
+
+    private func shouldFetchRecentInboxSeed() -> Bool {
+        guard recentInboxReadNotifications.isEmpty else { return false }
+        guard let username = signedInUsername, !username.isEmpty else { return true }
+        return !recentInboxBootstrapUsers.contains(username)
+    }
+
+    private func markRecentInboxBootstrapCompleted() {
+        guard let username = signedInUsername, !username.isEmpty else { return }
+        guard !recentInboxBootstrapUsers.contains(username) else { return }
+        recentInboxBootstrapUsers.insert(username)
+        persistRecentInboxBootstrapUsers()
+    }
+
+    private func persistRecentInboxBootstrapUsers() {
+        userDefaults.set(Array(recentInboxBootstrapUsers).sorted(), forKey: Self.recentInboxBootstrapUsersStorageKey)
+    }
+
+    private var signedInUsername: String? {
+        if case .signedIn(let username) = authStatus {
+            return username
+        }
+        return nil
     }
 
     private func persistRecentInboxReadNotifications() {

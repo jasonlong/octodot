@@ -43,10 +43,15 @@ struct NotificationListView: View {
                     }
                 }
             }
-            .task(id: Self.scrollRequest(selectedNotificationID: selectedNotificationID, notifications: notifications)) {
+            .task(id: Self.scrollRequest(
+                selectedNotificationID: selectedNotificationID,
+                notifications: notifications,
+                groupByRepo: groupByRepo
+            )) {
                 guard let scrollRequest = Self.scrollRequest(
                     selectedNotificationID: selectedNotificationID,
-                    notifications: notifications
+                    notifications: notifications,
+                    groupByRepo: groupByRepo
                 ) else {
                     return
                 }
@@ -81,15 +86,24 @@ struct NotificationListView: View {
 
     static func scrollRequest(
         selectedNotificationID: String?,
-        notifications: [GitHubNotification]
+        notifications: [GitHubNotification],
+        groupByRepo: Bool
     ) -> ScrollRequest? {
         guard let selectedNotificationID,
-              notifications.contains(where: { $0.id == selectedNotificationID }) else {
+              let selectedIndex = notifications.firstIndex(where: { $0.id == selectedNotificationID }) else {
             return nil
         }
 
+        let targetID: String
+        if groupByRepo,
+           selectedIndex == 0 || notifications[selectedIndex - 1].repository != notifications[selectedIndex].repository {
+            targetID = "repo:\(notifications[selectedIndex].repository)"
+        } else {
+            targetID = selectedNotificationID
+        }
+
         return ScrollRequest(
-            targetID: selectedNotificationID,
+            targetID: targetID,
             visibleIDs: notifications.map(\.id)
         )
     }

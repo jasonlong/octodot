@@ -501,6 +501,57 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains(where: { $0.id == "1" && !$0.isUnread }))
     }
 
+    @Test func inboxModeRecentReadSeedRunsOnlyOncePerUser() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+
+        let (firstState, firstSession) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: true),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "1", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                ))
+            ],
+            count: 0,
+            userDefaults: defaults
+        )
+
+        firstState.groupByRepo = false
+        await firstState.loadNotifications(force: true)
+        #expect((await firstSession.recordedRequests()).count == 2)
+
+        let (secondState, secondSession) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: true),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                ))
+            ],
+            count: 0,
+            userDefaults: defaults
+        )
+
+        secondState.groupByRepo = false
+        await secondState.loadNotifications(force: true)
+
+        let secondRequests = await secondSession.recordedRequests()
+        #expect(secondRequests.count == 1)
+        #expect(secondRequests.first?.url?.query?.contains("all=false") == true)
+        #expect(secondRequests.first?.url?.query?.contains("all=true") == false)
+    }
+
     // MARK: - Mark read
 
     @Test func markReadOptimisticallyMarksThreadReadAndDoesNotToggleBack() async {
@@ -576,7 +627,9 @@ struct AppStateTests {
 
         #expect(state.notifications.count == 1)
         #expect(state.notifications[0].isUnread == false)
-        #expect((await session.recordedRequests()).count == 3)
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests.last?.url?.query?.contains("all=true") == false)
     }
 
     @Test func openInBrowserMarksUnreadThreadReadImmediately() async {
@@ -1697,7 +1750,9 @@ struct AppStateTests {
 
         #expect(state.filteredNotifications.map(\.id) == ["0"])
         #expect(state.filteredNotifications.first?.isUnread == false)
-        #expect((await session.recordedRequests()).count == 3)
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests.last?.url?.query?.contains("all=true") == false)
     }
 
     @Test func inboxReadHistoryDoesNotReviveCommittedDoneThread() async {

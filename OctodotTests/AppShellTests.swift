@@ -85,14 +85,16 @@ struct AppShellTests {
 
         let request = NotificationListView.scrollRequest(
             selectedNotificationID: "1",
-            notifications: notifications
+            notifications: notifications,
+            groupByRepo: false
         )
 
         #expect(request?.targetID == "1")
         #expect(request?.visibleIDs == ["0", "1", "2"])
         #expect(NotificationListView.scrollRequest(
             selectedNotificationID: "999",
-            notifications: notifications
+            notifications: notifications,
+            groupByRepo: false
         ) == nil)
     }
 
@@ -101,14 +103,44 @@ struct AppShellTests {
 
         let original = NotificationListView.scrollRequest(
             selectedNotificationID: "1",
-            notifications: notifications
+            notifications: notifications,
+            groupByRepo: false
         )
         let reordered = NotificationListView.scrollRequest(
             selectedNotificationID: "1",
-            notifications: Array(notifications.reversed())
+            notifications: Array(notifications.reversed()),
+            groupByRepo: false
         )
 
         #expect(original != reordered)
+    }
+
+    @Test func notificationListScrollRequestTargetsRepositoryHeaderForFirstRowInGroup() {
+        let notifications = [
+            AppStateTests.makeNotification(id: 1, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 2, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 3, repo: "acme/beta")
+        ]
+
+        let firstInFirstGroup = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: true
+        )
+        let secondInSameGroup = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: notifications,
+            groupByRepo: true
+        )
+        let firstInSecondGroup = NotificationListView.scrollRequest(
+            selectedNotificationID: "3",
+            notifications: notifications,
+            groupByRepo: true
+        )
+
+        #expect(firstInFirstGroup?.targetID == "repo:acme/alpha")
+        #expect(secondInSameGroup?.targetID == "2")
+        #expect(firstInSecondGroup?.targetID == "repo:acme/beta")
     }
 
     @Test func notificationListBuildsRepositoryHeadersOnlyAtBoundaries() {

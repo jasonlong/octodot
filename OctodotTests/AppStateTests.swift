@@ -478,6 +478,13 @@ struct AppStateTests {
                 )
             )),
             .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
                 Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
@@ -490,6 +497,13 @@ struct AppStateTests {
                     url: "https://api.github.com/notifications",
                     statusCode: 200,
                     headers: ["Last-Modified": "Wed, 02 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
                 )
             )),
             .success((
@@ -526,13 +540,13 @@ struct AppStateTests {
 
         await state.loadNotifications(force: true)
         await Self.waitUntil {
-            await session.recordedRequests().count == 5
+            await session.recordedRequests().count == 6
         }
         #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
 
         await state.loadNotifications(force: true)
         await Self.waitUntil {
-            await session.recordedRequests().count == 7
+            await session.recordedRequests().count == 9
         }
         await Self.waitUntil {
             await MainActor.run {
@@ -624,6 +638,13 @@ struct AppStateTests {
                     url: "https://api.github.com/notifications",
                     statusCode: 200,
                     headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
                 )
             )),
             .success((
@@ -851,7 +872,7 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains(where: { $0.id == "1" && !$0.isUnread }))
     }
 
-    @Test func inboxModeRecentReadSeedRunsOnlyOncePerUser() async {
+    @Test func inboxModeRecentReadSeedRunsWhenInboxSeedIsEmptyOnColdStart() async {
         let defaults = Self.makeIsolatedUserDefaults()
 
         let (firstState, firstSession) = Self.makeAuthedState(
@@ -887,6 +908,13 @@ struct AppStateTests {
                         url: "https://api.github.com/notifications?page=1",
                         statusCode: 200
                     )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "1", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
                 ))
             ],
             count: 0,
@@ -897,9 +925,9 @@ struct AppStateTests {
         await secondState.loadNotifications(force: true)
 
         let secondRequests = await secondSession.recordedRequests()
-        #expect(secondRequests.count == 1)
+        #expect(secondRequests.count == 2)
         #expect(secondRequests.first?.url?.query?.contains("all=false") == true)
-        #expect(secondRequests.first?.url?.query?.contains("all=true") == false)
+        #expect(secondRequests.last?.url?.query?.contains("all=true") == true)
     }
 
     // MARK: - Mark read
@@ -978,8 +1006,8 @@ struct AppStateTests {
         #expect(state.notifications.count == 1)
         #expect(state.notifications[0].isUnread == false)
         let requests = await session.recordedRequests()
-        #expect(requests.count == 2)
-        #expect(requests.last?.url?.query?.contains("all=true") == false)
+        #expect(requests.count == 3)
+        #expect(requests.last?.url?.query?.contains("all=true") == true)
     }
 
     @Test func openInBrowserMarksUnreadThreadReadImmediately() async {
@@ -1504,7 +1532,11 @@ struct AppStateTests {
         #expect(state.filteredNotifications.map(\.id) == ["second", "third"])
         #expect(state.selectedNotification?.id == "second")
 
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().contains {
+                $0.url?.path == "/notifications/threads/shared-thread"
+            }
+        }
         #expect((await session.recordedRequests()).contains {
             $0.url?.path == "/notifications/threads/shared-thread"
         })
@@ -2121,8 +2153,8 @@ struct AppStateTests {
         #expect(state.filteredNotifications.map(\.id) == ["0"])
         #expect(state.filteredNotifications.first?.isUnread == false)
         let requests = await session.recordedRequests()
-        #expect(requests.count == 2)
-        #expect(requests.last?.url?.query?.contains("all=true") == false)
+        #expect(requests.count == 3)
+        #expect(requests.last?.url?.query?.contains("all=true") == true)
     }
 
     @Test func inboxReadHistoryDoesNotReviveCommittedDoneThread() async {

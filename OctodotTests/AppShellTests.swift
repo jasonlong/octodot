@@ -80,6 +80,35 @@ struct AppShellTests {
         #expect(AppDelegate.shouldLaunchUI(environment: ["XCTestConfigurationFilePath": "/tmp/test.xctest"]) == false)
     }
 
+    @Test func appDelegateRecognizesFirstRunLaunchMode() {
+        #expect(AppDelegate.shouldUseFirstRunExperience(arguments: ["Octodot", "--first-run"], environment: [:]))
+        #expect(AppDelegate.shouldUseFirstRunExperience(arguments: ["Octodot"], environment: ["OCTODOT_FIRST_RUN": "1"]))
+        #expect(AppDelegate.shouldUseFirstRunExperience(arguments: ["Octodot"], environment: ["OCTODOT_FIRST_RUN": "true"]))
+        #expect(AppDelegate.shouldUseFirstRunExperience(arguments: ["Octodot"], environment: [:]) == false)
+    }
+
+    @Test func appDelegateFirstRunLaunchConfigurationSkipsBootstrapToken() {
+        let configuration = AppDelegate.launchConfiguration(
+            arguments: ["Octodot", "--first-run"],
+            environment: [:],
+            tokenLoader: { "ghp_saved" }
+        )
+
+        #expect(configuration.bootstrapToken == nil)
+        #expect(configuration.userDefaults != .standard)
+    }
+
+    @Test func appDelegateNormalLaunchConfigurationUsesSavedToken() {
+        let configuration = AppDelegate.launchConfiguration(
+            arguments: ["Octodot"],
+            environment: [:],
+            tokenLoader: { "ghp_saved" }
+        )
+
+        #expect(configuration.bootstrapToken == "ghp_saved")
+        #expect(configuration.userDefaults == .standard)
+    }
+
     @Test func notificationListScrollRequestRequiresVisibleSelection() {
         let notifications = AppStateTests.makeNotifications(3)
 

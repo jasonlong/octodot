@@ -193,18 +193,21 @@ final class AppState {
         startBackgroundRefreshIfNeeded()
     }
 
-    convenience init() {
+    convenience init(
+        userDefaults: UserDefaults = .standard,
+        bootstrapToken: String? = KeychainHelper.loadToken()
+    ) {
         self.init(
             notifications: [],
             actionDispatchDelayNanoseconds: defaultActionDispatchDelayNanoseconds,
             backgroundRefreshEnabled: true,
             sleepHandler: defaultSleepHandler,
-            userDefaults: .standard,
+            userDefaults: userDefaults,
             urlOpener: { NSWorkspace.shared.open($0) },
             tokenSaver: { try KeychainHelper.saveToken($0) },
             tokenDeleter: { KeychainHelper.deleteToken() },
             apiClientFactory: { GitHubAPIClient(token: $0) },
-            bootstrapToken: KeychainHelper.loadToken()
+            bootstrapToken: bootstrapToken
         )
     }
 
@@ -316,7 +319,7 @@ final class AppState {
             async let unreadFetch = client.fetchNotifications(all: false, force: force)
             let fetched = try await unreadFetch
             let fetchedRecentInbox: [GitHubNotification]
-            let shouldFetchRecentInboxSeed = inboxMode == .inbox && inboxStore.shouldFetchRecentInboxSeed(for: signedInUsername)
+            let shouldFetchRecentInboxSeed = inboxMode == .inbox && serverRecentInboxNotifications.isEmpty
             if shouldFetchRecentInboxSeed {
                 fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
                     since: inboxStore.recentInboxSinceDate(relativeTo: fetched),
@@ -330,8 +333,7 @@ final class AppState {
             applyLoadedNotifications(
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox,
-                securityAlerts: serverSecurityAlerts,
-                didFetchRecentInboxSeed: shouldFetchRecentInboxSeed
+                securityAlerts: serverSecurityAlerts
             )
             resetSelectionToTopOnNextLoadIfNeeded()
             isLoading = false
@@ -552,11 +554,12 @@ final class AppState {
         case .unread:
             return unreadNotifications.filter(\.isUnread)
         case .inbox:
-            return inboxStore.mergedInboxNotifications(
+            let merged = inboxStore.mergedInboxNotifications(
                 unreadNotifications: unreadNotifications,
                 recentInboxNotifications: recentInboxNotifications,
                 projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
-            ) + securityAlerts
+            )
+            return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
         }
     }
 
@@ -565,12 +568,33 @@ final class AppState {
         case .unread:
             return serverNotifications.filter(\.isUnread)
         case .inbox:
-            return inboxStore.mergedInboxNotifications(
+            let merged = inboxStore.mergedInboxNotifications(
                 unreadNotifications: serverNotifications,
                 recentInboxNotifications: serverRecentInboxNotifications,
                 projectedNotifications: { $0 }
-            ) + inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
+            )
+            let securityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
+            return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
         }
+    }
+
+    private func dedupedSecurityAlerts(
+        _ securityAlerts: [GitHubNotification],
+        against existingNotifications: [GitHubNotification]
+    ) -> [GitHubNotification] {
+        let existingKeys = Set(existingNotifications.compactMap(Self.securityAlertDedupKey(for:)))
+        return securityAlerts.filter { notification in
+            guard notification.source == .dependabotAlert,
+                  let key = Self.securityAlertDedupKey(for: notification) else {
+                return true
+            }
+            return !existingKeys.contains(key)
+        }
+    }
+
+    private static func securityAlertDedupKey(for notification: GitHubNotification) -> String? {
+        guard notification.type == .securityAlert else { return nil }
+        return "\(notification.repository)|\(notification.title)"
     }
 
     private func orderedNotifications(
@@ -1159,16 +1183,13 @@ final class AppState {
     private func applyLoadedNotifications(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
-        securityAlerts: [GitHubNotification],
-        didFetchRecentInboxSeed: Bool
+        securityAlerts: [GitHubNotification]
     ) {
         serverNotifications = unreadNotifications
         let loadedState = inboxStore.applyLoaded(
             unreadNotifications: unreadNotifications,
             recentInboxNotifications: recentInboxNotifications,
             projectedSecurityAlerts: securityAlerts,
-            didFetchRecentInboxSeed: didFetchRecentInboxSeed,
-            username: signedInUsername,
             projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
         )
         serverRecentInboxNotifications = loadedState.recentInboxNotifications

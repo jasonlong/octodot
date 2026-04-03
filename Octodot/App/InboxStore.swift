@@ -3,7 +3,6 @@ import Foundation
 @MainActor
 final class InboxStore {
     private static let recentInboxReadsStorageKey = "AppState.recentInboxReads.v1"
-    private static let recentInboxBootstrapUsersStorageKey = "AppState.recentInboxBootstrapUsers.v1"
     private static let dismissedSecurityAlertsStorageKey = "AppState.dismissedSecurityAlerts.v1"
     private static let readSecurityAlertsStorageKey = "AppState.readSecurityAlerts.v1"
     private static let recentInboxReadRetentionInterval: TimeInterval = 14 * 24 * 60 * 60
@@ -92,7 +91,6 @@ final class InboxStore {
 
     private let userDefaults: UserDefaults
     private var recentInboxReadNotifications: [String: GitHubNotification]
-    private var recentInboxBootstrapUsers: Set<String>
     private var dismissedSecurityAlerts: [String: Date]
     private var readSecurityAlerts: [String: Date]
     private(set) var lastFetchedUnreadNotifications: [GitHubNotification]
@@ -101,7 +99,6 @@ final class InboxStore {
     init(userDefaults: UserDefaults, initialNotifications: [GitHubNotification]) {
         self.userDefaults = userDefaults
         self.recentInboxReadNotifications = Self.loadRecentInboxReadNotifications(from: userDefaults)
-        self.recentInboxBootstrapUsers = Self.loadRecentInboxBootstrapUsers(from: userDefaults)
         self.dismissedSecurityAlerts = Self.loadDismissedSecurityAlerts(from: userDefaults)
         self.readSecurityAlerts = Self.loadReadSecurityAlerts(from: userDefaults)
         self.lastFetchedUnreadNotifications = initialNotifications.filter(\.isUnread)
@@ -110,12 +107,6 @@ final class InboxStore {
                 count += 1
             }
         }
-    }
-
-    func shouldFetchRecentInboxSeed(for username: String?) -> Bool {
-        guard recentInboxReadNotifications.isEmpty else { return false }
-        guard let username, !username.isEmpty else { return true }
-        return !recentInboxBootstrapUsers.contains(username)
     }
 
     func recentInboxSinceDate(relativeTo unreadNotifications: [GitHubNotification], now: Date = Date()) -> Date {
@@ -132,8 +123,6 @@ final class InboxStore {
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
         projectedSecurityAlerts: [GitHubNotification],
-        didFetchRecentInboxSeed: Bool,
-        username: String?,
         projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
     ) -> LoadedState {
         recordRecentInboxReadTransitions(
@@ -145,9 +134,6 @@ final class InboxStore {
             recentInboxNotifications,
             using: unreadNotifications
         )
-        if didFetchRecentInboxSeed {
-            markRecentInboxBootstrapCompleted(for: username)
-        }
         lastFetchedUnreadNotifications = unreadNotifications
         unreadNotificationCount = unreadCount(in: unreadNotifications)
         reconcileDismissedSecurityAlerts(with: projectedSecurityAlerts)
@@ -335,13 +321,6 @@ final class InboxStore {
         persistReadSecurityAlerts()
     }
 
-    private func markRecentInboxBootstrapCompleted(for username: String?) {
-        guard let username, !username.isEmpty else { return }
-        guard !recentInboxBootstrapUsers.contains(username) else { return }
-        recentInboxBootstrapUsers.insert(username)
-        persistRecentInboxBootstrapUsers()
-    }
-
     private func recordRecentInboxReadTransitions(
         from previousUnread: [GitHubNotification],
         to currentUnread: [GitHubNotification],
@@ -479,11 +458,6 @@ final class InboxStore {
         return Dictionary(uniqueKeysWithValues: persisted.map { ($0.threadId, $0.notification) })
     }
 
-    private static func loadRecentInboxBootstrapUsers(from userDefaults: UserDefaults) -> Set<String> {
-        let usernames = userDefaults.stringArray(forKey: recentInboxBootstrapUsersStorageKey) ?? []
-        return Set(usernames)
-    }
-
     private static func loadDismissedSecurityAlerts(from userDefaults: UserDefaults) -> [String: Date] {
         guard let data = userDefaults.data(forKey: dismissedSecurityAlertsStorageKey) else {
             return [:]
@@ -512,13 +486,6 @@ final class InboxStore {
         }
 
         return Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0.updatedAt) })
-    }
-
-    private func persistRecentInboxBootstrapUsers() {
-        userDefaults.set(
-            Array(recentInboxBootstrapUsers).sorted(),
-            forKey: Self.recentInboxBootstrapUsersStorageKey
-        )
     }
 
     private func persistRecentInboxReadNotifications() {

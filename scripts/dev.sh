@@ -7,6 +7,7 @@ APP_PATH="$DERIVED_DATA_PATH/Build/Products/Debug/Octodot.app"
 APP_BINARY="$APP_PATH/Contents/MacOS/Octodot"
 APP_INFO_PLIST="$APP_PATH/Contents/Info.plist"
 POLL_SECONDS="${POLL_SECONDS:-1}"
+FIRST_RUN_MODE=0
 
 print_usage() {
   cat <<'EOF'
@@ -14,10 +15,12 @@ Usage:
   scripts/dev.sh              Build once, launch Octodot, then relaunch it after later builds.
   scripts/dev.sh --build      Build and relaunch once.
   scripts/dev.sh --watch      Watch the built app and relaunch when a new build lands.
+  scripts/dev.sh --first-run  Launch Octodot in clean first-run mode for QA.
 
 Notes:
   - The app is built into .deriveddata so the bundle path stays stable.
   - Debug builds cache the token locally to avoid repeated keychain prompts.
+  - First-run mode skips saved auth and preferences without touching real local data.
 EOF
 }
 
@@ -74,8 +77,12 @@ quit_app() {
 
 launch_app() {
   local attempts=0
+  local open_args=()
+  if (( FIRST_RUN_MODE )); then
+    open_args=(--args --first-run)
+  fi
   while true; do
-    if /usr/bin/open "$APP_PATH"; then
+    if /usr/bin/open "$APP_PATH" "${open_args[@]}"; then
       return 0
     fi
 
@@ -132,6 +139,18 @@ watch_build_output() {
     fi
   done
 }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --first-run)
+      FIRST_RUN_MODE=1
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 case "${1:-}" in
   -h|--help)

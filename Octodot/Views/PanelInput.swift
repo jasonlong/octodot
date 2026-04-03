@@ -4,6 +4,7 @@ import AppKit
 enum PanelInput {
     enum KeyInput: Equatable {
         case character(String)
+        case space
         case controlF
         case controlB
         case controlD
@@ -125,7 +126,7 @@ enum PanelInput {
 
     static func allowsRepeat(for input: KeyInput) -> Bool {
         switch input {
-        case .character("j"), .character("k"), .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
+        case .character("j"), .character("k"), .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
         case .character, .escape, .return, .other:
             return false
@@ -146,7 +147,7 @@ enum PanelInput {
              .escape,
              .return:
             return true
-        case .character, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
+        case .character, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
@@ -176,6 +177,8 @@ enum PanelInput {
             return .escape
         case .return:
             return .return
+        case KeyEquivalent(" "):
+            return .space
         case KeyEquivalent("g"):
             return .character("g")
         case KeyEquivalent("G"):
@@ -241,6 +244,8 @@ enum PanelInput {
         }
 
         switch characters {
+        case " ":
+            return .space
         case "G":
             return .character("G")
         case "g":
@@ -275,6 +280,7 @@ enum PanelInput {
     static func debugName(for input: KeyInput) -> String {
         switch input {
         case .character(let value): return "char(\(value))"
+        case .space: return "space"
         case .controlF: return "ctrl-f"
         case .controlB: return "ctrl-b"
         case .controlD: return "ctrl-d"
@@ -341,7 +347,7 @@ enum PanelInput {
             return KeyRouting(command: .moveDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("k"), .upArrow:
             return KeyRouting(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .controlF:
+        case .space, .controlF:
             return KeyRouting(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .controlB:
             return KeyRouting(command: .pageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)

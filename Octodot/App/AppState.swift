@@ -99,9 +99,31 @@ final class AppState {
 
     private(set) var notifications: [GitHubNotification] = []
     private(set) var unreadNotificationCount = 0
-    private(set) var filteredNotifications: [GitHubNotification] = []
-    private(set) var selectedNotification: GitHubNotification?
-    private(set) var selectedNotificationID: String?
+
+    var filteredNotifications: [GitHubNotification] {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return notifications }
+        return notifications.filter {
+            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+        }
+    }
+
+    var selectedNotification: GitHubNotification? {
+        let visible = filteredNotifications
+        guard !visible.isEmpty else { return nil }
+
+        if let selectedThreadID,
+           let selected = visible.first(where: { $0.id == selectedThreadID }) {
+            return selected
+        }
+
+        let clampedIndex = max(0, min(selectedIndexStorage, visible.count - 1))
+        return visible[clampedIndex]
+    }
+
+    var selectedNotificationID: String? {
+        selectedNotification?.id
+    }
 
     var isSignedIn: Bool {
         if case .signedIn = authStatus { return true }
@@ -494,34 +516,28 @@ final class AppState {
             securityAlerts: projectedSecurityAlerts
         )
         let serverModeFiltered = serverNotificationsForCurrentMode()
-        notifications = modeFiltered
-        unreadNotificationCount = inboxStore.unreadNotificationCount
-
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let filtered = query.isEmpty ? modeFiltered : modeFiltered.filter {
-            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
-        }
-
-        let ordered = orderedNotifications(
-            filtered,
+        notifications = orderedNotifications(
+            modeFiltered,
             preferredRepositoryOrder: repositoryOrderAnchor,
             repoOrderSource: sortedByRecency(serverModeFiltered)
         )
-        filteredNotifications = ordered
+        unreadNotificationCount = inboxStore.unreadNotificationCount
 
-        guard !ordered.isEmpty else {
+        let filtered = filteredNotifications
+        guard !filtered.isEmpty else {
             clearSelection()
             return
         }
 
         if let selectedThreadID,
-           let index = ordered.firstIndex(where: { $0.id == selectedThreadID }) {
+           let index = filtered.firstIndex(where: { $0.id == selectedThreadID }) {
             selectedIndexStorage = index
         } else {
-            selectedIndexStorage = min(selectedIndexStorage, ordered.count - 1)
+            selectedIndexStorage = min(selectedIndexStorage, filtered.count - 1)
         }
 
-        applySelection(index: selectedIndexStorage, in: ordered)
+        let selected = filtered[selectedIndexStorage]
+        selectedThreadID = selected.id
     }
 
     private func filteredNotificationsForCurrentMode(
@@ -616,15 +632,11 @@ final class AppState {
         let selected = notifications[clampedIndex]
         selectedIndexStorage = clampedIndex
         selectedThreadID = selected.id
-        selectedNotificationID = selected.id
-        selectedNotification = selected
     }
 
     private func clearSelection() {
         selectedIndexStorage = 0
         selectedThreadID = nil
-        selectedNotificationID = nil
-        selectedNotification = nil
     }
 
     private func startThreadAction(

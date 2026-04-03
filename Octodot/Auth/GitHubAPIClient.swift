@@ -60,6 +60,8 @@ actor GitHubAPIClient {
 
     func updateToken(_ token: String) {
         self.token = token
+        cachedFeeds.removeAll()
+        cachedDependabotAlerts = SecurityAlertsCache()
     }
 
     // MARK: - Fetch notifications
@@ -564,6 +566,7 @@ actor GitHubAPIClient {
     private func invalidateFeedCaches(_ scopes: some Sequence<FeedScope>) {
         for scope in scopes {
             updateFeedCache(scope) { cache in
+                cache.notifications = []
                 cache.nextNotificationsRefreshAt = .distantPast
                 cache.lastModifiedValue = nil
             }

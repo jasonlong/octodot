@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum PanelInput {
     enum KeyInput: Equatable {
@@ -200,6 +201,71 @@ enum PanelInput {
         case KeyEquivalent("r"):
             return .character("r")
         case KeyEquivalent("/"):
+            return .character("/")
+        default:
+            return .other
+        }
+    }
+
+    static func keyInput(for event: NSEvent) -> KeyInput {
+        if event.modifierFlags.contains(.control) {
+            switch event.charactersIgnoringModifiers {
+            case "f", "F":
+                return .controlF
+            case "b", "B":
+                return .controlB
+            case "d", "D":
+                return .controlD
+            case "u", "U":
+                return .controlU
+            default:
+                break
+            }
+        }
+
+        switch event.keyCode {
+        case 125:
+            return .downArrow
+        case 126:
+            return .upArrow
+        case 53:
+            return .escape
+        case 36, 76:
+            return .return
+        default:
+            break
+        }
+
+        guard let characters = event.characters, !characters.isEmpty else {
+            return .other
+        }
+
+        switch characters {
+        case "G":
+            return .character("G")
+        case "g":
+            return .character("g")
+        case "j":
+            return .character("j")
+        case "k":
+            return .character("k")
+        case "d":
+            return .character("d")
+        case "x":
+            return .character("x")
+        case "o":
+            return .character("o")
+        case "y":
+            return .character("y")
+        case "u":
+            return .character("u")
+        case "a":
+            return .character("a")
+        case "s":
+            return .character("s")
+        case "r":
+            return .character("r")
+        case "/":
             return .character("/")
         default:
             return .other

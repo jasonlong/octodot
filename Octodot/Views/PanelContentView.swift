@@ -1,19 +1,20 @@
+import AppKit
 import SwiftUI
 
 struct PanelContentView: View {
     @Bindable var appState: AppState
     let closePanel: () -> Void
     @State private var hasAppeared = false
-
-    enum Focus: Hashable {
-        case list
-        case search
-    }
-
-    @FocusState private var focus: Focus?
+    @State private var windowFocusBridge = PanelWindowFocusBridge()
+    @State private var isSearchFieldFocused = false
     @State private var pendingG = false
     @State private var lastSingleFireCommand: PanelInput.KeyboardCommand?
     @State private var lastSingleFireCommandAt = Date.distantPast
+    @State private var suppressedKeyUpInput: PanelInput.KeyInput?
+
+    private var displayedSelectedNotificationID: String? {
+        isSearchFieldFocused ? nil : appState.selectedNotificationID
+    }
 
     var body: some View {
         Group {
@@ -23,6 +24,12 @@ struct PanelContentView: View {
                 TokenEntryView(appState: appState)
             }
         }
+        .background(
+            PanelWindowFocusReader(
+                bridge: windowFocusBridge,
+                onKeyEvent: handleAppKitKeyEvent
+            )
+        )
         .frame(width: 380, height: 500)
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -87,10 +94,10 @@ struct PanelContentView: View {
             ) {
                 SearchBarView(
                     query: $appState.searchQuery,
+                    isFocused: isSearchFieldFocused,
                     onSubmit: commitSearch,
                     onCancel: cancelSearch
                 )
-                    .focused($focus, equals: .search)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -111,7 +118,7 @@ struct PanelContentView: View {
             } else {
                 NotificationListView(
                     notifications: appState.filteredNotifications,
-                    selectedNotificationID: appState.selectedNotificationID,
+                    selectedNotificationID: displayedSelectedNotificationID,
                     groupByRepo: appState.groupByRepo,
                     onSelect: { appState.selectNotification(id: $0) },
                     onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
@@ -151,12 +158,6 @@ struct PanelContentView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
         }
-        .focusable()
-        .focused($focus, equals: .list)
-        .focusEffectDisabled()
-        .onKeyPress(phases: [.down, .repeat, .up]) { press in
-            handleKeyPress(press)
-        }
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
@@ -176,34 +177,35 @@ struct PanelContentView: View {
         )
     }
 
-    private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
-        let input = PanelInput.keyInput(for: press)
+    private func handleAppKitKeyEvent(_ event: NSEvent, phase: PanelKeyEventPhase) -> Bool {
+        let input = PanelInput.keyInput(for: event)
+        if phase == .up, suppressedKeyUpInput == input {
+            suppressedKeyUpInput = nil
+            DebugTrace.log("suppressed trailing keyUp input=\(PanelInput.debugName(for: input))")
+            return true
+        }
         DebugTrace.log(
-            "key phase=\(PanelInput.debugName(for: press.phase)) input=\(PanelInput.debugName(for: input)) " +
+            "key phase=\(debugName(for: phase)) input=\(PanelInput.debugName(for: input)) " +
             "search=\(appState.isSearchActive) selected=\(appState.selectedNotificationID ?? "nil")"
         )
         if !appState.isSearchActive {
             if PanelInput.handlesOnKeyUp(for: input) {
-                switch press.phase {
+                switch phase {
                 case .down, .repeat:
-                    return .handled
+                    return true
                 case .up:
                     break
-                default:
-                    return .handled
                 }
             } else {
-                switch press.phase {
+                switch phase {
                 case .down:
                     break
                 case .repeat:
                     if !PanelInput.allowsRepeat(for: input) {
-                        return .handled
+                        return true
                     }
                 case .up:
-                    return .handled
-                default:
-                    return .handled
+                    return true
                 }
             }
         }
@@ -219,15 +221,15 @@ struct PanelContentView: View {
         case .unchanged:
             break
         case .list:
-            focus = .list
+            focusListSoon()
         case .search:
-            focus = .search
+            focusSearchSoon()
         }
 
         if let command = routing.command {
             if shouldSuppressSingleFireCommand(command) {
                 DebugTrace.log("suppressed command=\(PanelInput.debugName(for: command))")
-                return .handled
+                return true
             }
             DebugTrace.log(
                 "perform command=\(PanelInput.debugName(for: command)) selected.before=\(appState.selectedNotificationID ?? "nil") " +
@@ -240,14 +242,16 @@ struct PanelContentView: View {
             )
         }
 
-        return routing.isHandled ? .handled : .ignored
+        return routing.isHandled
     }
 
     private func commitSearch() {
+        suppressedKeyUpInput = .return
         applySearchFieldEffect(PanelInput.searchFieldEffect(for: .submit))
     }
 
     private func cancelSearch() {
+        suppressedKeyUpInput = .escape
         applySearchFieldEffect(PanelInput.searchFieldEffect(for: .cancel))
     }
 
@@ -262,7 +266,7 @@ struct PanelContentView: View {
         case .unchanged:
             break
         case .list:
-            focus = nil
+            isSearchFieldFocused = false
             focusListSoon()
         case .search:
             focusSearchSoon()
@@ -311,7 +315,7 @@ struct PanelContentView: View {
             focusSearchSoon()
         case .deactivateSearch:
             appState.deactivateSearch()
-            focus = nil
+            isSearchFieldFocused = false
             focusListSoon()
         case .closePanel:
             appState.flushPendingActions()
@@ -340,7 +344,8 @@ struct PanelContentView: View {
     private func focusListAndRefresh() {
         Task { @MainActor in
             await Task.yield()
-            focus = .list
+            windowFocusBridge.focusHostingView()
+            isSearchFieldFocused = false
             appState.refresh(force: appState.inboxMode.includesReadNotifications)
         }
     }
@@ -348,14 +353,15 @@ struct PanelContentView: View {
     private func focusListSoon() {
         Task { @MainActor in
             await Task.yield()
-            focus = .list
+            windowFocusBridge.focusHostingView()
+            isSearchFieldFocused = false
         }
     }
 
     private func focusSearchSoon() {
         Task { @MainActor in
             await Task.yield()
-            focus = .search
+            isSearchFieldFocused = true
         }
     }
 
@@ -374,4 +380,69 @@ struct PanelContentView: View {
         }
     }
 
+    private func debugName(for phase: PanelKeyEventPhase) -> String {
+        switch phase {
+        case .down: return "down"
+        case .repeat: return "repeat"
+        case .up: return "up"
+        }
+    }
+}
+
+private enum PanelKeyEventPhase {
+    case down
+    case `repeat`
+    case up
+}
+
+@MainActor
+private final class PanelWindowFocusBridge {
+    weak var hostingView: PanelKeyResponderView?
+
+    func focusHostingView() {
+        guard let hostingView, let window = hostingView.window else { return }
+        window.makeFirstResponder(hostingView)
+    }
+}
+
+private struct PanelWindowFocusReader: NSViewRepresentable {
+    let bridge: PanelWindowFocusBridge
+    let onKeyEvent: (NSEvent, PanelKeyEventPhase) -> Bool
+
+    func makeNSView(context: Context) -> PanelKeyResponderView {
+        let view = PanelKeyResponderView()
+        view.keyHandler = onKeyEvent
+        DispatchQueue.main.async {
+            bridge.hostingView = view
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: PanelKeyResponderView, context: Context) {
+        nsView.keyHandler = onKeyEvent
+        DispatchQueue.main.async {
+            bridge.hostingView = nsView
+        }
+    }
+}
+
+private final class PanelKeyResponderView: NSView {
+    var keyHandler: ((NSEvent, PanelKeyEventPhase) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        let phase: PanelKeyEventPhase = event.isARepeat ? .repeat : .down
+        if keyHandler?(event, phase) == true {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if keyHandler?(event, .up) == true {
+            return
+        }
+        super.keyUp(with: event)
+    }
 }

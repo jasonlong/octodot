@@ -17,6 +17,12 @@ jobs:
   build-and-release:
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      APP_PATH: .deriveddata-release/Build/Products/Release/Octodot.app
+      ARCHIVE_PATH: /tmp/Octodot-${{ github.ref_name }}-unsigned.zip
+      FINAL_ARCHIVE_PATH: Octodot-${{ github.ref_name }}-macos.zip
+      KEYCHAIN_PATH: /tmp/octodot-build.keychain-db
+      KEYCHAIN_PROFILE: octodot-notary
 
     steps:
       - name: Check out repository
@@ -33,22 +39,99 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath .deriveddata
 
-      - name: Build release app
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          test -n "$APPLE_CERTIFICATE_BASE64"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_SIGNING_IDENTITY"
+
+          CERTIFICATE_PATH=/tmp/octodot-developer-id.p12
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -T /usr/bin/xcrun
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build signed release app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_TEAM_ID"
+
           xcodebuild build \
             -project Octodot.xcodeproj \
             -scheme Octodot \
             -configuration Release \
             -destination 'platform=macOS' \
-            -derivedDataPath .deriveddata-release
+            -derivedDataPath .deriveddata-release \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
 
-      - name: Package release app
+      - name: Verify signed app
+        run: |
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --display --verbose=4 "$APP_PATH"
+
+      - name: Store notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+          xcrun notarytool store-credentials "$KEYCHAIN_PROFILE" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+
+      - name: Create notarization archive
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "$ARCHIVE_PATH"
+
+      - name: Submit for notarization
+        run: |
+          xcrun notarytool submit "$ARCHIVE_PATH" \
+            --keychain-profile "$KEYCHAIN_PROFILE" \
+            --keychain "$KEYCHAIN_PATH" \
+            --wait
+
+      - name: Staple notarization ticket
+        run: |
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+
+      - name: Package signed release app
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            .deriveddata-release/Build/Products/Release/Octodot.app \
-            Octodot-${TAG_NAME}-macos.zip
+            "$APP_PATH" \
+            "$FINAL_ARCHIVE_PATH"
 
       - name: Generate release notes
         env:
@@ -61,5 +144,10 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: Octodot-${{ github.ref_name }}-macos.zip
+          files: ${{ env.FINAL_ARCHIVE_PATH }}
           body_path: RELEASE_NOTES.md
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true

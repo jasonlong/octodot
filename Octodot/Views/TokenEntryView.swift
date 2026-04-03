@@ -63,11 +63,13 @@ struct TokenEntryView: View {
 
         Task {
             do {
-                let client = GitHubAPIClient(token: tokenInput)
-                let username = try await client.validateToken()
-                try KeychainHelper.saveToken(tokenInput)
                 await MainActor.run {
-                    appState.signIn(token: tokenInput, username: username)
+                    errorMessage = nil
+                }
+                try await appState.submitToken(tokenInput)
+                await MainActor.run {
+                    isValidating = false
+                    tokenInput = ""
                 }
             } catch {
                 await MainActor.run {

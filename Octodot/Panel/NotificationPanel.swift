@@ -4,7 +4,7 @@ import SwiftUI
 final class NotificationPanel: NSPanel {
     private let appState: AppState
 
-    init(appState: AppState) {
+    init(appState: AppState, preferences: AppPreferences) {
         self.appState = appState
 
         super.init(
@@ -26,9 +26,13 @@ final class NotificationPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = true
 
-        let rootView = PanelContentView(appState: appState, closePanel: { [weak self] in
-            self?.close()
-        })
+        let rootView = PanelRootView(
+            appState: appState,
+            preferences: preferences,
+            closePanel: { [weak self] in
+                self?.close()
+            }
+        )
 
         contentView = NSHostingView(rootView: rootView)
     }
@@ -55,5 +59,16 @@ final class NotificationPanel: NSPanel {
     override func close() {
         super.close()
         appState.isPanelVisible = false
+    }
+}
+
+private struct PanelRootView: View {
+    @Bindable var appState: AppState
+    @Bindable var preferences: AppPreferences
+    let closePanel: () -> Void
+
+    var body: some View {
+        PanelContentView(appState: appState, closePanel: closePanel)
+            .preferredColorScheme(preferences.appearanceMode.resolvedColorScheme)
     }
 }

@@ -6,7 +6,15 @@ struct OctodotApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(
+                appState: appDelegate.appState,
+                preferences: appDelegate.preferences,
+                selection: Binding(
+                    get: { appDelegate.settingsViewState.selectedTab },
+                    set: { appDelegate.settingsViewState.selectedTab = $0 }
+                )
+            )
+                .preferredColorScheme(appDelegate.preferences.appearanceMode.resolvedColorScheme)
         }
     }
 }

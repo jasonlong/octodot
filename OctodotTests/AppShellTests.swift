@@ -27,20 +27,23 @@ struct AppShellTests {
         #expect(origin.y == 0)
     }
 
-    @Test func toggleHotkeyMatchesOnlyCommandQuote() {
+    @Test func toggleHotkeyMatchesConfiguredShortcut() {
         #expect(StatusItemController.matchesToggleHotkey(
-            keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.command]
+            keyCode: AppPreferences.GlobalShortcut.commandQuote.keyCode,
+            modifierFlags: [.command],
+            shortcut: .commandQuote
         ))
 
         #expect(StatusItemController.matchesToggleHotkey(
-            keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.option]
+            keyCode: AppPreferences.GlobalShortcut.commandQuote.keyCode,
+            modifierFlags: [.option],
+            shortcut: .commandQuote
         ) == false)
 
         #expect(StatusItemController.matchesToggleHotkey(
-            keyCode: StatusItemController.Constants.toggleHotkeyCode,
-            modifierFlags: [.command, .shift]
+            keyCode: AppPreferences.GlobalShortcut.commandQuote.keyCode,
+            modifierFlags: [.command, .shift],
+            shortcut: .commandQuote
         ) == false)
     }
 

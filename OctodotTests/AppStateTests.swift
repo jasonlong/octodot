@@ -293,47 +293,26 @@ struct AppStateTests {
         #expect(state.filteredNotifications.count == 5)
     }
 
-    @Test func allModeHidesNotificationsOlderThanThirtyDays() {
-        let now = Date()
+    @Test func inboxModeShowsReadAndUnreadItemsByDefault() {
         let notifications = [
-            GitHubNotification(
-                id: "recent",
-                threadId: "recent",
-                title: "Recent notification",
-                repository: "acme/alpha",
-                reason: .subscribed,
-                type: .pullRequest,
-                updatedAt: now.addingTimeInterval(-7 * 24 * 60 * 60),
-                isUnread: false,
-                url: URL(string: "https://github.com/acme/test/pull/recent")!,
-                subjectURL: nil,
-                subjectState: .open
-            ),
-            GitHubNotification(
-                id: "old",
-                threadId: "old",
-                title: "Old notification",
-                repository: "acme/alpha",
-                reason: .subscribed,
-                type: .pullRequest,
-                updatedAt: now.addingTimeInterval(-45 * 24 * 60 * 60),
-                isUnread: false,
-                url: URL(string: "https://github.com/acme/test/pull/old")!,
-                subjectURL: nil,
-                subjectState: .open
-            ),
+            Self.makeNotification(id: 1, isUnread: true),
+            Self.makeNotification(id: 2, isUnread: false),
         ]
-        let state = AppState(notifications: notifications)
+        let state = AppState(
+            notifications: notifications,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
 
         state.groupByRepo = false
-        state.inboxMode = .all
-        state.clampSelection()
 
-        #expect(state.filteredNotifications.map(\.id) == ["recent"])
-        #expect(state.notifications.map(\.id) == ["recent"])
+        #expect(state.inboxMode == .inbox)
+        #expect(state.filteredNotifications.count == 2)
+        #expect(state.notifications.count == 2)
+        #expect(state.filteredNotifications.map(\.isUnread).contains(true))
+        #expect(state.filteredNotifications.map(\.isUnread).contains(false))
     }
 
-    @Test func unreadModeDoesNotApplyAllModeRetentionWindow() {
+    @Test func unreadModeShowsOnlyUnreadItems() {
         let oldNotification = GitHubNotification(
             id: "old",
             threadId: "old",
@@ -353,8 +332,9 @@ struct AppStateTests {
         )
 
         state.groupByRepo = false
+        state.inboxMode = .unread
+        state.clampSelection()
 
-        #expect(state.inboxMode == .unread)
         #expect(state.filteredNotifications.map(\.id) == ["old"])
     }
 
@@ -372,7 +352,10 @@ struct AppStateTests {
             Self.makeNotification(id: 1, repo: "acme/newer"),
             Self.makeNotification(id: 2, repo: "acme/newer"),
         ]
-        let state = AppState(notifications: notifications)
+        let state = AppState(
+            notifications: notifications,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
         state.groupByRepo = true
         let repos = state.filteredNotifications.map(\.repository)
         #expect(repos == ["acme/newer", "acme/newer", "acme/older"])
@@ -384,7 +367,10 @@ struct AppStateTests {
             Self.makeNotification(id: 1, repo: "acme/alpha"),
             Self.makeNotification(id: 3, repo: "acme/beta"),
         ]
-        let state = AppState(notifications: notifications)
+        let state = AppState(
+            notifications: notifications,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
         state.groupByRepo = true
         #expect(state.filteredNotifications.map(\.id) == ["1", "4", "3"])
     }
@@ -403,14 +389,23 @@ struct AppStateTests {
 
         let firstState = Self.makeState(userDefaults: defaults)
         firstState.groupByRepo = false
-        firstState.inboxMode = .all
+        firstState.inboxMode = .inbox
 
         let secondState = Self.makeState(userDefaults: defaults)
         #expect(secondState.groupByRepo == false)
-        #expect(secondState.inboxMode == .all)
+        #expect(secondState.inboxMode == .inbox)
     }
 
-    @Test func toggleInboxModeRefreshesUsingAllFeed() async {
+    @Test func legacyAllInboxModeMigratesToInbox() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        defaults.set("all", forKey: "AppState.inboxMode.v1")
+
+        let state = Self.makeState(userDefaults: defaults)
+
+        #expect(state.inboxMode == .inbox)
+    }
+
+    @Test func toggleInboxModeRefreshesUsingUnreadFeedAndSwitchesProjection() async {
         let (state, session) = Self.makeAuthedState(
             results: [
                 .success((
@@ -419,22 +414,63 @@ struct AppStateTests {
                         url: "https://api.github.com/notifications?page=1",
                         statusCode: 200
                     )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "1", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
                 ))
             ],
             count: 0
         )
 
-        #expect(state.inboxMode == .unread)
+        state.inboxMode = .unread
 
         state.toggleInboxMode()
 
         await Self.waitUntil {
-            await session.recordedRequests().count == 1
+            await session.recordedRequests().count == 2
         }
 
         let requests = await session.recordedRequests()
-        #expect(state.inboxMode == .all)
-        #expect(requests.first?.url?.query?.contains("all=true") == true)
+        #expect(state.inboxMode == .inbox)
+        #expect(requests.count == 2)
+        #expect(requests.first?.url?.query?.contains("all=false") == true)
+        #expect(requests.last?.url?.query?.contains("all=true") == true)
+        #expect(requests.last?.url?.query?.contains("since=") == true)
+    }
+
+    @Test func inboxModeLoadsRecentReadItemsFromRecentInboxFeed() async {
+        let (state, _) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: true),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "1", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                ))
+            ],
+            count: 0
+        )
+
+        state.groupByRepo = false
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.count == 2)
+        #expect(Set(state.filteredNotifications.map(\.id)) == Set(["0", "1"]))
+        #expect(state.filteredNotifications.contains(where: { $0.id == "0" && $0.isUnread }))
+        #expect(state.filteredNotifications.contains(where: { $0.id == "1" && !$0.isUnread }))
     }
 
     // MARK: - Mark read
@@ -450,11 +486,14 @@ struct AppStateTests {
             ))
         ])
         state.groupByRepo = false
+        state.inboxMode = .inbox
         #expect(state.notifications[0].isUnread == true)
         state.selectedIndex = 0
         state.markRead()
         #expect(state.notifications[0].isUnread == false)
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
 
         let requests = await session.recordedRequests()
         #expect(requests.count == 1)
@@ -484,14 +523,24 @@ struct AppStateTests {
                         headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
                     )
                 )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                )),
             ],
             count: 1
         )
 
+        state.inboxMode = .inbox
         state.groupByRepo = false
         state.selectedIndex = 0
         state.markRead()
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
 
         #expect(state.notifications[0].isUnread == false)
 
@@ -499,7 +548,7 @@ struct AppStateTests {
 
         #expect(state.notifications.count == 1)
         #expect(state.notifications[0].isUnread == false)
-        #expect((await session.recordedRequests()).count == 2)
+        #expect((await session.recordedRequests()).count == 3)
     }
 
     @Test func openInBrowserMarksUnreadThreadReadImmediately() async {
@@ -576,6 +625,7 @@ struct AppStateTests {
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let state = Self.makeState(0, apiClient: client)
 
+        state.inboxMode = .unread
         await state.loadNotifications(force: true)
 
         #expect(state.notifications.count == 1)
@@ -590,6 +640,61 @@ struct AppStateTests {
         }
 
         #expect(state.notifications[0].subjectState == .open)
+    }
+
+    @Test func visibleReadNotificationAlsoResolvesSubjectState() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.notificationsPayload(ids: []),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: Self.singleNotificationPayload(
+                    id: "8",
+                    isUnread: false,
+                    subjectURL: "https://api.github.com/repos/acme/alpha/pulls/8"
+                ),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: #"{"state":"closed","merged":true}"#.data(using: .utf8)!,
+                response: Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/pulls/8",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 50_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.contains(where: { $0.id == "8" && $0.subjectState == .unknown }))
+
+        state.notificationBecameVisible(id: "8")
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains(where: { $0.id == "8" && $0.subjectState == .merged })
+            }
+        }
+
+        #expect(state.filteredNotifications.contains(where: { $0.id == "8" && $0.subjectState == .merged }))
     }
 
     @Test func backgroundRefreshLoadsNotificationsWhilePanelIsClosed() async {
@@ -612,6 +717,7 @@ struct AppStateTests {
             }
         )
 
+        state.inboxMode = .unread
         #expect(state.isPanelVisible == false)
 
         await Self.waitUntil {
@@ -628,7 +734,7 @@ struct AppStateTests {
         state.signOut()
     }
 
-    @Test func backgroundRefreshUsesUnreadFeedWhenAllModeIsHidden() async {
+    @Test func backgroundRefreshUsesUnreadFeedWhenInboxModeIsHidden() async {
         let sleeper = BackgroundRefreshSleeper()
         let session = StubNetworkSession(results: [
             .success((
@@ -648,11 +754,12 @@ struct AppStateTests {
             backgroundRefreshEnabled: true,
             sleepHandler: { nanoseconds in
                 await sleeper.sleep(nanoseconds: nanoseconds)
-            }
+            },
+            userDefaults: Self.makeIsolatedUserDefaults()
         )
 
         state.groupByRepo = false
-        state.inboxMode = .all
+        state.inboxMode = .inbox
 
         await Self.waitUntil {
             await session.recordedRequests().count == 1
@@ -690,6 +797,7 @@ struct AppStateTests {
         ])
         let client = GitHubAPIClient(token: "ghp_secret", session: session)
         let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
         state.groupByRepo = false
 
         async let firstLoad: Void = state.loadNotifications(force: true)
@@ -1012,7 +1120,9 @@ struct AppStateTests {
         #expect(state.filteredNotifications.map(\.id) == ["second"])
         #expect(state.selectedNotification?.id == "second")
 
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().count == 2
+        }
         #expect((await session.recordedRequests()).count == 2)
     }
 
@@ -1241,7 +1351,9 @@ struct AppStateTests {
         #expect(state.filteredNotifications.map(\.id) == ["second"])
         #expect(state.selectedNotification?.id == "second")
 
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().count == 2
+        }
         #expect((await session.recordedRequests()).count == 2)
     }
 
@@ -1262,12 +1374,13 @@ struct AppStateTests {
             sleepHandler: Self.realSleep
         )
         state.groupByRepo = false
+        state.inboxMode = .unread
         state.selectedIndex = 0
         state.done()
-        #expect(state.notifications.count == 4)
+        #expect(state.notifications.count == 2)
         state.undo()
         try? await Task.sleep(nanoseconds: 75_000_000)
-        #expect(state.notifications.count == 5)
+        #expect(state.notifications.count == 3)
         #expect(state.selectedNotification?.id == "0")
         #expect((await session.recordedRequests()).isEmpty)
     }
@@ -1313,6 +1426,7 @@ struct AppStateTests {
             sleepHandler: Self.realSleep
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.done()
@@ -1355,6 +1469,7 @@ struct AppStateTests {
             sleepHandler: Self.realSleep
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.done()
@@ -1436,7 +1551,9 @@ struct AppStateTests {
         state.done()
         #expect(state.notifications.count == 4)
 
-        await Self.settleTasks()
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
 
         #expect(state.notifications.count == 5)
         #expect(state.selectedNotification?.id == "0")
@@ -1461,6 +1578,7 @@ struct AppStateTests {
             sleepHandler: Self.realSleep
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.done()
@@ -1497,6 +1615,7 @@ struct AppStateTests {
             count: 1
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.done()
@@ -1508,6 +1627,89 @@ struct AppStateTests {
 
         #expect(state.filteredNotifications.isEmpty)
         #expect((await session.recordedRequests()).count == 2)
+    }
+
+    @Test func inboxRetainsRecentlyReadThreadAfterItLeavesUnreadFeed() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 204
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                )),
+            ],
+            count: 1
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        state.selectedIndex = 0
+        state.markRead()
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.map(\.id) == ["0"])
+        #expect(state.filteredNotifications.first?.isUnread == false)
+        #expect((await session.recordedRequests()).count == 3)
+    }
+
+    @Test func inboxReadHistoryDoesNotReviveCommittedDoneThread() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 204
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                )),
+            ],
+            count: 1
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        state.selectedIndex = 0
+        state.done()
+
+        await Self.settleTasks()
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.isEmpty)
+        #expect((await session.recordedRequests()).count == 3)
     }
 
     @Test func relaunchKeepsCommittedDoneThreadHiddenUntilServerCatchesUp() async {
@@ -1593,6 +1795,7 @@ struct AppStateTests {
             count: 2
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         await state.loadNotifications(force: true)
         state.selectedIndex = 0
@@ -1653,6 +1856,7 @@ struct AppStateTests {
             count: 1
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.done()
@@ -1698,6 +1902,7 @@ struct AppStateTests {
             count: 1
         )
 
+        state.inboxMode = .unread
         state.groupByRepo = false
         state.selectedIndex = 0
         state.unsubscribeFromThread()

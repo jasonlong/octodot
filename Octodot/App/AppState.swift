@@ -19,8 +19,58 @@ final class AppState {
     typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
     private static let inboxModeStorageKey = "AppState.inboxMode.v1"
     private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
+    private static let recentInboxReadsStorageKey = "AppState.recentInboxReads.v1"
     private static let visibleSubjectStateBatchSize = 20
-    private static let allModeRetentionInterval: TimeInterval = 30 * 24 * 60 * 60
+    private static let recentInboxReadRetentionInterval: TimeInterval = 14 * 24 * 60 * 60
+    private static let recentInboxReadLimit = 100
+    private static let inboxRecentReadFallbackWindow: TimeInterval = 36 * 60 * 60
+    private static let inboxRecentReadGraceBeforeOldestUnread: TimeInterval = 6 * 60 * 60
+    private static let inboxRecentReadMaxPages = 1
+    private static let inboxRecentReadMaxItems = 25
+
+    private struct PersistedInboxNotification: Codable {
+        let id: String
+        let threadId: String
+        let title: String
+        let repository: String
+        let reason: GitHubNotification.Reason
+        let type: GitHubNotification.SubjectType
+        let updatedAt: Date
+        let isUnread: Bool
+        let url: URL
+        let subjectURL: String?
+        let subjectState: GitHubNotification.SubjectState
+
+        init(notification: GitHubNotification) {
+            self.id = notification.id
+            self.threadId = notification.threadId
+            self.title = notification.title
+            self.repository = notification.repository
+            self.reason = notification.reason
+            self.type = notification.type
+            self.updatedAt = notification.updatedAt
+            self.isUnread = notification.isUnread
+            self.url = notification.url
+            self.subjectURL = notification.subjectURL
+            self.subjectState = notification.subjectState
+        }
+
+        var notification: GitHubNotification {
+            GitHubNotification(
+                id: id,
+                threadId: threadId,
+                title: title,
+                repository: repository,
+                reason: reason,
+                type: type,
+                updatedAt: updatedAt,
+                isUnread: isUnread,
+                url: url,
+                subjectURL: subjectURL,
+                subjectState: subjectState
+            )
+        }
+    }
 
     enum AuthStatus: Equatable {
         case signedOut
@@ -28,17 +78,17 @@ final class AppState {
     }
 
     enum InboxMode: String, Equatable {
+        case inbox
         case unread
-        case all
 
         var includesReadNotifications: Bool {
-            self == .all
+            self == .inbox
         }
 
         var title: String {
             switch self {
+            case .inbox: "Inbox"
             case .unread: "Unread"
-            case .all: "All"
             }
         }
     }
@@ -54,10 +104,11 @@ final class AppState {
     }
     var isLoading: Bool = false
     var errorMessage: String?
-    var inboxMode: InboxMode = .unread {
+    var inboxMode: InboxMode = .inbox {
         didSet {
             guard inboxMode != oldValue else { return }
             persistInboxMode()
+            rebuildDerivedState()
         }
     }
     var groupByRepo: Bool = true {
@@ -69,6 +120,7 @@ final class AppState {
     }
 
     private var serverNotifications: [GitHubNotification] = []
+    private var serverRecentInboxNotifications: [GitHubNotification] = []
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
@@ -82,6 +134,9 @@ final class AppState {
     private var lastActionDebugThreadID: String?
     private var lastActionDebugKind: String?
     private var activeLoadRequestID = UUID()
+    private var lastKnownUnreadCount = 0
+    private var recentInboxReadNotifications: [String: GitHubNotification] = [:]
+    private var lastFetchedUnreadNotifications: [GitHubNotification] = []
     private var apiClient: GitHubAPIClient?
     private let actionDispatchDelayNanoseconds: UInt64
     private let backgroundRefreshEnabled: Bool
@@ -147,8 +202,15 @@ final class AppState {
         self.threadActions = ThreadActionStore(userDefaults: userDefaults)
         self.inboxMode = Self.loadInboxMode(from: userDefaults)
         self.groupByRepo = Self.loadGroupByRepo(from: userDefaults)
+        self.recentInboxReadNotifications = Self.loadRecentInboxReadNotifications(from: userDefaults)
         self.repositoryOrderAnchor = Self.repositoryOrder(from: notifications)
         self.selectedThreadID = notifications.first?.id
+        self.lastKnownUnreadCount = notifications.reduce(into: 0) { count, notification in
+            if notification.isUnread {
+                count += 1
+            }
+        }
+        self.lastFetchedUnreadNotifications = notifications.filter(\.isUnread)
         rebuildDerivedState()
 
         if let bootstrapToken {
@@ -190,7 +252,7 @@ final class AppState {
     }
 
     func toggleInboxMode() {
-        setInboxMode(inboxMode == .unread ? .all : .unread)
+        setInboxMode(inboxMode == .unread ? .inbox : .unread)
     }
 
     func setInboxMode(_ mode: InboxMode) {
@@ -201,7 +263,6 @@ final class AppState {
 
     func notificationBecameVisible(id: String) {
         guard let notification = filteredNotifications.first(where: { $0.id == id }),
-              notification.isUnread,
               notification.subjectURL != nil,
               notification.subjectState == .unknown,
               !pendingVisibleSubjectStateIDs.contains(id),
@@ -259,7 +320,11 @@ final class AppState {
         apiClient = nil
         authStatus = .signedOut
         serverNotifications = []
+        serverRecentInboxNotifications = []
         repositoryOrderAnchor = []
+        lastKnownUnreadCount = 0
+        lastFetchedUnreadNotifications = []
+        clearRecentInboxReadNotifications()
         threadActions.clearCommittedActions()
         errorMessage = nil
         searchQuery = ""
@@ -275,19 +340,29 @@ final class AppState {
         cancelSubjectStateResolution()
         isLoading = true
         do {
-            let fetched = try await client.fetchNotifications(
-                all: inboxMode.includesReadNotifications,
-                force: force
-            )
+            async let unreadFetch = client.fetchNotifications(all: false, force: force)
+            let fetched = try await unreadFetch
+            let fetchedRecentInbox: [GitHubNotification]
+            if inboxMode == .inbox {
+                fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
+                    since: recentInboxSinceDate(relativeTo: fetched),
+                    force: force,
+                    maxPages: Self.inboxRecentReadMaxPages
+                )
+            } else {
+                fetchedRecentInbox = []
+            }
             guard requestID == activeLoadRequestID else { return }
-            serverNotifications = fetched
-            threadActions.reconcileCommittedActions(with: fetched)
-            repositoryOrderAnchor = Self.repositoryOrder(from: filteredNotificationsForCurrentMode(fetched))
+            applyLoadedNotifications(
+                unreadNotifications: fetched,
+                recentInboxNotifications: fetchedRecentInbox
+            )
             isLoading = false
             errorMessage = nil
             rebuildDerivedState()
             DebugTrace.log(
-                "load applied mode=\(inboxMode.rawValue) server.count=\(serverNotifications.count) " +
+                "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
+                "recent.count=\(serverRecentInboxNotifications.count) " +
                 "visible.count=\(filteredNotifications.count) visible.top=\(Self.topIDs(in: filteredNotifications))"
             )
             logLastActionSnapshot(context: "after-load")
@@ -408,15 +483,15 @@ final class AppState {
     }
 
     private func rebuildDerivedState() {
-        let projected = threadActions.projectedNotifications(from: serverNotifications)
-        let modeFiltered = filteredNotificationsForCurrentMode(projected)
-        let serverModeFiltered = filteredNotificationsForCurrentMode(serverNotifications)
+        let projectedUnread = threadActions.projectedNotifications(from: serverNotifications)
+        let projectedRecentInbox = threadActions.projectedNotifications(from: serverRecentInboxNotifications)
+        let modeFiltered = filteredNotificationsForCurrentMode(
+            unreadNotifications: projectedUnread,
+            recentInboxNotifications: projectedRecentInbox
+        )
+        let serverModeFiltered = serverNotificationsForCurrentMode()
         notifications = modeFiltered
-        unreadNotificationCount = modeFiltered.reduce(into: 0) { count, notification in
-            if notification.isUnread {
-                count += 1
-            }
-        }
+        unreadNotificationCount = lastKnownUnreadCount
 
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = query.isEmpty ? modeFiltered : modeFiltered.filter {
@@ -445,13 +520,31 @@ final class AppState {
         applySelection(index: selectedIndexStorage, in: ordered)
     }
 
-    private func filteredNotificationsForCurrentMode(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
-        guard inboxMode == .all else {
-            return notifications
+    private func filteredNotificationsForCurrentMode(
+        unreadNotifications: [GitHubNotification],
+        recentInboxNotifications: [GitHubNotification]
+    ) -> [GitHubNotification] {
+        switch inboxMode {
+        case .unread:
+            return unreadNotifications.filter(\.isUnread)
+        case .inbox:
+            return mergedInboxNotifications(
+                unreadNotifications: unreadNotifications,
+                recentInboxNotifications: recentInboxNotifications
+            )
         }
+    }
 
-        let cutoffDate = Date().addingTimeInterval(-Self.allModeRetentionInterval)
-        return notifications.filter { $0.updatedAt >= cutoffDate }
+    private func serverNotificationsForCurrentMode() -> [GitHubNotification] {
+        switch inboxMode {
+        case .unread:
+            return serverNotifications.filter(\.isUnread)
+        case .inbox:
+            return mergedInboxNotifications(
+                unreadNotifications: serverNotifications,
+                recentInboxNotifications: serverRecentInboxNotifications
+            )
+        }
     }
 
     private func orderedNotifications(
@@ -674,6 +767,16 @@ final class AppState {
     private func handlePendingActionSuccess(_ pending: ThreadActionStore.PendingAction) {
         actionTasks[pending.notification.threadId] = nil
         let successEffect = threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
+        switch pending.kind {
+        case .markRead:
+            var readNotification = pending.notification
+            readNotification.isUnread = false
+            recordRecentInboxReadNotification(readNotification)
+        case .done, .unsubscribe:
+            removeRecentInboxReadNotification(threadId: pending.notification.threadId)
+        case .restoreSubscription:
+            break
+        }
         DebugTrace.log(
             "success kind=\(pending.kind.rawValue) target.id=\(pending.notification.id) " +
             "target.thread=\(pending.notification.threadId) server=\(serverNotifications.map(\.id).joined(separator: ","))"
@@ -787,22 +890,62 @@ final class AppState {
         subjectStateResolutionTask = nil
         visibleSubjectStateInFlightIDs.subtract(expectedIDs)
 
-        var didChange = false
-        for index in serverNotifications.indices {
-            guard let resolvedState = resolvedStates[serverNotifications[index].id],
-                  serverNotifications[index].subjectState != resolvedState else {
-                continue
-            }
-
-            serverNotifications[index].subjectState = resolvedState
-            didChange = true
-        }
+        let unreadChanged = applyResolvedSubjectStates(resolvedStates, to: &serverNotifications)
+        let recentInboxChanged = applyResolvedSubjectStates(resolvedStates, to: &serverRecentInboxNotifications)
+        let recentReadChanged = applyResolvedSubjectStates(resolvedStates, to: &recentInboxReadNotifications)
+        let lastFetchedUnreadChanged = applyResolvedSubjectStates(resolvedStates, to: &lastFetchedUnreadNotifications)
+        let didChange = unreadChanged || recentInboxChanged || recentReadChanged || lastFetchedUnreadChanged
 
         if didChange {
+            if recentReadChanged {
+                persistRecentInboxReadNotifications()
+            }
             rebuildDerivedState()
         }
 
         scheduleVisibleSubjectStateResolutionIfNeeded()
+    }
+
+    @discardableResult
+    private func applyResolvedSubjectStates(
+        _ resolvedStates: [String: GitHubNotification.SubjectState],
+        to notifications: inout [GitHubNotification]
+    ) -> Bool {
+        var didChange = false
+
+        for index in notifications.indices {
+            guard let resolvedState = resolvedStates[notifications[index].id],
+                  notifications[index].subjectState != resolvedState else {
+                continue
+            }
+
+            notifications[index].subjectState = resolvedState
+            didChange = true
+        }
+
+        return didChange
+    }
+
+    @discardableResult
+    private func applyResolvedSubjectStates(
+        _ resolvedStates: [String: GitHubNotification.SubjectState],
+        to notificationsByThreadID: inout [String: GitHubNotification]
+    ) -> Bool {
+        var didChange = false
+
+        for (threadID, notification) in notificationsByThreadID {
+            guard let resolvedState = resolvedStates[notification.id],
+                  notification.subjectState != resolvedState else {
+                continue
+            }
+
+            var updated = notification
+            updated.subjectState = resolvedState
+            notificationsByThreadID[threadID] = updated
+            didChange = true
+        }
+
+        return didChange
     }
 
     private func selectionAfterRemoving(threadId: String, from list: [GitHubNotification]) -> String? {
@@ -869,20 +1012,47 @@ final class AppState {
 
         do {
             let fetched = try await client.fetchNotifications(all: false, force: false)
-            unreadNotificationCount = fetched.reduce(into: 0) { count, notification in
-                if notification.isUnread {
-                    count += 1
-                }
-            }
+            lastKnownUnreadCount = unreadCount(in: fetched)
+            unreadNotificationCount = lastKnownUnreadCount
         } catch {
-            // Ignore background-only refresh failures while the heavy "All" feed is hidden.
+            // Ignore background-only refresh failures while the heavier inbox feed is hidden.
+        }
+    }
+
+    private func applyLoadedNotifications(
+        unreadNotifications: [GitHubNotification],
+        recentInboxNotifications: [GitHubNotification]
+    ) {
+        recordRecentInboxReadTransitions(from: lastFetchedUnreadNotifications, to: unreadNotifications)
+        serverNotifications = unreadNotifications
+        serverRecentInboxNotifications = pruneServerRecentInboxNotifications(
+            recentInboxNotifications,
+            using: unreadNotifications
+        )
+        lastFetchedUnreadNotifications = unreadNotifications
+        lastKnownUnreadCount = unreadCount(in: unreadNotifications)
+        threadActions.reconcileCommittedActions(with: unreadNotifications)
+        pruneRecentInboxReadNotifications(using: unreadNotifications)
+        repositoryOrderAnchor = Self.repositoryOrder(from: serverNotificationsForCurrentMode())
+    }
+
+    private func unreadCount(in notifications: [GitHubNotification]) -> Int {
+        notifications.reduce(into: 0) { count, notification in
+            if notification.isUnread {
+                count += 1
+            }
         }
     }
 
     private static func loadInboxMode(from userDefaults: UserDefaults) -> InboxMode {
-        guard let rawValue = userDefaults.string(forKey: inboxModeStorageKey),
-              let mode = InboxMode(rawValue: rawValue) else {
-            return .unread
+        guard let rawValue = userDefaults.string(forKey: inboxModeStorageKey) else {
+            return .inbox
+        }
+        if rawValue == "all" {
+            return .inbox
+        }
+        guard let mode = InboxMode(rawValue: rawValue) else {
+            return .inbox
         }
         return mode
     }
@@ -900,5 +1070,186 @@ final class AppState {
 
     private func persistGroupByRepo() {
         userDefaults.set(groupByRepo, forKey: Self.groupByRepoStorageKey)
+    }
+
+    private func mergedInboxNotifications(
+        unreadNotifications: [GitHubNotification],
+        recentInboxNotifications: [GitHubNotification]
+    ) -> [GitHubNotification] {
+        let recentReads = prunedRecentInboxReadNotifications(using: unreadNotifications)
+        let unreadThreadIDs = Set(unreadNotifications.map(\.threadId))
+        let serverRecentReads = recentInboxNotifications.filter { notification in
+            !notification.isUnread && !unreadThreadIDs.contains(notification.threadId)
+        }
+        let serverRecentReadThreadIDs = Set(serverRecentReads.map(\.threadId))
+        let additionalRecentReads = recentReads.filter {
+            !unreadThreadIDs.contains($0.threadId) && !serverRecentReadThreadIDs.contains($0.threadId)
+        }
+        return unreadNotifications + serverRecentReads + additionalRecentReads
+    }
+
+    private func recordRecentInboxReadNotification(_ notification: GitHubNotification) {
+        var snapshot = notification
+        snapshot.isUnread = false
+        if let existing = recentInboxReadNotifications[snapshot.threadId],
+           existing.updatedAt >= snapshot.updatedAt {
+            return
+        }
+        recentInboxReadNotifications[snapshot.threadId] = snapshot
+        pruneRecentInboxReadNotifications(using: serverNotifications.filter(\.isUnread))
+    }
+
+    private func recordRecentInboxReadTransitions(
+        from previousUnread: [GitHubNotification],
+        to currentUnread: [GitHubNotification]
+    ) {
+        guard !previousUnread.isEmpty else { return }
+
+        let currentUnreadActivityIDs = Set(currentUnread.compactMap(\.activityIdentity))
+        let currentUnreadThreadIDs = Set(currentUnread.map(\.threadId))
+        let candidates = previousUnread.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            return lhs.id > rhs.id
+        }
+
+        for notification in candidates {
+            if currentUnreadActivityIDs.contains(notification.activityIdentity) {
+                continue
+            }
+            if currentUnreadThreadIDs.contains(notification.threadId) {
+                continue
+            }
+            guard !threadActions.projectedNotifications(from: [notification]).isEmpty else {
+                continue
+            }
+            recordRecentInboxReadNotification(notification)
+        }
+    }
+
+    private func removeRecentInboxReadNotification(threadId: String) {
+        guard recentInboxReadNotifications.removeValue(forKey: threadId) != nil else { return }
+        persistRecentInboxReadNotifications()
+    }
+
+    private func clearRecentInboxReadNotifications() {
+        recentInboxReadNotifications.removeAll()
+        persistRecentInboxReadNotifications()
+    }
+
+    private func pruneRecentInboxReadNotifications(using unreadNotifications: [GitHubNotification]) {
+        recentInboxReadNotifications = prunedRecentInboxReadNotifications(
+            recentInboxReadNotifications,
+            using: unreadNotifications
+        )
+        persistRecentInboxReadNotifications()
+    }
+
+    private func pruneServerRecentInboxNotifications(
+        _ notifications: [GitHubNotification],
+        using unreadNotifications: [GitHubNotification]
+    ) -> [GitHubNotification] {
+        let unreadThreadIDs = Set(unreadNotifications.map(\.threadId))
+        let filtered = notifications.filter { notification in
+            !notification.isUnread && !unreadThreadIDs.contains(notification.threadId)
+        }
+
+        return Array(
+            filtered
+                .sorted { lhs, rhs in
+                    if lhs.updatedAt != rhs.updatedAt {
+                        return lhs.updatedAt > rhs.updatedAt
+                    }
+                    return lhs.id > rhs.id
+                }
+                .prefix(Self.inboxRecentReadMaxItems)
+        )
+    }
+
+    private func recentInboxSinceDate(relativeTo unreadNotifications: [GitHubNotification], now: Date = Date()) -> Date {
+        let fallback = now.addingTimeInterval(-Self.inboxRecentReadFallbackWindow)
+        guard let oldestUnread = unreadNotifications.map(\.updatedAt).min() else {
+            return fallback
+        }
+
+        let oldestUnreadGraceWindow = oldestUnread.addingTimeInterval(-Self.inboxRecentReadGraceBeforeOldestUnread)
+        return max(fallback, oldestUnreadGraceWindow)
+    }
+
+    private func prunedRecentInboxReadNotifications(using unreadNotifications: [GitHubNotification]) -> [GitHubNotification] {
+        Array(
+            prunedRecentInboxReadNotifications(recentInboxReadNotifications, using: unreadNotifications)
+                .values
+        )
+    }
+
+    private func prunedRecentInboxReadNotifications(
+        _ notificationsByThreadID: [String: GitHubNotification],
+        using unreadNotifications: [GitHubNotification],
+        now: Date = Date()
+    ) -> [String: GitHubNotification] {
+        let cutoff = now.addingTimeInterval(-Self.recentInboxReadRetentionInterval)
+        let unreadByThreadID = unreadNotifications.reduce(into: [String: GitHubNotification]()) { result, notification in
+            guard notification.isUnread else { return }
+            if let existing = result[notification.threadId] {
+                if notification.updatedAt >= existing.updatedAt || notification.isUnread {
+                    result[notification.threadId] = notification
+                }
+            } else {
+                result[notification.threadId] = notification
+            }
+        }
+        var pruned = notificationsByThreadID.filter { threadId, notification in
+            guard notification.updatedAt >= cutoff else { return false }
+            guard !threadActions.projectedNotifications(from: [notification]).isEmpty else { return false }
+            if let unreadNotification = unreadByThreadID[threadId],
+               unreadNotification.updatedAt >= notification.updatedAt {
+                return false
+            }
+            return true
+        }
+
+        if pruned.count > Self.recentInboxReadLimit {
+            let kept = pruned.values
+                .sorted { lhs, rhs in
+                    if lhs.updatedAt != rhs.updatedAt {
+                        return lhs.updatedAt > rhs.updatedAt
+                    }
+                    return lhs.id > rhs.id
+                }
+                .prefix(Self.recentInboxReadLimit)
+            pruned = Dictionary(uniqueKeysWithValues: Array(kept).map { ($0.threadId, $0) })
+        }
+
+        return pruned
+    }
+
+    private static func loadRecentInboxReadNotifications(from userDefaults: UserDefaults) -> [String: GitHubNotification] {
+        guard let data = userDefaults.data(forKey: recentInboxReadsStorageKey) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let persisted = try? decoder.decode([PersistedInboxNotification].self, from: data) else {
+            return [:]
+        }
+
+        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.threadId, $0.notification) })
+    }
+
+    private func persistRecentInboxReadNotifications() {
+        guard !recentInboxReadNotifications.isEmpty else {
+            userDefaults.removeObject(forKey: Self.recentInboxReadsStorageKey)
+            return
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let persisted = recentInboxReadNotifications.values.map(PersistedInboxNotification.init(notification:))
+        guard let data = try? encoder.encode(persisted) else { return }
+        userDefaults.set(data, forKey: Self.recentInboxReadsStorageKey)
     }
 }

@@ -10,6 +10,7 @@ actor GitHubAPIClient {
     private let baseURL = URL(string: "https://api.github.com")!
     private let notificationsPerPage = 100
     private let defaultPollInterval: TimeInterval = 60
+    private let defaultRecentInboxMaxPages = 2
     private let maxConcurrentSubjectRequests: Int
     private let maxSubjectResolutionBatchSize = 40
     private let session: any NetworkSession
@@ -18,6 +19,7 @@ actor GitHubAPIClient {
     private enum FeedScope: CaseIterable {
         case unread
         case all
+        case inbox
 
         init(all: Bool) {
             self = all ? .all : .unread
@@ -54,7 +56,36 @@ actor GitHubAPIClient {
     // MARK: - Fetch notifications
 
     func fetchNotifications(all: Bool = false, force: Bool = false) async throws -> [GitHubNotification] {
-        let scope = FeedScope(all: all)
+        try await fetchNotifications(
+            scope: FeedScope(all: all),
+            all: all,
+            since: nil,
+            force: force,
+            maxPages: nil
+        )
+    }
+
+    func fetchRecentInboxNotifications(
+        since: Date,
+        force: Bool = false,
+        maxPages: Int? = nil
+    ) async throws -> [GitHubNotification] {
+        try await fetchNotifications(
+            scope: .inbox,
+            all: true,
+            since: since,
+            force: force,
+            maxPages: maxPages ?? defaultRecentInboxMaxPages
+        )
+    }
+
+    private func fetchNotifications(
+        scope: FeedScope,
+        all: Bool,
+        since: Date?,
+        force: Bool,
+        maxPages: Int?
+    ) async throws -> [GitHubNotification] {
         let cachedFeed = feedCache(for: scope)
         var shouldUseConditionalRequest = !force && cachedFeed.lastModifiedValue != nil
         DebugTrace.log(
@@ -75,7 +106,8 @@ actor GitHubAPIClient {
         var apiItems: [APINotification] = []
         var lastModifiedFromResponse: String?
         var page = 1
-        var currentURL: URL? = notificationsURL(all: all, page: page)
+        let maximumPages = maxPages.map { max(1, $0) }
+        var currentURL: URL? = notificationsURL(all: all, page: page, since: since)
 
         while let requestURL = currentURL {
             var request = makeNotificationsRequest(url: requestURL)
@@ -109,7 +141,7 @@ actor GitHubAPIClient {
                     apiItems.removeAll()
                     lastModifiedFromResponse = nil
                     page = 1
-                    currentURL = notificationsURL(all: all, page: 1)
+                    currentURL = notificationsURL(all: all, page: 1, since: since)
                     continue
                 }
 
@@ -124,15 +156,17 @@ actor GitHubAPIClient {
                 )
                 apiItems.append(contentsOf: pageItems)
 
-                if let nextPageURL = nextPageURL(from: httpResponse) {
+                if let nextPageURL = nextPageURL(from: httpResponse),
+                   maximumPages.map({ page < $0 }) ?? true {
                     currentURL = nextPageURL
                     page += 1
                     continue
                 }
 
-                if pageItems.count == notificationsPerPage {
+                if pageItems.count == notificationsPerPage,
+                   maximumPages.map({ page < $0 }) ?? true {
                     page += 1
-                    currentURL = notificationsURL(all: all, page: page)
+                    currentURL = notificationsURL(all: all, page: page, since: since)
                     continue
                 }
 
@@ -267,18 +301,7 @@ actor GitHubAPIClient {
         do {
             let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
-            if subject.merged == true {
-                return .merged
-            }
-            switch subject.state {
-            case "open": return .open
-            case "closed":
-                if subject.stateReason == "not_planned" {
-                    return .closedNotPlanned
-                }
-                return .closed
-            default: return .unknown
-            }
+            return subject.resolvedState
         } catch {
             return .unknown
         }
@@ -286,8 +309,7 @@ actor GitHubAPIClient {
 
     private static func shouldResolveSubjectState(_ notification: GitHubNotification) -> Bool {
         guard notification.subjectURL != nil,
-              notification.subjectState == .unknown,
-              notification.isUnread else {
+              notification.subjectState == .unknown else {
             return false
         }
 
@@ -312,7 +334,7 @@ actor GitHubAPIClient {
         guard (200...299).contains(status) || status == 304 else {
             throw APIError.markReadFailed(status)
         }
-        invalidateFeedCaches([.all, .unread])
+        invalidateFeedCaches(FeedScope.allCases)
     }
 
     func markAsDone(notification: GitHubNotification) async throws {
@@ -521,16 +543,26 @@ actor GitHubAPIClient {
         switch scope {
         case .unread: return "unread"
         case .all: return "all"
+        case .inbox: return "inbox"
         }
     }
 
-    private func notificationsURL(all: Bool, page: Int) -> URL {
+    private func notificationsURL(all: Bool, page: Int, since: Date?) -> URL {
         var components = URLComponents(url: baseURL.appendingPathComponent("notifications"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "all", value: all ? "true" : "false"),
             URLQueryItem(name: "per_page", value: "\(notificationsPerPage)"),
             URLQueryItem(name: "page", value: "\(page)"),
         ]
+        if let since {
+            queryItems.append(
+                URLQueryItem(
+                    name: "since",
+                    value: ISO8601DateFormatter().string(from: since)
+                )
+            )
+        }
+        components.queryItems = queryItems
         return components.url!
     }
 
@@ -696,7 +728,26 @@ private struct APINotification: Decodable {
 private struct APISubjectState: Decodable {
     let state: String?
     let merged: Bool?
+    let mergedAt: String?
+    let draft: Bool?
     let stateReason: String?
+
+    var resolvedState: GitHubNotification.SubjectState {
+        if merged == true || mergedAt != nil {
+            return .merged
+        }
+        if draft == true {
+            return .draft
+        }
+        switch state {
+        case "open":
+            return .open
+        case "closed":
+            return stateReason == "not_planned" ? .closedNotPlanned : .closed
+        default:
+            return .unknown
+        }
+    }
 }
 
 private struct APIUser: Decodable {

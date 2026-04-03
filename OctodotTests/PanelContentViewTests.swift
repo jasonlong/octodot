@@ -60,8 +60,8 @@ struct PanelContentViewTests {
             PanelInput.notificationSummary(
                 unreadCount: 3,
                 totalCount: 8,
-                mode: .all
-            ) == "3 unread · 8 total"
+                mode: .inbox
+            ) == "3 unread · 8 in inbox"
         )
     }
 

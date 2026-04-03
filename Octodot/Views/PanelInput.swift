@@ -62,8 +62,8 @@ enum PanelInput {
         switch mode {
         case .unread:
             return "\(unreadCount) unread"
-        case .all:
-            return "\(unreadCount) unread · \(totalCount) total"
+        case .inbox:
+            return "\(unreadCount) unread · \(totalCount) in inbox"
         }
     }
 

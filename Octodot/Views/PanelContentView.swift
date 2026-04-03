@@ -47,8 +47,8 @@ struct PanelContentView: View {
                             set: { appState.setInboxMode($0) }
                         )
                     ) {
+                        Text("Inbox").tag(AppState.InboxMode.inbox)
                         Text("Unread").tag(AppState.InboxMode.unread)
-                        Text("All").tag(AppState.InboxMode.all)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)

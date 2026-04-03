@@ -460,6 +460,71 @@ struct GitHubAPIClientTests {
         #expect(requests[3].value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:05:00 GMT")
     }
 
+    @Test func fetchRecentInboxUsesBoundedAllQueryWithSinceParameter() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "inbox-1").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=true")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let since = ISO8601DateFormatter().date(from: "2026-03-20T12:00:00Z")!
+        let notifications = try await client.fetchRecentInboxNotifications(since: since, force: true)
+        let requests = await session.recordedRequests()
+        let queryItems = URLComponents(url: try #require(requests.first?.url), resolvingAgainstBaseURL: false)?.queryItems
+
+        #expect(notifications.count == 1)
+        #expect(requests.count == 1)
+        #expect(queryItems?.contains(URLQueryItem(name: "all", value: "true")) == true)
+        #expect(queryItems?.contains(URLQueryItem(name: "since", value: "2026-03-20T12:00:00Z")) == true)
+    }
+
+    @Test func fetchRecentInboxStopsAtConfiguredPageCap() async throws {
+        let firstPage = Self.notificationsPayload(ids: (1...100).map(String.init)).data(using: .utf8)!
+        let secondPage = Self.notificationsPayload(ids: ["101"]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                firstPage,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?page=1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Link": #"<https://api.github.com/notifications?all=true&per_page=100&page=2>; rel="next""#
+                    ]
+                )!
+            )),
+            .success((
+                secondPage,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?page=2")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let since = ISO8601DateFormatter().date(from: "2026-03-20T12:00:00Z")!
+        let notifications = try await client.fetchRecentInboxNotifications(
+            since: since,
+            force: true,
+            maxPages: 1
+        )
+        let requests = await session.recordedRequests()
+
+        #expect(notifications.count == 100)
+        #expect(requests.count == 1)
+    }
+
     @Test func resolveSubjectStatesCapsConcurrentRequests() async throws {
         let session = SubjectConcurrencyTrackingSession(
             notificationsPayload: Self.notificationsPayload(
@@ -486,7 +551,7 @@ struct GitHubAPIClientTests {
         #expect(session.recordedMaxInFlightSubjectRequests() == 2)
     }
 
-    @Test func resolveSubjectStatesOnlyFetchesUnreadIssueAndPullRequestStates() async throws {
+    @Test func resolveSubjectStatesOnlyFetchesIssueAndPullRequestStates() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
                 id: "1",
@@ -532,17 +597,93 @@ struct GitHubAPIClientTests {
         }
 
         #expect(notifications.count == 5)
-        #expect(subjectRequests.count == 2)
+        #expect(subjectRequests.count == 3)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/1"))
+        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/2"))
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/issues/4"))
-        #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/pulls/2") == false)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/discussions/3") == false)
         #expect(subjectRequests.map(\.url?.path).contains("/repos/acme/test/dependabot/alerts/5") == false)
         #expect(resolvedStates["1"] == .open)
+        #expect(resolvedStates["2"] == .open)
         #expect(resolvedStates["4"] == .open)
-        #expect(resolvedStates["2"] == nil)
         #expect(resolvedStates["3"] == nil)
         #expect(resolvedStates["5"] == nil)
+    }
+
+    @Test func resolveSubjectStatesTreatsMergedAtAsMergedPullRequest() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: false,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                #"{"state":"closed","merged_at":"2026-04-01T12:00:00Z"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+
+        #expect(resolvedStates["1"] == .merged)
+    }
+
+    @Test func resolveSubjectStatesTreatsDraftPullRequestAsDraft() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: false,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                #"{"state":"open","draft":true}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedStates = await client.resolveSubjectStates(for: notifications)
+
+        #expect(resolvedStates["1"] == .draft)
     }
 
     @Test func fetchNotificationsMapsSecurityAlertsExplicitly() async throws {

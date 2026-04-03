@@ -219,7 +219,7 @@ private struct ShortcutsSettingsPane: View {
                 shortcutRow("u", "Undo pending actions")
                 shortcutRow("/", "Search")
                 shortcutRow("r", "Refresh")
-                shortcutRow("a", "Toggle Unread / All")
+                shortcutRow("a", "Toggle Inbox / Unread")
                 shortcutRow("Esc", "Exit search or close panel")
             }
         }

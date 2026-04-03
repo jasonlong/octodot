@@ -20,6 +20,7 @@ struct GitHubNotification: Identifiable, Hashable {
             switch subjectState {
             case .merged: "octicon-merge"
             case .closed: "octicon-pull-request-closed"
+            case .draft: "octicon-pull-request"
             default: "octicon-pull-request"
             }
         case .issue:
@@ -41,6 +42,7 @@ struct GitHubNotification: Identifiable, Hashable {
             switch subjectState {
             case .merged: .purple
             case .closed: .red
+            case .draft: .gray
             default: .green
             }
         case .issue:
@@ -65,15 +67,16 @@ struct GitHubNotification: Identifiable, Hashable {
         activityIdentity == other.activityIdentity
     }
 
-    enum SubjectState: String, Hashable {
+    enum SubjectState: String, Hashable, Codable {
         case open
         case closed
         case merged
+        case draft
         case closedNotPlanned
         case unknown
     }
 
-    enum Reason: String, CaseIterable {
+    enum Reason: String, CaseIterable, Codable {
         case mentioned = "Mentioned"
         case reviewRequested = "Review requested"
         case assigned = "Assigned"
@@ -100,7 +103,7 @@ struct GitHubNotification: Identifiable, Hashable {
         }
     }
 
-    enum SubjectType: String, CaseIterable {
+    enum SubjectType: String, CaseIterable, Codable {
         case pullRequest = "Pull Request"
         case issue = "Issue"
         case release = "Release"

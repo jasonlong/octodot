@@ -19,6 +19,13 @@ struct AppStateBootstrapTests {
                     url: "https://api.github.com/notifications?all=false&participating=false&per_page=100",
                     statusCode: 200
                 )
+            )),
+            .success((
+                Data("[]".utf8),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/notifications?all=true&participating=false&per_page=100&since=2026-04-01T00:00:00Z",
+                    statusCode: 200
+                )
             ))
         ])
         let client = GitHubAPIClient(token: "ghp_new", session: session)
@@ -34,15 +41,13 @@ struct AppStateBootstrapTests {
         try await state.submitToken("ghp_new")
 
         await AppStateTests.waitUntil {
-            await MainActor.run {
-                state.authStatus == .signedIn(username: "jasonlong")
-                    && state.errorMessage == nil
-            }
+            await session.recordedRequests().count == 3
         }
 
         #expect(savedToken == "ghp_new")
         #expect(state.isSignedIn)
-        #expect((await session.recordedRequests()).count == 2)
+        #expect(state.errorMessage == nil)
+        #expect((await session.recordedRequests()).count == 3)
     }
 
     @Test func submitTokenFailureDoesNotSaveOrSignIn() async {

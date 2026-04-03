@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Run test suite
+        run: |
+          xcodebuild test \
+            -project Octodot.xcodeproj \
+            -scheme Octodot \
+            -destination 'platform=macOS' \
+            -derivedDataPath .deriveddata
+
+      - name: Build release app
+        run: |
+          xcodebuild build \
+            -project Octodot.xcodeproj \
+            -scheme Octodot \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath .deriveddata-release
+
+      - name: Package release app
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            .deriveddata-release/Build/Products/Release/Octodot.app \
+            Octodot-${TAG_NAME}-macos.zip
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Octodot-${{ github.ref_name }}-macos.zip
+          generate_release_notes: true

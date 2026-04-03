@@ -24,7 +24,7 @@ struct NotificationRowView: View, Equatable {
 
             // Content
             VStack(alignment: .leading, spacing: 2) {
-                Text(notification.repository)
+                repositoryLabel
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -76,6 +76,14 @@ struct NotificationRowView: View, Equatable {
 
     private var relativeTime: String {
         Self.relativeTimeText(from: notification.updatedAt)
+    }
+
+    private var repositoryLabel: Text {
+        if let referenceNumber = notification.displayReferenceNumber {
+            return Text(notification.repository) + Text(referenceNumber).foregroundColor(Color.secondary.opacity(0.7))
+        }
+
+        return Text(notification.repository)
     }
 
     static func relativeTimeText(from updatedAt: Date, now: Date = Date()) -> String {

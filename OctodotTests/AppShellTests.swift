@@ -188,4 +188,38 @@ struct AppShellTests {
         #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-7_200), now: now) == "2h")
         #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-172_800), now: now) == "2d")
     }
+
+    @Test func notificationDisplayReferenceNumberParsesPullRequestsAndIssues() {
+        let pullRequest = AppStateTests.makeNotification(id: 1234, repo: "planetscale/app-bb")
+        let issue = GitHubNotification(
+            id: "42",
+            threadId: "42",
+            title: "Issue",
+            repository: "planetscale/app-bb",
+            reason: .subscribed,
+            type: .issue,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/planetscale/app-bb/issues/42")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let discussion = GitHubNotification(
+            id: "9",
+            threadId: "9",
+            title: "Discussion",
+            repository: "planetscale/app-bb",
+            reason: .subscribed,
+            type: .discussion,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/planetscale/app-bb/discussions/9")!,
+            subjectURL: nil,
+            subjectState: .unknown
+        )
+
+        #expect(pullRequest.displayReferenceNumber == "#1234")
+        #expect(issue.displayReferenceNumber == "#42")
+        #expect(discussion.displayReferenceNumber == nil)
+    }
 }

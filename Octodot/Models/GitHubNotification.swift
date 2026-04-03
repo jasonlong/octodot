@@ -65,6 +65,27 @@ struct GitHubNotification: Identifiable, Hashable {
         return "\(threadId)|\(milliseconds)"
     }
 
+    var displayReferenceNumber: String? {
+        let pathComponents = url.pathComponents
+
+        switch type {
+        case .pullRequest:
+            guard let index = pathComponents.firstIndex(of: "pull"),
+                  pathComponents.indices.contains(index + 1) else {
+                return nil
+            }
+            return "#\(pathComponents[index + 1])"
+        case .issue:
+            guard let index = pathComponents.firstIndex(of: "issues"),
+                  pathComponents.indices.contains(index + 1) else {
+                return nil
+            }
+            return "#\(pathComponents[index + 1])"
+        case .release, .discussion, .commit, .securityAlert:
+            return nil
+        }
+    }
+
     func matchesActivity(as other: GitHubNotification) -> Bool {
         activityIdentity == other.activityIdentity
     }

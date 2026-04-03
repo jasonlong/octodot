@@ -29,6 +29,7 @@
 		BB000000000000000000002A /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* AppPreferences.swift */; };
 		BB000000000000000000002B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002C /* SettingsView.swift */; };
 		BB000000000000000000002D /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002E /* HotkeyRecorderView.swift */; };
+		BB0000000000000000000030 /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* InboxStore.swift */; };
 			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
 			BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000022 /* AppStateBootstrapTests.swift */; };
 			BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* GitHubAPIClientTests.swift */; };
@@ -71,6 +72,7 @@
 		AA000000000000000000002C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000002D /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		AA000000000000000000002E /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000030 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
 			AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
@@ -119,6 +121,7 @@
 				AA0000000000000000000002 /* AppDelegate.swift */,
 				AA000000000000000000002B /* AppPreferences.swift */,
 				AA0000000000000000000003 /* AppState.swift */,
+				AA0000000000000000000030 /* InboxStore.swift */,
 				AA0000000000000000000029 /* ThreadActionStore.swift */,
 			);
 			path = App;
@@ -303,6 +306,7 @@
 				BB0000000000000000000002 /* AppDelegate.swift in Sources */,
 				BB000000000000000000002A /* AppPreferences.swift in Sources */,
 				BB0000000000000000000003 /* AppState.swift in Sources */,
+				BB0000000000000000000030 /* InboxStore.swift in Sources */,
 				BB0000000000000000000028 /* ThreadActionStore.swift in Sources */,
 				BB0000000000000000000004 /* StatusItemController.swift in Sources */,
 				BB0000000000000000000005 /* NotificationPanel.swift in Sources */,

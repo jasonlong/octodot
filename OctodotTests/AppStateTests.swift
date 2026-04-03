@@ -910,8 +910,16 @@ struct AppStateTests {
         #expect(state.notifications.contains(where: { $0.id == targetId }) == false)
         #expect(state.notifications.count == 4)
 
-        await Self.settleTasks()
-        #expect((await session.recordedRequests()).count == 1)
+        await Self.waitUntil {
+            let requests = await session.recordedRequests()
+            return requests.contains {
+                $0.httpMethod == "DELETE" && $0.url?.path == "/notifications/threads/0"
+            }
+        }
+        let requests = await session.recordedRequests()
+        #expect(requests.contains {
+            $0.httpMethod == "DELETE" && $0.url?.path == "/notifications/threads/0"
+        })
     }
 
     @Test func doneAdvancesSelection() {
@@ -992,8 +1000,16 @@ struct AppStateTests {
         #expect(state.filteredNotifications.map(\.id) == ["second"])
         #expect(state.selectedNotification?.id == "second")
 
-        await Self.settleTasks()
-        #expect((await session.recordedRequests()).count == 1)
+        await Self.waitUntil {
+            let requests = await session.recordedRequests()
+            return requests.contains {
+                $0.httpMethod == "DELETE" && $0.url?.path == "/notifications/threads/top"
+            }
+        }
+        let requests = await session.recordedRequests()
+        #expect(requests.contains {
+            $0.httpMethod == "DELETE" && $0.url?.path == "/notifications/threads/top"
+        })
     }
 
     @Test func doneOnlyRemovesSelectedNotificationWhenRowsShareRepositoryAndTitle() async {

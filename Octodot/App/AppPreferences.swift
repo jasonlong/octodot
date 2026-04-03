@@ -32,6 +32,7 @@ final class AppPreferences {
             }
         }
 
+        @MainActor
         var resolvedColorScheme: ColorScheme {
             switch self {
             case .system:
@@ -43,6 +44,7 @@ final class AppPreferences {
             }
         }
 
+        @MainActor
         var resolvedWindowAppearance: NSAppearance {
             switch self {
             case .system:
@@ -54,10 +56,12 @@ final class AppPreferences {
             }
         }
 
+        @MainActor
         private static var currentSystemColorScheme: ColorScheme {
             currentSystemWindowAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
         }
 
+        @MainActor
         private static var currentSystemWindowAppearance: NSAppearance {
             let appearance = NSApp?.effectiveAppearance ?? NSApplication.shared.effectiveAppearance
             if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {

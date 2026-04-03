@@ -11,6 +11,8 @@ final class StatusItemController: NSObject {
         static let iconSize = NSSize(width: 18, height: 18)
         static let hotKeySignature: OSType = 0x4F435444 // 'OCTD'
         static let hotKeyID: UInt32 = 1
+        static let firstRunPanelRetryDelay: TimeInterval = 0.05
+        static let firstRunPanelRetryCount = 12
     }
 
     struct Appearance: Equatable {
@@ -231,6 +233,11 @@ final class StatusItemController: NSObject {
         }
     }
 
+    func showPanelOnFirstRun() {
+        guard panel.isVisible == false else { return }
+        showPanelWhenReady(remainingAttempts: Constants.firstRunPanelRetryCount)
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -245,14 +252,31 @@ final class StatusItemController: NSObject {
     }
 
     private func showPanel() {
-        guard let button = statusItem.button,
-              let buttonWindow = button.window else { return }
-
-        let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        guard let buttonRect = statusItemButtonScreenFrame() else { return }
         panel.setFrameOrigin(Self.panelOrigin(buttonRect: buttonRect, panelSize: panel.frame.size))
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
+    }
+
+    private func showPanelWhenReady(remainingAttempts: Int) {
+        guard panel.isVisible == false else { return }
+
+        if let buttonRect = statusItemButtonScreenFrame(),
+           Self.isUsableStatusItemFrame(buttonRect) {
+            showPanel()
+            return
+        }
+
+        guard remainingAttempts > 0 else {
+            DebugTrace.log("first-run panel show gave up waiting for status item window")
+            return
+        }
+
+        DebugTrace.log("first-run panel show waiting for valid status item frame attempts=\(remainingAttempts)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.firstRunPanelRetryDelay) { [weak self] in
+            self?.showPanelWhenReady(remainingAttempts: remainingAttempts - 1)
+        }
     }
 
     private func closePanelForOutsideClickIfNeeded(mouseLocation: CGPoint) {
@@ -332,5 +356,19 @@ final class StatusItemController: NSObject {
 
     static func shouldClosePanelForClick(mouseLocation: CGPoint, panelFrame: CGRect, statusItemFrame: CGRect) -> Bool {
         !panelFrame.contains(mouseLocation) && !statusItemFrame.contains(mouseLocation)
+    }
+
+    static func isUsableStatusItemFrame(_ frame: CGRect) -> Bool {
+        guard frame.width > 0,
+              frame.height > 0,
+              frame.maxY > frame.minY,
+              frame.maxX > frame.minX,
+              frame.minY > 0 else {
+            return false
+        }
+
+        return NSScreen.screens.contains { screen in
+            screen.frame.intersects(frame)
+        }
     }
 }

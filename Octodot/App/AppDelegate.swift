@@ -5,8 +5,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     struct LaunchConfiguration {
         let userDefaults: UserDefaults
         let bootstrapToken: String?
+        let shouldShowPanelOnLaunch: Bool
     }
 
+    private static let firstRunPanelPresentedKey = "AppDelegate.firstRunPanelPresented.v1"
+
+    private let launchConfiguration: LaunchConfiguration
     let preferences: AppPreferences
     let appState: AppState
     lazy var settingsWindowController = SettingsWindowController(
@@ -20,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arguments: CommandLine.arguments,
             environment: ProcessInfo.processInfo.environment
         )
+        self.launchConfiguration = configuration
         self.preferences = AppPreferences(userDefaults: configuration.userDefaults)
         self.appState = AppState(
             userDefaults: configuration.userDefaults,
@@ -40,6 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences: preferences,
             settingsWindowController: settingsWindowController
         )
+        if launchConfiguration.shouldShowPanelOnLaunch {
+            DispatchQueue.main.async { [weak self] in
+                self?.statusItemController?.showPanelOnFirstRun()
+            }
+        }
     }
 
     func showSettings() {
@@ -81,13 +91,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults.removePersistentDomain(forName: suiteName)
             return LaunchConfiguration(
                 userDefaults: defaults,
-                bootstrapToken: nil
+                bootstrapToken: nil,
+                shouldShowPanelOnLaunch: true
             )
         }
 
+        let defaults = UserDefaults.standard
+        let bootstrapToken = tokenLoader()
         return LaunchConfiguration(
-            userDefaults: .standard,
-            bootstrapToken: tokenLoader()
+            userDefaults: defaults,
+            bootstrapToken: bootstrapToken,
+            shouldShowPanelOnLaunch: shouldShowPanelOnLaunch(
+                bootstrapToken: bootstrapToken,
+                userDefaults: defaults
+            )
         )
+    }
+
+    static func shouldShowPanelOnLaunch(bootstrapToken: String?, userDefaults: UserDefaults) -> Bool {
+        guard bootstrapToken == nil else { return false }
+        guard userDefaults.bool(forKey: firstRunPanelPresentedKey) == false else { return false }
+        userDefaults.set(true, forKey: firstRunPanelPresentedKey)
+        return true
     }
 }

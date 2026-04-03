@@ -27,6 +27,12 @@ struct AppShellTests {
         #expect(origin.y == 0)
     }
 
+    @Test func usableStatusItemFrameRejectsZeroOriginPlaceholderFrame() {
+        #expect(StatusItemController.isUsableStatusItemFrame(.zero) == false)
+        #expect(StatusItemController.isUsableStatusItemFrame(CGRect(x: 0, y: 0, width: 24, height: 24)) == false)
+        #expect(StatusItemController.isUsableStatusItemFrame(CGRect(x: 200, y: 900, width: 24, height: 24)))
+    }
+
     @Test func toggleHotkeyMatchesConfiguredShortcut() {
         #expect(StatusItemController.matchesToggleHotkey(
             keyCode: AppPreferences.GlobalShortcut.commandQuote.keyCode,
@@ -96,6 +102,7 @@ struct AppShellTests {
 
         #expect(configuration.bootstrapToken == nil)
         #expect(configuration.userDefaults != .standard)
+        #expect(configuration.shouldShowPanelOnLaunch)
     }
 
     @Test func appDelegateNormalLaunchConfigurationUsesSavedToken() {
@@ -107,6 +114,34 @@ struct AppShellTests {
 
         #expect(configuration.bootstrapToken == "ghp_saved")
         #expect(configuration.userDefaults == .standard)
+        #expect(configuration.shouldShowPanelOnLaunch == false)
+    }
+
+    @Test func appDelegateShowsPanelOnlyOnceWhenLaunchingWithoutSavedToken() {
+        let defaults = AppStateTests.makeIsolatedUserDefaults()
+
+        let first = AppDelegate.shouldShowPanelOnLaunch(
+            bootstrapToken: nil,
+            userDefaults: defaults
+        )
+        let second = AppDelegate.shouldShowPanelOnLaunch(
+            bootstrapToken: nil,
+            userDefaults: defaults
+        )
+
+        #expect(first)
+        #expect(second == false)
+    }
+
+    @Test func appDelegateDoesNotShowPanelWhenSavedTokenExists() {
+        let defaults = AppStateTests.makeIsolatedUserDefaults()
+
+        let shouldShow = AppDelegate.shouldShowPanelOnLaunch(
+            bootstrapToken: "ghp_saved",
+            userDefaults: defaults
+        )
+
+        #expect(shouldShow == false)
     }
 
     @Test func notificationListScrollRequestRequiresVisibleSelection() {

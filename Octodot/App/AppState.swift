@@ -15,6 +15,7 @@ final class AppState {
     typealias SleepHandler = @Sendable (UInt64) async -> Void
     typealias URLOpener = @MainActor (URL) -> Bool
     typealias TokenDeleter = @MainActor () -> Void
+    typealias TokenSaver = @MainActor (String) throws -> Void
     typealias APIClientFactory = @MainActor (String) -> GitHubAPIClient
     private static let inboxModeStorageKey = "AppState.inboxMode.v1"
     private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
@@ -87,6 +88,7 @@ final class AppState {
     private let sleepHandler: SleepHandler
     private let userDefaults: UserDefaults
     private let urlOpener: URLOpener
+    private let tokenSaver: TokenSaver
     private let tokenDeleter: TokenDeleter
     private let apiClientFactory: APIClientFactory
 
@@ -126,6 +128,7 @@ final class AppState {
         sleepHandler: @escaping SleepHandler = defaultSleepHandler,
         userDefaults: UserDefaults = .standard,
         urlOpener: @escaping URLOpener = { NSWorkspace.shared.open($0) },
+        tokenSaver: @escaping TokenSaver = { _ in },
         tokenDeleter: @escaping TokenDeleter = {},
         apiClientFactory: @escaping APIClientFactory = { GitHubAPIClient(token: $0) },
         bootstrapToken: String? = nil
@@ -138,6 +141,7 @@ final class AppState {
         self.sleepHandler = sleepHandler
         self.userDefaults = userDefaults
         self.urlOpener = urlOpener
+        self.tokenSaver = tokenSaver
         self.tokenDeleter = tokenDeleter
         self.apiClientFactory = apiClientFactory
         self.threadActions = ThreadActionStore(userDefaults: userDefaults)
@@ -165,10 +169,19 @@ final class AppState {
             sleepHandler: defaultSleepHandler,
             userDefaults: .standard,
             urlOpener: { NSWorkspace.shared.open($0) },
+            tokenSaver: { try KeychainHelper.saveToken($0) },
             tokenDeleter: { KeychainHelper.deleteToken() },
             apiClientFactory: { GitHubAPIClient(token: $0) },
             bootstrapToken: KeychainHelper.loadToken()
         )
+    }
+
+    func submitToken(_ token: String) async throws {
+        let client = apiClientFactory(token)
+        let username = try await client.validateToken()
+        try tokenSaver(token)
+        errorMessage = nil
+        signIn(token: token, username: username)
     }
 
     func toggleGroupByRepo() {

@@ -6,7 +6,8 @@ import SwiftUI
 @Observable
 final class AppPreferences {
     private static let appearanceModeStorageKey = "AppPreferences.appearanceMode.v1"
-    private static let globalShortcutStorageKey = "AppPreferences.globalShortcut.v1"
+    private static let globalShortcutStorageKey = "AppPreferences.globalShortcut.v2"
+    private static let legacyGlobalShortcutStorageKey = "AppPreferences.globalShortcut.v1"
 
     enum AppearanceMode: String, CaseIterable, Identifiable {
         case system
@@ -30,34 +31,170 @@ final class AppPreferences {
             case .dark: .dark
             }
         }
+
+        var resolvedColorScheme: ColorScheme {
+            switch self {
+            case .system:
+                Self.currentSystemColorScheme
+            case .light:
+                .light
+            case .dark:
+                .dark
+            }
+        }
+
+        var resolvedWindowAppearance: NSAppearance {
+            switch self {
+            case .system:
+                Self.currentSystemWindowAppearance
+            case .light:
+                NSAppearance(named: .aqua) ?? .init(named: .aqua)!
+            case .dark:
+                NSAppearance(named: .darkAqua) ?? .init(named: .darkAqua)!
+            }
+        }
+
+        private static var currentSystemColorScheme: ColorScheme {
+            currentSystemWindowAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        }
+
+        private static var currentSystemWindowAppearance: NSAppearance {
+            let appearance = NSApp?.effectiveAppearance ?? NSApplication.shared.effectiveAppearance
+            if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+                return NSAppearance(named: .darkAqua) ?? appearance
+            }
+            return NSAppearance(named: .aqua) ?? appearance
+        }
     }
 
-    enum GlobalShortcut: String, CaseIterable, Identifiable {
-        case commandQuote
-        case controlOptionN
+    struct GlobalShortcut: Equatable, Identifiable {
+        let keyCode: UInt16
+        let modifierFlags: NSEvent.ModifierFlags
 
-        var id: String { rawValue }
+        var id: String { storageValue }
 
-        var title: String {
-            switch self {
-            case .commandQuote: "Cmd+'"
-            case .controlOptionN: "Ctrl+Option+N"
-            }
+        var displayText: String {
+            let modifierText = Self.modifierDisplayText(for: modifierFlags)
+            let keyText = Self.keyDisplayText(for: keyCode)
+            return modifierText + keyText
         }
 
-        var keyCode: UInt16 {
-            switch self {
-            case .commandQuote: 39
-            case .controlOptionN: 45
-            }
+        var storageValue: String {
+            "\(keyCode):\(modifierFlags.rawValue)"
         }
 
-        var modifierFlags: NSEvent.ModifierFlags {
-            switch self {
-            case .commandQuote: [.command]
-            case .controlOptionN: [.control, .option]
-            }
+        var isValid: Bool {
+            !modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
         }
+
+        static let commandQuote = GlobalShortcut(keyCode: 39, modifierFlags: [.command])
+        static let controlOptionN = GlobalShortcut(keyCode: 45, modifierFlags: [.control, .option])
+
+        static func from(storageValue: String) -> GlobalShortcut? {
+            let parts = storageValue.split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2,
+                  let keyCode = UInt16(parts[0]),
+                  let rawFlags = UInt(parts[1]) else {
+                return nil
+            }
+
+            let shortcut = GlobalShortcut(
+                keyCode: keyCode,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: rawFlags)
+            )
+            return shortcut.isValid ? shortcut : nil
+        }
+
+        private static func modifierDisplayText(for modifierFlags: NSEvent.ModifierFlags) -> String {
+            var text = ""
+            if modifierFlags.contains(.control) {
+                text += "⌃"
+            }
+            if modifierFlags.contains(.option) {
+                text += "⌥"
+            }
+            if modifierFlags.contains(.shift) {
+                text += "⇧"
+            }
+            if modifierFlags.contains(.command) {
+                text += "⌘"
+            }
+            return text
+        }
+
+        private static func keyDisplayText(for keyCode: UInt16) -> String {
+            if let specialKey = specialKeyLabels[keyCode] {
+                return specialKey
+            }
+
+            if let character = printableKeyLabels[keyCode] {
+                return character
+            }
+
+            return "Key \(keyCode)"
+        }
+
+        private static let specialKeyLabels: [UInt16: String] = [
+            36: "↩",
+            48: "⇥",
+            49: "Space",
+            51: "⌫",
+            53: "⎋",
+            123: "←",
+            124: "→",
+            125: "↓",
+            126: "↑",
+        ]
+
+        private static let printableKeyLabels: [UInt16: String] = [
+            0: "A",
+            1: "S",
+            2: "D",
+            3: "F",
+            4: "H",
+            5: "G",
+            6: "Z",
+            7: "X",
+            8: "C",
+            9: "V",
+            11: "B",
+            12: "Q",
+            13: "W",
+            14: "E",
+            15: "R",
+            16: "Y",
+            17: "T",
+            18: "1",
+            19: "2",
+            20: "3",
+            21: "4",
+            22: "6",
+            23: "5",
+            24: "=",
+            25: "9",
+            26: "7",
+            27: "-",
+            28: "8",
+            29: "0",
+            30: "]",
+            31: "O",
+            32: "U",
+            33: "[",
+            34: "I",
+            35: "P",
+            37: "L",
+            38: "J",
+            39: "'",
+            40: "K",
+            41: ";",
+            42: "\\",
+            43: ",",
+            44: "/",
+            45: "N",
+            46: "M",
+            47: ".",
+            50: "`",
+        ]
     }
 
     private let userDefaults: UserDefaults
@@ -72,7 +209,7 @@ final class AppPreferences {
     var globalShortcut: GlobalShortcut {
         didSet {
             guard globalShortcut != oldValue else { return }
-            userDefaults.set(globalShortcut.rawValue, forKey: Self.globalShortcutStorageKey)
+            userDefaults.set(globalShortcut.storageValue, forKey: Self.globalShortcutStorageKey)
         }
     }
 
@@ -91,10 +228,22 @@ final class AppPreferences {
     }
 
     private static func loadGlobalShortcut(from userDefaults: UserDefaults) -> GlobalShortcut {
-        guard let rawValue = userDefaults.string(forKey: globalShortcutStorageKey),
-              let shortcut = GlobalShortcut(rawValue: rawValue) else {
+        if let storedValue = userDefaults.string(forKey: globalShortcutStorageKey),
+           let shortcut = GlobalShortcut.from(storageValue: storedValue) {
+            return shortcut
+        }
+
+        guard let legacyRawValue = userDefaults.string(forKey: legacyGlobalShortcutStorageKey) else {
             return .commandQuote
         }
-        return shortcut
+
+        switch legacyRawValue {
+        case "commandQuote":
+            return .commandQuote
+        case "controlOptionN":
+            return .controlOptionN
+        default:
+            return .commandQuote
+        }
     }
 }

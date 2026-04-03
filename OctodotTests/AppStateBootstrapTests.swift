@@ -4,6 +4,78 @@ import Testing
 
 @MainActor
 struct AppStateBootstrapTests {
+    @Test func submitTokenValidatesSavesAndSignsIn() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(#"{"login":"jasonlong"}"#.utf8),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/user",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/notifications?all=false&participating=false&per_page=100",
+                    statusCode: 200
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_new", session: session)
+        var savedToken: String?
+
+        let state = AppState(
+            notifications: [],
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            tokenSaver: { savedToken = $0 },
+            apiClientFactory: { _ in client }
+        )
+
+        try await state.submitToken("ghp_new")
+
+        await AppStateTests.waitUntil {
+            await MainActor.run {
+                state.authStatus == .signedIn(username: "jasonlong")
+                    && state.errorMessage == nil
+            }
+        }
+
+        #expect(savedToken == "ghp_new")
+        #expect(state.isSignedIn)
+        #expect((await session.recordedRequests()).count == 2)
+    }
+
+    @Test func submitTokenFailureDoesNotSaveOrSignIn() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/user",
+                    statusCode: 401
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_bad", session: session)
+        var savedToken: String?
+
+        let state = AppState(
+            notifications: [],
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            tokenSaver: { savedToken = $0 },
+            apiClientFactory: { _ in client }
+        )
+
+        do {
+            try await state.submitToken("ghp_bad")
+            Issue.record("Expected submitToken to throw for unauthorized token")
+        } catch {}
+
+        #expect(savedToken == nil)
+        #expect(state.isSignedIn == false)
+        #expect(state.errorMessage == nil)
+        #expect((await session.recordedRequests()).count == 1)
+    }
+
     @Test func startupUnauthorizedDeletesSavedTokenAndSignsOut() async {
         let session = StubNetworkSession(results: [
             .success((

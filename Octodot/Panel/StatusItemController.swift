@@ -20,8 +20,10 @@ final class StatusItemController {
 
     private let statusItem: NSStatusItem
     private let panel: NotificationPanel
+    private let settingsWindowController: SettingsWindowController
     private let appState: AppState
     private let preferences: AppPreferences
+    private let settingsViewState: SettingsViewState
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
@@ -30,11 +32,17 @@ final class StatusItemController {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    init(appState: AppState, preferences: AppPreferences) {
+    init(appState: AppState, preferences: AppPreferences, settingsViewState: SettingsViewState) {
         self.appState = appState
         self.preferences = preferences
+        self.settingsViewState = settingsViewState
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.panel = NotificationPanel(appState: appState, preferences: preferences)
+        self.settingsWindowController = SettingsWindowController(
+            appState: appState,
+            preferences: preferences,
+            settingsViewState: settingsViewState
+        )
 
         self.contextMenu = NSMenu()
 
@@ -56,6 +64,7 @@ final class StatusItemController {
 
         updateStatusItemAppearance()
         observeStatusItemState()
+        observeAppearancePreference()
         setupGlobalHotkeyHandler()
         observeHotkeyPreference()
         updateRegisteredGlobalHotkey()
@@ -159,6 +168,18 @@ final class StatusItemController {
         }
     }
 
+    private func observeAppearancePreference() {
+        withObservationTracking {
+            _ = preferences.appearanceMode
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.settingsWindowController.updateAppearance()
+                self.observeAppearancePreference()
+            }
+        }
+    }
+
     static func carbonModifiers(from modifierFlags: NSEvent.ModifierFlags) -> UInt32 {
         var carbonFlags: UInt32 = 0
         if modifierFlags.contains(.command) {
@@ -215,8 +236,7 @@ final class StatusItemController {
     }
 
     @objc private func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        settingsWindowController.show()
     }
 
     private func showPanel() {

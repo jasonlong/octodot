@@ -1,29 +1,38 @@
 import SwiftUI
 
 struct SettingsView: View {
+    enum Tab: String, Hashable {
+        case account
+        case appearance
+        case shortcuts
+    }
+
     @Bindable var appState: AppState
     @Bindable var preferences: AppPreferences
+    @Binding var selection: Tab
 
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             AccountSettingsPane(appState: appState)
+                .tag(Tab.account)
                 .tabItem {
                     Label("Account", systemImage: "person.crop.circle")
                 }
 
             AppearanceSettingsPane(preferences: preferences)
+                .tag(Tab.appearance)
                 .tabItem {
                     Label("Appearance", systemImage: "circle.lefthalf.filled")
                 }
 
             ShortcutsSettingsPane(preferences: preferences)
+                .tag(Tab.shortcuts)
                 .tabItem {
                     Label("Shortcuts", systemImage: "keyboard")
                 }
         }
         .padding(20)
         .frame(width: 540, height: 390)
-        .preferredColorScheme(preferences.appearanceMode.colorScheme)
     }
 }
 
@@ -36,7 +45,7 @@ private struct AccountSettingsPane: View {
     var body: some View {
         Form {
             Section("GitHub Account") {
-                LabeledContent("Status") {
+                LabeledContent("Account") {
                     Text(statusText)
                         .foregroundStyle(.secondary)
                 }
@@ -87,19 +96,12 @@ private struct AccountSettingsPane: View {
 
         Task {
             do {
-                let client = GitHubAPIClient(token: tokenInput)
-                let username = try await client.validateToken()
-                try KeychainHelper.saveToken(tokenInput)
-                await MainActor.run {
-                    appState.signIn(token: tokenInput, username: username)
-                    isSaving = false
-                    tokenInput = ""
-                }
+                try await appState.submitToken(tokenInput)
+                isSaving = false
+                tokenInput = ""
             } catch {
-                await MainActor.run {
-                    isSaving = false
-                    errorMessage = error.localizedDescription
-                }
+                isSaving = false
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -133,15 +135,13 @@ private struct ShortcutsSettingsPane: View {
     var body: some View {
         Form {
             Section("Global Shortcut") {
-                Picker("Toggle Panel", selection: $preferences.globalShortcut) {
-                    ForEach(AppPreferences.GlobalShortcut.allCases) { shortcut in
-                        Text(shortcut.title).tag(shortcut)
-                    }
+                SettingsControlRow(
+                    title: "Toggle Octodot",
+                    description: "Click the recorder, then press a key combination. Escape cancels. A modifier key is required."
+                ) {
+                    HotkeyRecorderView(shortcut: $preferences.globalShortcut)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                Text("This opens or closes the panel from anywhere.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Panel Keybindings") {
@@ -164,6 +164,45 @@ private struct ShortcutsSettingsPane: View {
         LabeledContent(shortcut) {
             Text(description)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct SettingsControlRow<Control: View>: View {
+    private let labelWidth: CGFloat = 128
+
+    let title: String
+    let description: String
+    let control: Control
+
+    init(
+        title: String,
+        description: String,
+        @ViewBuilder control: () -> Control
+    ) {
+        self.title = title
+        self.description = description
+        self.control = control()
+    }
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+            GridRow(alignment: .center) {
+                Text(title)
+                    .frame(width: labelWidth, alignment: .leading)
+
+                control
+            }
+
+            GridRow {
+                Color.clear
+                    .frame(width: labelWidth, height: 0)
+
+                Text(description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

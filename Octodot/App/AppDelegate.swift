@@ -4,6 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let preferences = AppPreferences()
     let appState = AppState()
+    let settingsViewState = SettingsViewState()
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -13,7 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         DebugTrace.reset()
         DebugTrace.log("app launch")
-        statusItemController = StatusItemController(appState: appState, preferences: preferences)
+        statusItemController = StatusItemController(
+            appState: appState,
+            preferences: preferences,
+            settingsViewState: settingsViewState
+        )
     }
 
     static func shouldLaunchUI(environment: [String: String]) -> Bool {

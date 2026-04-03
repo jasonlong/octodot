@@ -12,6 +12,8 @@
 		BB0000000000000000000003 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* AppState.swift */; };
 		BB0000000000000000000004 /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000004 /* StatusItemController.swift */; };
 		BB0000000000000000000005 /* NotificationPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000005 /* NotificationPanel.swift */; };
+		BB000000000000000000002E /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* SettingsWindowController.swift */; };
+		BB0000000000000000000030 /* SettingsViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* SettingsViewState.swift */; };
 		BB0000000000000000000006 /* PanelContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* PanelContentView.swift */; };
 		BB0000000000000000000007 /* NotificationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* NotificationListView.swift */; };
 		BB0000000000000000000008 /* NotificationRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000008 /* NotificationRowView.swift */; };
@@ -27,6 +29,7 @@
 		BB0000000000000000000027 /* DebugTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000028 /* DebugTrace.swift */; };
 		BB000000000000000000002A /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* AppPreferences.swift */; };
 		BB000000000000000000002B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002C /* SettingsView.swift */; };
+		BB000000000000000000002D /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002E /* HotkeyRecorderView.swift */; };
 			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
 			BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000022 /* AppStateBootstrapTests.swift */; };
 			BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* GitHubAPIClientTests.swift */; };
@@ -43,6 +46,8 @@
 		AA0000000000000000000003 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		AA0000000000000000000004 /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
 		AA0000000000000000000005 /* NotificationPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPanel.swift; sourceTree = "<group>"; };
+		AA000000000000000000002F /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000030 /* SettingsViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewState.swift; sourceTree = "<group>"; };
 		AA0000000000000000000006 /* PanelContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelContentView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000007 /* NotificationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationListView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000008 /* NotificationRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRowView.swift; sourceTree = "<group>"; };
@@ -67,6 +72,7 @@
 		AA000000000000000000002B /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
 		AA000000000000000000002C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000002D /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
+		AA000000000000000000002E /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
 			AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
@@ -125,6 +131,8 @@
 			children = (
 				AA0000000000000000000004 /* StatusItemController.swift */,
 				AA0000000000000000000005 /* NotificationPanel.swift */,
+				AA000000000000000000002F /* SettingsWindowController.swift */,
+				AA0000000000000000000030 /* SettingsViewState.swift */,
 			);
 			path = Panel;
 			sourceTree = "<group>";
@@ -137,6 +145,7 @@
 				AA0000000000000000000007 /* NotificationListView.swift */,
 				AA0000000000000000000008 /* NotificationRowView.swift */,
 				AA0000000000000000000009 /* SearchBarView.swift */,
+				AA000000000000000000002E /* HotkeyRecorderView.swift */,
 				AA000000000000000000002C /* SettingsView.swift */,
 				AA0000000000000000000012 /* TokenEntryView.swift */,
 			);
@@ -300,11 +309,14 @@
 				BB0000000000000000000028 /* ThreadActionStore.swift in Sources */,
 				BB0000000000000000000004 /* StatusItemController.swift in Sources */,
 				BB0000000000000000000005 /* NotificationPanel.swift in Sources */,
+				BB000000000000000000002E /* SettingsWindowController.swift in Sources */,
+				BB0000000000000000000030 /* SettingsViewState.swift in Sources */,
 				BB0000000000000000000006 /* PanelContentView.swift in Sources */,
 				BB0000000000000000000029 /* PanelInput.swift in Sources */,
 				BB0000000000000000000007 /* NotificationListView.swift in Sources */,
 				BB0000000000000000000008 /* NotificationRowView.swift in Sources */,
 				BB0000000000000000000009 /* SearchBarView.swift in Sources */,
+				BB000000000000000000002D /* HotkeyRecorderView.swift in Sources */,
 				BB000000000000000000002B /* SettingsView.swift in Sources */,
 				BB000000000000000000000A /* GitHubNotification.swift in Sources */,
 				BB000000000000000000000B /* MockData.swift in Sources */,

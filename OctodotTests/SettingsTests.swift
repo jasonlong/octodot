@@ -23,18 +23,55 @@ struct SettingsTests {
 
         let preferences = AppPreferences(userDefaults: userDefaults)
         preferences.appearanceMode = .dark
-        preferences.globalShortcut = .controlOptionN
+        preferences.globalShortcut = AppPreferences.GlobalShortcut(
+            keyCode: 17,
+            modifierFlags: [.command, .shift]
+        )
 
         let reloaded = AppPreferences(userDefaults: userDefaults)
 
         #expect(reloaded.appearanceMode == .dark)
-        #expect(reloaded.globalShortcut == .controlOptionN)
+        #expect(reloaded.globalShortcut == AppPreferences.GlobalShortcut(
+            keyCode: 17,
+            modifierFlags: [.command, .shift]
+        ))
     }
 
     @Test func appearanceModeMapsToExpectedColorScheme() {
         #expect(AppPreferences.AppearanceMode.system.colorScheme == nil)
         #expect(AppPreferences.AppearanceMode.light.colorScheme == .light)
         #expect(AppPreferences.AppearanceMode.dark.colorScheme == .dark)
+    }
+
+    @Test func appearanceModeMapsToExpectedWindowAppearance() {
+        #expect(AppPreferences.AppearanceMode.system.resolvedWindowAppearance.name == .aqua || AppPreferences.AppearanceMode.system.resolvedWindowAppearance.name == .darkAqua)
+        #expect(AppPreferences.AppearanceMode.light.resolvedWindowAppearance.name == .aqua)
+        #expect(AppPreferences.AppearanceMode.dark.resolvedWindowAppearance.name == .darkAqua)
+    }
+
+    @Test func appearanceModeMapsToExpectedResolvedColorScheme() {
+        #expect(AppPreferences.AppearanceMode.system.resolvedColorScheme == .light || AppPreferences.AppearanceMode.system.resolvedColorScheme == .dark)
+        #expect(AppPreferences.AppearanceMode.light.resolvedColorScheme == .light)
+        #expect(AppPreferences.AppearanceMode.dark.resolvedColorScheme == .dark)
+    }
+
+    @Test func preferencesMigrateLegacyShortcutValues() {
+        let suiteName = "SettingsTests.defaults.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+
+        userDefaults.set("controlOptionN", forKey: "AppPreferences.globalShortcut.v1")
+
+        let preferences = AppPreferences(userDefaults: userDefaults)
+
+        #expect(preferences.globalShortcut == .controlOptionN)
+    }
+
+    @Test func shortcutDisplayTextUsesSymbols() {
+        let shortcut = AppPreferences.GlobalShortcut(keyCode: 17, modifierFlags: [.command, .shift])
+
+        #expect(shortcut.displayText == "⇧⌘T")
+        #expect(AppPreferences.GlobalShortcut.commandQuote.displayText == "⌘'")
     }
 
     @Test func statusItemMatchesConfiguredGlobalShortcut() {

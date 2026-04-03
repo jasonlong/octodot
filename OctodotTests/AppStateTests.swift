@@ -428,6 +428,11 @@ struct AppStateTests {
         state.isPanelVisible = true
 
         await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.source == .dependabotAlert }
+            }
+        }
 
         #expect(state.filteredNotifications.count == 2)
         #expect(state.filteredNotifications.contains { $0.source == GitHubNotification.Source.dependabotAlert })
@@ -508,6 +513,11 @@ struct AppStateTests {
 
         await state.loadNotifications(force: true)
         let alertID = "dependabot:acme/alpha:7"
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.id == alertID }
+            }
+        }
         #expect(state.filteredNotifications.contains { $0.id == alertID })
 
         state.selectNotification(id: alertID)
@@ -515,9 +525,20 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
 
         await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await session.recordedRequests().count == 5
+        }
         #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
 
         await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await session.recordedRequests().count == 7
+        }
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.id == alertID }
+            }
+        }
         #expect(state.filteredNotifications.contains { $0.id == alertID })
     }
 
@@ -559,6 +580,11 @@ struct AppStateTests {
 
         await state.loadNotifications(force: true)
         let alertID = "dependabot:acme/alpha:7"
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.id == alertID }
+            }
+        }
         state.selectNotification(id: alertID)
         state.done()
         #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
@@ -622,6 +648,11 @@ struct AppStateTests {
 
         await state.loadNotifications(force: true)
         let alertID = "dependabot:acme/alpha:7"
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.id == alertID }
+            }
+        }
         state.selectNotification(id: alertID)
 
         #expect(state.selectedNotification?.isUnread == true)
@@ -631,6 +662,58 @@ struct AppStateTests {
         await state.loadNotifications(force: true)
         #expect(state.filteredNotifications.first(where: { $0.id == alertID })?.isUnread == false)
         #expect((await session.recordedRequests()).allSatisfy { $0.httpMethod == "GET" })
+    }
+
+    @Test func loadNotificationsAppliesInboxBeforeDelayedSecurityAlertsFinish() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.notificationsPayload(ids: ["1"]),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                ),
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: Data("[]".utf8),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: Self.dependabotAlertsPayload(),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 75_000_000
+            ),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.filteredNotifications.map(\.id) == ["1"])
+
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.source == .dependabotAlert }
+            }
+        }
+
+        #expect(state.filteredNotifications.count == 2)
     }
 
     @Test func searchIsCaseInsensitive() {

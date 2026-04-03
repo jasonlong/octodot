@@ -14,6 +14,7 @@ actor GitHubAPIClient {
     private let defaultSecurityRefreshInterval: TimeInterval = 5 * 60
     private let defaultSecurityLookbackInterval: TimeInterval = 14 * 24 * 60 * 60
     private let maxConcurrentSubjectRequests: Int
+    private let maxConcurrentSecurityRequests: Int
     private let maxSubjectResolutionBatchSize = 40
     private let session: any NetworkSession
     private var token: String
@@ -51,11 +52,13 @@ actor GitHubAPIClient {
     init(
         token: String,
         session: any NetworkSession = URLSession.shared,
-        maxConcurrentSubjectRequests: Int = 6
+        maxConcurrentSubjectRequests: Int = 6,
+        maxConcurrentSecurityRequests: Int = 4
     ) {
         self.token = token
         self.session = session
         self.maxConcurrentSubjectRequests = max(1, maxConcurrentSubjectRequests)
+        self.maxConcurrentSecurityRequests = max(1, maxConcurrentSecurityRequests)
     }
 
     func updateToken(_ token: String) {
@@ -113,17 +116,7 @@ actor GitHubAPIClient {
             "security fetch start repos=\(repositories.joined(separator: ",")) force=\(force)"
         )
 
-        var alerts: [GitHubNotification] = []
-
-        for repositoryFullName in repositories {
-            do {
-                alerts.append(contentsOf: try await fetchDependabotAlertsForRepository(repositoryFullName))
-            } catch APIError.forbidden {
-                DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=forbidden")
-            } catch APIError.httpError(let status) where status == 404 {
-                DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=http-\(status)")
-            }
-        }
+        let alerts = try await fetchDependabotAlertsForRepositories(repositories)
 
         let deduped = Self.sortedAndDedupedAlerts(alerts)
         let recentAlerts = Self.recentAlerts(
@@ -396,6 +389,46 @@ actor GitHubAPIClient {
                 fallbackRepositoryFullName: repositoryFullName,
                 fallbackRepositoryHTMLURL: "https://github.com/\(repositoryFullName)"
             )
+        }
+    }
+
+    private func fetchDependabotAlertsForRepositories(_ repositories: [String]) async throws -> [GitHubNotification] {
+        let concurrencyLimit = max(1, min(maxConcurrentSecurityRequests, repositories.count))
+        var iterator = repositories.makeIterator()
+        var collectedAlerts: [GitHubNotification] = []
+
+        try await withThrowingTaskGroup(of: [GitHubNotification].self) { group in
+            for _ in 0..<concurrencyLimit {
+                guard let repository = iterator.next() else { break }
+                group.addTask { [weak self] in
+                    guard let self else { return [] }
+                    return try await self.fetchDependabotAlertsForRepositoryIgnoringUnsupported(repository)
+                }
+            }
+
+            while let nextAlerts = try await group.next() {
+                collectedAlerts.append(contentsOf: nextAlerts)
+
+                guard let repository = iterator.next() else { continue }
+                group.addTask { [weak self] in
+                    guard let self else { return [] }
+                    return try await self.fetchDependabotAlertsForRepositoryIgnoringUnsupported(repository)
+                }
+            }
+        }
+
+        return collectedAlerts
+    }
+
+    private func fetchDependabotAlertsForRepositoryIgnoringUnsupported(_ repositoryFullName: String) async throws -> [GitHubNotification] {
+        do {
+            return try await fetchDependabotAlertsForRepository(repositoryFullName)
+        } catch APIError.forbidden {
+            DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=forbidden")
+            return []
+        } catch APIError.httpError(let status) where status == 404 {
+            DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=http-\(status)")
+            return []
         }
     }
 

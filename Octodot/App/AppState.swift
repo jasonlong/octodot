@@ -76,10 +76,12 @@ final class AppState {
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
+    private var shouldSelectTopItemOnNextLoad = false
     private var threadActions: ThreadActionStore
     private var actionTasks: [String: Task<Void, Never>] = [:]
     private var batchDispatchTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var securityAlertsRefreshTask: Task<Void, Never>?
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
@@ -183,6 +185,7 @@ final class AppState {
             let client = apiClientFactory(bootstrapToken)
             self.apiClient = client
             self.authStatus = .signedIn(username: "")
+            self.shouldSelectTopItemOnNextLoad = true
             Task { await validateAndLoad(client: client) }
         }
 
@@ -249,6 +252,7 @@ final class AppState {
             startBackgroundRefreshIfNeeded()
         } catch {
             cancelBackgroundRefresh()
+            cancelSecurityAlertsRefresh()
 
             if case GitHubAPIClient.APIError.unauthorized = error {
                 self.authStatus = .signedOut
@@ -266,9 +270,11 @@ final class AppState {
 
     func signIn(token: String, username: String) {
         cancelBackgroundRefresh()
+        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
+        shouldSelectTopItemOnNextLoad = true
         apiClient = apiClientFactory(token)
         authStatus = .signedIn(username: username)
         Task {
@@ -279,6 +285,7 @@ final class AppState {
 
     func signOut() {
         cancelBackgroundRefresh()
+        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
@@ -302,6 +309,7 @@ final class AppState {
         guard let client = apiClient else { return }
         let requestID = UUID()
         activeLoadRequestID = requestID
+        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         isLoading = true
         do {
@@ -318,35 +326,24 @@ final class AppState {
             } else {
                 fetchedRecentInbox = []
             }
-            let fetchedSecurityAlerts: [GitHubNotification]
-            if inboxMode == .inbox && isPanelVisible {
-                let repositoryNames = securityAlertRepositoryCandidates(
-                    unreadNotifications: fetched,
-                    recentInboxNotifications: fetchedRecentInbox.isEmpty ? serverRecentInboxNotifications : fetchedRecentInbox
-                )
-                do {
-                    fetchedSecurityAlerts = try await client.fetchDependabotAlerts(
-                        repositoryNames: repositoryNames,
-                        currentUsername: signedInUsername,
-                        force: force
-                    )
-                } catch {
-                    DebugTrace.log("security fetch failed error=\(error.localizedDescription)")
-                    fetchedSecurityAlerts = []
-                }
-            } else {
-                fetchedSecurityAlerts = serverSecurityAlerts
-            }
             guard requestID == activeLoadRequestID else { return }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox,
-                securityAlerts: fetchedSecurityAlerts,
+                securityAlerts: serverSecurityAlerts,
                 didFetchRecentInboxSeed: shouldFetchRecentInboxSeed
             )
+            resetSelectionToTopOnNextLoadIfNeeded()
             isLoading = false
             errorMessage = nil
             rebuildDerivedState()
+            scheduleSecurityAlertsRefreshIfNeeded(
+                requestID: requestID,
+                client: client,
+                unreadNotifications: fetched,
+                recentInboxNotifications: fetchedRecentInbox.isEmpty ? serverRecentInboxNotifications : fetchedRecentInbox,
+                force: force
+            )
             DebugTrace.log(
                 "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
                 "recent.count=\(serverRecentInboxNotifications.count) " +
@@ -639,6 +636,13 @@ final class AppState {
         selectedThreadID = nil
     }
 
+    private func resetSelectionToTopOnNextLoadIfNeeded() {
+        guard shouldSelectTopItemOnNextLoad else { return }
+        shouldSelectTopItemOnNextLoad = false
+        selectedIndexStorage = 0
+        selectedThreadID = nil
+    }
+
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
         delayNanosecondsOverride: UInt64? = nil,
@@ -904,6 +908,11 @@ final class AppState {
         visibleSubjectStateInFlightIDs = []
     }
 
+    private func cancelSecurityAlertsRefresh() {
+        securityAlertsRefreshTask?.cancel()
+        securityAlertsRefreshTask = nil
+    }
+
     private func scheduleVisibleSubjectStateResolutionIfNeeded() {
         guard let client = apiClient else {
             cancelSubjectStateResolution()
@@ -1062,6 +1071,57 @@ final class AppState {
             unreadNotificationCount = inboxStore.unreadNotificationCount
         } catch {
             // Ignore background-only refresh failures while the heavier inbox feed is hidden.
+        }
+    }
+
+    private func scheduleSecurityAlertsRefreshIfNeeded(
+        requestID: UUID,
+        client: GitHubAPIClient,
+        unreadNotifications: [GitHubNotification],
+        recentInboxNotifications: [GitHubNotification],
+        force: Bool
+    ) {
+        guard inboxMode == .inbox, isPanelVisible else { return }
+
+        let repositoryNames = securityAlertRepositoryCandidates(
+            unreadNotifications: unreadNotifications,
+            recentInboxNotifications: recentInboxNotifications
+        )
+        let currentUsername = signedInUsername
+
+        guard !repositoryNames.isEmpty else {
+            if !serverSecurityAlerts.isEmpty {
+                serverSecurityAlerts = []
+                rebuildDerivedState()
+            }
+            return
+        }
+
+        securityAlertsRefreshTask = Task { [weak self, client, repositoryNames, requestID, force] in
+            let alerts: [GitHubNotification]
+            do {
+                alerts = try await client.fetchDependabotAlerts(
+                    repositoryNames: repositoryNames,
+                    currentUsername: currentUsername,
+                    force: force
+                )
+            } catch {
+                DebugTrace.log("security fetch failed error=\(error.localizedDescription)")
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, requestID == self.activeLoadRequestID else { return }
+                self.securityAlertsRefreshTask = nil
+                guard self.serverSecurityAlerts != alerts else { return }
+                self.serverSecurityAlerts = alerts
+                self.rebuildDerivedState()
+                DebugTrace.log(
+                    "security applied count=\(alerts.count) visible.count=\(self.filteredNotifications.count) " +
+                    "visible.top=\(Self.topIDs(in: self.filteredNotifications))"
+                )
+            }
         }
     }
 

@@ -605,8 +605,10 @@ struct GitHubAPIClientTests {
         #expect(alerts.allSatisfy { $0.source == .dependabotAlert })
         #expect(alerts.allSatisfy { $0.isUnread })
         #expect(requests.count == 2)
-        #expect(requests[0].url?.path == "/repos/acme/api/dependabot/alerts")
-        #expect(requests[1].url?.path == "/repos/octodot/personal/dependabot/alerts")
+        #expect(
+            Set(requests.compactMap(\.url?.path)) ==
+            Set(["/repos/acme/api/dependabot/alerts", "/repos/octodot/personal/dependabot/alerts"])
+        )
     }
 
     @Test func fetchDependabotAlertsSkipsForbiddenRepositories() async throws {

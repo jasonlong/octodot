@@ -70,7 +70,7 @@ struct PanelContentView: View {
                     } else {
                         Text(
                             PanelInput.notificationSummary(
-                                unreadCount: appState.unreadNotificationCount,
+                                unreadCount: appState.panelUnreadCount,
                                 totalCount: appState.notifications.count,
                                 mode: appState.inboxMode
                             )

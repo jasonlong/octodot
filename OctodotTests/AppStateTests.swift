@@ -438,11 +438,13 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains { $0.source == GitHubNotification.Source.dependabotAlert })
         #expect(state.filteredNotifications.first(where: { $0.source == .dependabotAlert })?.isUnread == true)
         #expect(state.unreadNotificationCount == 1)
+        #expect(state.panelUnreadCount == 2)
 
         state.inboxMode = AppState.InboxMode.unread
 
         #expect(state.filteredNotifications.count == 1)
         #expect(state.filteredNotifications.allSatisfy { $0.source == GitHubNotification.Source.thread })
+        #expect(state.panelUnreadCount == 1)
     }
 
     @Test func doneDismissesSecurityAlertLocallyUntilItUpdates() async {

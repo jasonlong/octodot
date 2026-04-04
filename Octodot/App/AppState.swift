@@ -102,6 +102,7 @@ final class AppState {
 
     private(set) var notifications: [GitHubNotification] = []
     private(set) var unreadNotificationCount = 0
+    private(set) var panelUnreadCount = 0
 
     var filteredNotifications: [GitHubNotification] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -522,6 +523,11 @@ final class AppState {
             repoOrderSource: sortedByRecency(serverModeFiltered)
         )
         unreadNotificationCount = inboxStore.unreadNotificationCount
+        panelUnreadCount = notifications.reduce(into: 0) { count, notification in
+            if notification.isUnread {
+                count += 1
+            }
+        }
 
         let filtered = filteredNotifications
         guard !filtered.isEmpty else {

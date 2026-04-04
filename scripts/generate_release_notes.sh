@@ -25,13 +25,48 @@ fi
 
 commit_subjects=("${(@f)$(git log --format=%s --no-merges "$commit_range")}")
 
-if [[ ${#commit_subjects[@]} -eq 0 ]]; then
-  commit_subjects=("Maintenance release")
+release_engineering_commits=()
+onboarding_commits=()
+settings_commits=()
+remaining_subjects=()
+
+for subject in "${commit_subjects[@]}"; do
+  if [[ "$subject" == *signing* || "$subject" == *notariz* || "$subject" == *stapler* || "$subject" == *"archive export"* || "$subject" == *entitlements* || "$subject" == *"notarized releases"* || "$subject" == *"for CI"* ]]; then
+    release_engineering_commits+=("$subject")
+  elif [[ "$subject" == *"first run"* || "$subject" == *first-run* || "$subject" == *"panel automatically"* || "$subject" == *"QA mode"* ]]; then
+    onboarding_commits+=("$subject")
+  elif [[ "$subject" == *settings* || "$subject" == *"window behavior"* ]]; then
+    settings_commits+=("$subject")
+  else
+    remaining_subjects+=("$subject")
+  fi
+done
+
+highlights=()
+
+if [[ ${#release_engineering_commits[@]} -gt 0 ]]; then
+  highlights+=("Developer ID signing, notarization, and stapled GitHub release builds now run automatically in CI")
+fi
+
+if [[ ${#onboarding_commits[@]} -gt 0 ]]; then
+  highlights+=("First-run onboarding is smoother, including automatic panel opening and a clean first-run QA mode")
+fi
+
+if [[ ${#settings_commits[@]} -gt 0 ]]; then
+  highlights+=("Settings window behavior and presentation were tightened up")
+fi
+
+for subject in "${remaining_subjects[@]}"; do
+  highlights+=("$subject")
+done
+
+if [[ ${#highlights[@]} -eq 0 ]]; then
+  highlights=("Maintenance release")
 fi
 
 notes=""
 notes+=$'## Highlights\n'
-for subject in "${commit_subjects[@]}"; do
+for subject in "${highlights[@]}"; do
   notes+="- ${subject}"$'\n'
 done
 

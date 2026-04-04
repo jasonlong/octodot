@@ -18,7 +18,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
-      APP_PATH: .deriveddata-release/Build/Products/Release/Octodot.app
+      APP_PATH: /tmp/octodot-export/Octodot.app
+      XCARCHIVE_PATH: /tmp/Octodot.xcarchive
+      EXPORT_PATH: /tmp/octodot-export
+      EXPORT_OPTIONS_PLIST: /tmp/OctodotExportOptions.plist
       ARCHIVE_PATH: /tmp/Octodot-${{ github.ref_name }}-unsigned.zip
       FINAL_ARCHIVE_PATH: Octodot-${{ github.ref_name }}-macos.zip
       KEYCHAIN_PATH: /tmp/octodot-build.keychain-db
@@ -67,7 +70,27 @@ jobs:
           security default-keychain -d user -s "$KEYCHAIN_PATH"
           echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
-      - name: Build signed release app
+      - name: Create export options plist
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$EXPORT_OPTIONS_PLIST" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>developer-id</string>
+            <key>signingCertificate</key>
+            <string>${APPLE_SIGNING_IDENTITY}</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Archive signed release app
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -75,16 +98,25 @@ jobs:
           test -n "$APPLE_SIGNING_IDENTITY"
           test -n "$APPLE_TEAM_ID"
 
-          xcodebuild build \
+          xcodebuild archive \
             -project Octodot.xcodeproj \
             -scheme Octodot \
             -configuration Release \
-            -destination 'platform=macOS' \
+            -destination 'generic/platform=macOS' \
             -derivedDataPath .deriveddata-release \
+            -archivePath "$XCARCHIVE_PATH" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             OTHER_CODE_SIGN_FLAGS="--timestamp"
+
+      - name: Export Developer ID app
+        run: |
+          rm -rf "$EXPORT_PATH"
+          xcodebuild -exportArchive \
+            -archivePath "$XCARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
 
       - name: Verify signed app
         run: |

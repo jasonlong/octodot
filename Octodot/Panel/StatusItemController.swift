@@ -226,13 +226,18 @@ final class StatusItemController: NSObject {
         let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseEvents) { [weak self] _ in
+            let location = NSEvent.mouseLocation
             Task { @MainActor in
-                self?.closePanelForOutsideClickIfNeeded(mouseLocation: NSEvent.mouseLocation)
+                self?.closePanelForOutsideClickIfNeeded(mouseLocation: location)
             }
         }
 
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseEvents) { [weak self] event in
-            self?.closePanelForOutsideClickIfNeeded(mouseLocation: NSEvent.mouseLocation)
+            guard let self else { return event }
+            let isStatusItemClick = event.window == self.statusItem.button?.window
+            if !isStatusItemClick {
+                self.closePanelForOutsideClickIfNeeded(mouseLocation: NSEvent.mouseLocation)
+            }
             return event
         }
     }

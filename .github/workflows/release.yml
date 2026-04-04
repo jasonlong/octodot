@@ -117,12 +117,30 @@ jobs:
           xcrun notarytool submit "$ARCHIVE_PATH" \
             --keychain-profile "$KEYCHAIN_PROFILE" \
             --keychain "$KEYCHAIN_PATH" \
-            --wait | tee /tmp/notary-submit-output.txt
+            --wait \
+            --output-format json | tee /tmp/notary-submit-output.json
 
       - name: Show notarization submission output
         if: always()
         run: |
-          cat /tmp/notary-submit-output.txt
+          cat /tmp/notary-submit-output.json
+
+      - name: Fetch notarization log on rejection
+        run: |
+          submission_id="$(/usr/bin/plutil -extract id raw -o - /tmp/notary-submit-output.json)"
+          status="$(/usr/bin/plutil -extract status raw -o - /tmp/notary-submit-output.json)"
+
+          if [ "$status" = "Accepted" ]; then
+            exit 0
+          fi
+
+          echo "Notarization status: $status"
+          xcrun notarytool log "$submission_id" \
+            --keychain-profile "$KEYCHAIN_PROFILE" \
+            --keychain "$KEYCHAIN_PATH" \
+            /tmp/notary-log.json
+          cat /tmp/notary-log.json
+          exit 1
 
       - name: Staple notarization ticket
         run: |

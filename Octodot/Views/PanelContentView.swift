@@ -144,6 +144,23 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
+            } else if let warning = appState.warningMessage {
+                HStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 10))
+                        Text(warning)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.yellow)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.yellow.opacity(0.08), in: Capsule())
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
             }
 
             // Footer

@@ -66,6 +66,17 @@ struct AppShellTests {
         #expect(StatusItemController.carbonModifiers(from: [.control, .option]) == UInt32(controlKey | optionKey))
     }
 
+    @Test func hotkeyFailureMessageMentionsShortcutAndConflict() {
+        let message = StatusItemController.hotkeyFailureMessage(
+            for: .commandQuote,
+            kind: .registerShortcut,
+            status: OSStatus(eventHotKeyExistsErr)
+        )
+
+        #expect(message.contains("⌘'"))
+        #expect(message.contains("Another app may already be using it."))
+    }
+
     @Test func outsideClickClosesPanelButStatusItemClickDoesNot() {
         let panelFrame = CGRect(x: 100, y: 100, width: 380, height: 500)
         let statusItemFrame = CGRect(x: 220, y: 620, width: 20, height: 24)

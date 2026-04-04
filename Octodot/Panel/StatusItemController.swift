@@ -5,6 +5,11 @@ import SwiftUI
 
 @MainActor
 final class StatusItemController: NSObject {
+    enum HotkeyFailureKind {
+        case installHandler
+        case registerShortcut
+    }
+
     enum Constants {
         static let activeAlpha: CGFloat = 1.0
         static let dimmedAlpha: CGFloat = 0.45
@@ -127,7 +132,11 @@ final class StatusItemController: NSObject {
             &hotKeyHandlerRef
         )
         guard installStatus == noErr else {
-            assertionFailure("Failed to install global hotkey handler: \(installStatus)")
+            handleHotkeyFailure(
+                kind: .installHandler,
+                status: installStatus,
+                shortcut: preferences.globalShortcut
+            )
             return
         }
     }
@@ -149,9 +158,15 @@ final class StatusItemController: NSObject {
             &hotKeyRef
         )
         guard registerStatus == noErr else {
-            assertionFailure("Failed to register global hotkey: \(registerStatus)")
+            handleHotkeyFailure(
+                kind: .registerShortcut,
+                status: registerStatus,
+                shortcut: shortcut
+            )
             return
         }
+
+        clearHotkeyFailure()
     }
 
     private func observeHotkeyPreference() {
@@ -194,6 +209,19 @@ final class StatusItemController: NSObject {
         return carbonFlags
     }
 
+    static func hotkeyFailureMessage(
+        for shortcut: AppPreferences.GlobalShortcut,
+        kind: HotkeyFailureKind,
+        status: OSStatus
+    ) -> String {
+        switch kind {
+        case .installHandler:
+            return "Octodot couldn't install its global shortcut handler. Restart the app and try again. (\(status))"
+        case .registerShortcut:
+            return "Octodot couldn't register \(shortcut.displayText) as the global shortcut. Another app may already be using it. (\(status))"
+        }
+    }
+
     private func setupOutsideClickMonitors() {
         let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
@@ -223,6 +251,26 @@ final class StatusItemController: NSObject {
 
         let menuOrigin = NSPoint(x: 0, y: button.bounds.height + 4)
         contextMenu.popUp(positioning: nil, at: menuOrigin, in: button)
+    }
+
+    private func handleHotkeyFailure(
+        kind: HotkeyFailureKind,
+        status: OSStatus,
+        shortcut: AppPreferences.GlobalShortcut
+    ) {
+        let message = Self.hotkeyFailureMessage(for: shortcut, kind: kind, status: status)
+        preferences.globalShortcutErrorMessage = message
+        appState.errorMessage = message
+        DebugTrace.log("hotkey failure kind=\(String(describing: kind)) status=\(status) shortcut=\(shortcut.displayText)")
+        assertionFailure(message)
+    }
+
+    private func clearHotkeyFailure() {
+        let previousMessage = preferences.globalShortcutErrorMessage
+        preferences.globalShortcutErrorMessage = nil
+        if appState.errorMessage == previousMessage {
+            appState.errorMessage = nil
+        }
     }
 
     private func togglePanel() {

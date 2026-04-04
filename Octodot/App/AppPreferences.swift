@@ -190,6 +190,8 @@ final class AppPreferences {
         }
     }
 
+    var globalShortcutErrorMessage: String?
+
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         self.appearanceMode = Self.loadAppearanceMode(from: userDefaults)

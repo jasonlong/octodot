@@ -271,8 +271,17 @@ private struct ShortcutsSettingsPane: View {
                     title: "Toggle Octodot",
                     description: "Click the recorder, then press a key combination. Escape cancels. A modifier key is required."
                 ) {
-                    HotkeyRecorderView(shortcut: $preferences.globalShortcut)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HotkeyRecorderView(shortcut: $preferences.globalShortcut)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if let errorMessage = preferences.globalShortcutErrorMessage {
+                            Text(errorMessage)
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
 

@@ -7,6 +7,8 @@ protocol NetworkSession: Sendable {
 extension URLSession: NetworkSession {}
 
 actor GitHubAPIClient {
+    static let subjectMetadataWarningMessage = "Some pull request status data couldn't be loaded."
+
     private let baseURL = URL(string: "https://api.github.com")!
     private let notificationsPerPage = 100
     private let defaultPollInterval: TimeInterval = 60
@@ -43,6 +45,7 @@ actor GitHubAPIClient {
 
     private var cachedFeeds: [FeedScope: FeedCache] = [:]
     private var cachedDependabotAlerts = SecurityAlertsCache()
+    private var nonFatalWarningMessage: String?
 
     private struct SubjectRequestContext: Sendable {
         let token: String
@@ -65,6 +68,7 @@ actor GitHubAPIClient {
         self.token = token
         cachedFeeds.removeAll()
         cachedDependabotAlerts = SecurityAlertsCache()
+        nonFatalWarningMessage = nil
     }
 
     // MARK: - Fetch notifications
@@ -275,6 +279,7 @@ actor GitHubAPIClient {
     func resolveSubjectMetadata(
         for notifications: [GitHubNotification]
     ) async -> [String: GitHubNotification.SubjectMetadata] {
+        nonFatalWarningMessage = nil
         let pendingSubjectNotifications = notifications
             .filter(Self.shouldResolveSubjectMetadata)
             .prefix(maxSubjectResolutionBatchSize)
@@ -282,13 +287,19 @@ actor GitHubAPIClient {
         guard !candidateNotifications.isEmpty else { return [:] }
 
         let subjectRequestContext = SubjectRequestContext(token: token, session: session)
-        let subjectMetadataByID = await Self.fetchSubjectMetadata(
+        let subjectMetadataResult = await Self.fetchSubjectMetadata(
             for: candidateNotifications,
             maxConcurrent: maxConcurrentSubjectRequests,
             context: subjectRequestContext
         )
+        let subjectMetadataByID = subjectMetadataResult.metadataByID
 
         guard !subjectMetadataByID.isEmpty else { return [:] }
+
+        if subjectMetadataResult.failureCount > 0 {
+            nonFatalWarningMessage = Self.subjectMetadataWarningMessage
+            DebugTrace.log("subject metadata degraded failures=\(subjectMetadataResult.failureCount)")
+        }
 
         for scope in FeedScope.allCases {
             updateFeedCache(scope) { cache in
@@ -304,20 +315,35 @@ actor GitHubAPIClient {
         return subjectMetadataByID
     }
 
+    func takeNonFatalWarningMessage() -> String? {
+        defer { nonFatalWarningMessage = nil }
+        return nonFatalWarningMessage
+    }
+
     // MARK: - Fetch subject metadata
+
+    private struct SubjectMetadataBatchResult {
+        var metadataByID: [String: GitHubNotification.SubjectMetadata] = [:]
+        var failureCount = 0
+    }
+
+    private struct SubjectMetadataRequestResult {
+        let metadata: GitHubNotification.SubjectMetadata
+        let hadFailure: Bool
+    }
 
     private static func fetchSubjectMetadata(
         for notifications: [GitHubNotification],
         maxConcurrent: Int,
         context: SubjectRequestContext
-    ) async -> [String: GitHubNotification.SubjectMetadata] {
-        guard !notifications.isEmpty else { return [:] }
+    ) async -> SubjectMetadataBatchResult {
+        guard !notifications.isEmpty else { return SubjectMetadataBatchResult() }
 
         let concurrencyLimit = max(1, min(maxConcurrent, notifications.count))
         var iterator = notifications.makeIterator()
-        var subjectMetadataByID: [String: GitHubNotification.SubjectMetadata] = [:]
+        var batchResult = SubjectMetadataBatchResult()
 
-        await withTaskGroup(of: (String, GitHubNotification.SubjectMetadata).self) { group in
+        await withTaskGroup(of: (String, SubjectMetadataRequestResult).self) { group in
             for _ in 0..<concurrencyLimit {
                 guard let notification = iterator.next(),
                       let subjectURL = notification.subjectURL else {
@@ -332,7 +358,10 @@ actor GitHubAPIClient {
             }
 
             while let (id, metadata) = await group.next() {
-                subjectMetadataByID[id] = metadata
+                batchResult.metadataByID[id] = metadata.metadata
+                if metadata.hadFailure {
+                    batchResult.failureCount += 1
+                }
 
                 guard let notification = iterator.next(),
                       let subjectURL = notification.subjectURL else {
@@ -347,35 +376,49 @@ actor GitHubAPIClient {
             }
         }
 
-        return subjectMetadataByID
+        return batchResult
     }
 
     private static func fetchSubjectMetadata(
         apiURL: String,
         context: SubjectRequestContext
-    ) async -> GitHubNotification.SubjectMetadata {
-        guard let url = URL(string: apiURL) else { return .init(state: .unknown, ciStatus: nil) }
+    ) async -> SubjectMetadataRequestResult {
+        guard let url = URL(string: apiURL) else {
+            return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
+        }
         do {
             let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
             let resolvedState = subject.resolvedState
-            let ciStatus: GitHubNotification.CIStatus?
+            let ciStatusResult: CIStatusFetchResult
             if resolvedState == .open, let headSHA = subject.head?.sha {
-                ciStatus = await fetchCIStatus(subjectURL: url, headSHA: headSHA, context: context)
+                ciStatusResult = await fetchCIStatus(subjectURL: url, headSHA: headSHA, context: context)
             } else {
-                ciStatus = nil
+                ciStatusResult = .status(nil)
             }
-            return .init(state: resolvedState, ciStatus: ciStatus)
+
+            switch ciStatusResult {
+            case .status(let ciStatus):
+                return .init(metadata: .init(state: resolvedState, ciStatus: ciStatus), hadFailure: false)
+            case .degraded:
+                return .init(metadata: .init(state: resolvedState, ciStatus: nil), hadFailure: true)
+            }
         } catch {
-            return .init(state: .unknown, ciStatus: nil)
+            DebugTrace.log("subject metadata request failed url=\(apiURL) error=\(error.localizedDescription)")
+            return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
         }
+    }
+
+    private enum CIStatusFetchResult {
+        case status(GitHubNotification.CIStatus?)
+        case degraded
     }
 
     private static func fetchCIStatus(
         subjectURL: URL,
         headSHA: String,
         context: SubjectRequestContext
-    ) async -> GitHubNotification.CIStatus? {
+    ) async -> CIStatusFetchResult {
         let repositoryAPIURL = subjectURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -389,23 +432,39 @@ actor GitHubAPIClient {
         )
         checkRunsComponents?.queryItems = [URLQueryItem(name: "per_page", value: "100")]
 
-        if let checkRunsURL = checkRunsComponents?.url,
-           let data = try? await request(url: checkRunsURL, token: context.token, session: context.session),
-           let response = try? JSONDecoder.github.decode(APICheckRunsResponse.self, from: data),
-           let status = response.resolvedCIStatus {
-            return status
+        var hadFailure = false
+
+        if let checkRunsURL = checkRunsComponents?.url {
+            do {
+                let data = try await request(url: checkRunsURL, token: context.token, session: context.session)
+                let response = try JSONDecoder.github.decode(APICheckRunsResponse.self, from: data)
+                if let status = response.resolvedCIStatus {
+                    return .status(status)
+                }
+            } catch {
+                hadFailure = true
+                DebugTrace.log("ci check-runs request failed url=\(checkRunsURL.absoluteString) error=\(error.localizedDescription)")
+            }
         }
 
         let combinedStatusURL = repositoryAPIURL
             .appendingPathComponent("commits")
             .appendingPathComponent(headSHA)
             .appendingPathComponent("status")
-        if let data = try? await request(url: combinedStatusURL, token: context.token, session: context.session),
-           let response = try? JSONDecoder.github.decode(APICombinedStatus.self, from: data) {
-            return response.resolvedCIStatus
+        do {
+            let data = try await request(url: combinedStatusURL, token: context.token, session: context.session)
+            let response = try JSONDecoder.github.decode(APICombinedStatus.self, from: data)
+            return .status(response.resolvedCIStatus)
+        } catch {
+            hadFailure = true
+            DebugTrace.log("ci combined-status request failed url=\(combinedStatusURL.absoluteString) error=\(error.localizedDescription)")
         }
 
-        return nil
+        if hadFailure {
+            return .degraded
+        }
+
+        return .status(nil)
     }
 
     private static func shouldResolveSubjectMetadata(_ notification: GitHubNotification) -> Bool {

@@ -1158,6 +1158,41 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains(where: { $0.id == "8" && $0.subjectState == .merged }))
     }
 
+    @Test func failedVisibleSubjectMetadataResolutionSurfacesWarningMessage() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.singleNotificationPayload(
+                    id: "7",
+                    subjectURL: "https://api.github.com/repos/acme/alpha/pulls/7"
+                ),
+                response: Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                ),
+                delayNanoseconds: 0
+            ),
+            .failure(
+                error: GitHubAPIClient.APIError.forbidden,
+                delayNanoseconds: 10_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = Self.makeState(0, apiClient: client)
+
+        state.inboxMode = .unread
+        await state.loadNotifications(force: true)
+        state.notificationBecameVisible(id: "7")
+
+        await Self.waitUntil {
+            await MainActor.run {
+                state.warningMessage == GitHubAPIClient.subjectMetadataWarningMessage
+            }
+        }
+
+        #expect(state.warningMessage == GitHubAPIClient.subjectMetadataWarningMessage)
+    }
+
     @Test func backgroundRefreshLoadsNotificationsWhilePanelIsClosed() async {
         let sleeper = BackgroundRefreshSleeper()
         let (state, session) = Self.makeAuthedState(

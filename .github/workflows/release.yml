@@ -36,13 +36,20 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Resolve release version
+        run: |
+          echo "RELEASE_MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
       - name: Run test suite
         run: |
           xcodebuild test \
             -project Octodot.xcodeproj \
             -scheme Octodot \
-            -destination 'platform=macOS' \
-            -derivedDataPath .deriveddata
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath .deriveddata \
+            MARKETING_VERSION="$RELEASE_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$RELEASE_BUILD_NUMBER"
 
       - name: Import Developer ID certificate
         env:
@@ -107,6 +114,8 @@ jobs:
             -destination 'generic/platform=macOS' \
             -derivedDataPath .deriveddata-release \
             -archivePath "$XCARCHIVE_PATH" \
+            MARKETING_VERSION="$RELEASE_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$RELEASE_BUILD_NUMBER" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \

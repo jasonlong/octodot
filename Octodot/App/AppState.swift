@@ -55,6 +55,7 @@ final class AppState {
     }
     var isLoading: Bool = false
     var errorMessage: String?
+    var warningMessage: String?
     var inboxMode: InboxMode = .inbox {
         didSet {
             guard inboxMode != oldValue else { return }
@@ -217,6 +218,7 @@ final class AppState {
         let username = try await client.validateToken()
         try tokenSaver(token)
         errorMessage = nil
+        warningMessage = nil
         signIn(token: token, username: username)
     }
 
@@ -279,6 +281,7 @@ final class AppState {
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
         shouldSelectTopItemOnNextLoad = true
+        warningMessage = nil
         apiClient = apiClientFactory(token)
         authStatus = .signedIn(username: username)
         Task {
@@ -303,6 +306,7 @@ final class AppState {
         inboxStore.clearSessionState()
         threadActions.clearCommittedActions()
         errorMessage = nil
+        warningMessage = nil
         searchQuery = ""
         isSearchActive = false
         clearSelection()
@@ -316,6 +320,7 @@ final class AppState {
         cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         isLoading = true
+        warningMessage = nil
         do {
             async let unreadFetch = client.fetchNotifications(all: false, force: force)
             let fetched = try await unreadFetch
@@ -972,17 +977,24 @@ final class AppState {
 
         subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs] in
             let resolvedMetadata = await client.resolveSubjectMetadata(for: candidates)
+            let warningMessage = await client.takeNonFatalWarningMessage()
             guard !Task.isCancelled else { return }
-            self?.applyResolvedSubjectMetadata(resolvedMetadata, expectedIDs: candidateIDs)
+            self?.applyResolvedSubjectMetadata(
+                resolvedMetadata,
+                expectedIDs: candidateIDs,
+                warningMessage: warningMessage
+            )
         }
     }
 
     private func applyResolvedSubjectMetadata(
         _ resolvedMetadata: [String: GitHubNotification.SubjectMetadata],
-        expectedIDs: [String]
+        expectedIDs: [String],
+        warningMessage: String?
     ) {
         subjectStateResolutionTask = nil
         visibleSubjectStateInFlightIDs.subtract(expectedIDs)
+        self.warningMessage = warningMessage
 
         let unreadChanged = applyResolvedSubjectMetadata(resolvedMetadata, to: &serverNotifications)
         let recentInboxChanged = applyResolvedSubjectMetadata(resolvedMetadata, to: &serverRecentInboxNotifications)

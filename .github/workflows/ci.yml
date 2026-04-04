@@ -27,5 +27,16 @@ jobs:
           xcodebuild test \
             -project Octodot.xcodeproj \
             -scheme Octodot \
-            -destination 'platform=macOS' \
-            -derivedDataPath .deriveddata
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath .deriveddata \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+
+      - name: Verify Release build
+        run: |
+          xcodebuild build \
+            -project Octodot.xcodeproj \
+            -scheme Octodot \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath .deriveddata-release \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"

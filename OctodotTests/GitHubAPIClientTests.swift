@@ -858,6 +858,39 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .draft)
     }
 
+    @Test func resolveSubjectMetadataRecordsNonFatalWarningWhenSubjectFetchFails() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: true,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .failure(GitHubAPIClient.APIError.forbidden)
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
+        let warning = await client.takeNonFatalWarningMessage()
+
+        #expect(resolvedMetadata["1"]?.state == .unknown)
+        #expect(warning == GitHubAPIClient.subjectMetadataWarningMessage)
+        #expect(await client.takeNonFatalWarningMessage() == nil)
+    }
+
     @Test func resolveSubjectMetadataMapsOpenPullRequestCheckRunsToCIStatus() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
@@ -904,6 +937,49 @@ struct GitHubAPIClientTests {
 
         #expect(resolvedMetadata["1"]?.state == .open)
         #expect(resolvedMetadata["1"]?.ciStatus == .success)
+    }
+
+    @Test func resolveSubjectMetadataRecordsNonFatalWarningWhenCIStatusFails() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: true,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                #"{"state":"open","head":{"sha":"abc123"}}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .failure(GitHubAPIClient.APIError.rateLimited),
+            .failure(GitHubAPIClient.APIError.forbidden),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
+        let warning = await client.takeNonFatalWarningMessage()
+
+        #expect(resolvedMetadata["1"]?.state == .open)
+        #expect(resolvedMetadata["1"]?.ciStatus == nil)
+        #expect(warning == GitHubAPIClient.subjectMetadataWarningMessage)
     }
 
     @Test func resolveSubjectMetadataPersistsCIStatusAcrossRefreshes() async throws {

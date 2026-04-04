@@ -117,20 +117,25 @@ jobs:
           xcrun notarytool submit "$ARCHIVE_PATH" \
             --keychain-profile "$KEYCHAIN_PROFILE" \
             --keychain "$KEYCHAIN_PATH" \
-            --wait
+            --wait | tee /tmp/notary-submit-output.txt
+
+      - name: Show notarization submission output
+        if: always()
+        run: |
+          cat /tmp/notary-submit-output.txt
 
       - name: Staple notarization ticket
         run: |
-          for attempt in 1 2 3 4 5; do
+          for attempt in $(seq 1 20); do
             if xcrun stapler staple "$APP_PATH"; then
               break
             fi
 
-            if [ "$attempt" -eq 5 ]; then
+            if [ "$attempt" -eq 20 ]; then
               exit 65
             fi
 
-            echo "Stapler ticket not available yet; retrying in 15 seconds (attempt $attempt/5)..."
+            echo "Stapler ticket not available yet; retrying in 15 seconds (attempt $attempt/20)..."
             sleep 15
           done
           xcrun stapler validate "$APP_PATH"

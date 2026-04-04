@@ -27,7 +27,7 @@ enum KeychainHelper {
 #else
         try saveToken(token, service: service, account: account)
 #endif
-        try? FileManager.default.removeItem(at: legacyTokenURL)
+        removeLegacyTokenIfPresent()
     }
 
     static func loadToken() -> String? {
@@ -38,26 +38,46 @@ enum KeychainHelper {
 #endif
         if let token = loadToken(service: service, account: account) {
 #if DEBUG
-            try? saveDebugToken(token)
+            do {
+                try saveDebugToken(token)
+            } catch {
+                DebugTrace.log("keychain-debug-cache-save-failed error=\(error.localizedDescription)")
+            }
 #endif
             return token
         }
 
-        guard let data = try? Data(contentsOf: legacyTokenURL),
-              let token = String(data: data, encoding: .utf8) else {
+        guard FileManager.default.fileExists(atPath: legacyTokenURL.path) else {
             return nil
         }
 
-        try? saveToken(token)
-        try? FileManager.default.removeItem(at: legacyTokenURL)
+        let data: Data
+        do {
+            data = try Data(contentsOf: legacyTokenURL)
+        } catch {
+            DebugTrace.log("keychain-legacy-token-read-failed error=\(error.localizedDescription)")
+            return nil
+        }
+
+        guard let token = String(data: data, encoding: .utf8), !token.isEmpty else {
+            DebugTrace.log("keychain-legacy-token-invalid")
+            return nil
+        }
+
+        do {
+            try saveToken(token)
+            removeLegacyTokenIfPresent()
+        } catch {
+            DebugTrace.log("keychain-legacy-token-migration-failed error=\(error.localizedDescription)")
+        }
         return token
     }
 
     static func deleteToken() {
         deleteToken(service: service, account: account)
-        try? FileManager.default.removeItem(at: legacyTokenURL)
+        removeLegacyTokenIfPresent()
 #if DEBUG
-        try? FileManager.default.removeItem(at: debugTokenURL)
+        removeDebugTokenIfPresent()
 #endif
     }
 
@@ -92,12 +112,19 @@ enum KeychainHelper {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status != errSecItemNotFound else { return nil }
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        guard status == errSecSuccess, let data = item as? Data else {
+            DebugTrace.log("keychain-load-failed service=\(service) account=\(account) status=\(status)")
+            return nil
+        }
         return String(data: data, encoding: .utf8)
     }
 
     static func deleteToken(service: String, account: String) {
-        SecItemDelete(itemQuery(service: service, account: account) as CFDictionary)
+        let status = SecItemDelete(itemQuery(service: service, account: account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            DebugTrace.log("keychain-delete-failed service=\(service) account=\(account) status=\(status)")
+            return
+        }
     }
 
 #if DEBUG
@@ -115,6 +142,32 @@ enum KeychainHelper {
             return nil
         }
         return token
+    }
+#endif
+
+    private static func removeLegacyTokenIfPresent() {
+        guard FileManager.default.fileExists(atPath: legacyTokenURL.path) else {
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: legacyTokenURL)
+        } catch {
+            DebugTrace.log("keychain-legacy-token-remove-failed error=\(error.localizedDescription)")
+        }
+    }
+
+#if DEBUG
+    private static func removeDebugTokenIfPresent() {
+        guard FileManager.default.fileExists(atPath: debugTokenURL.path) else {
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: debugTokenURL)
+        } catch {
+            DebugTrace.log("keychain-debug-token-remove-failed error=\(error.localizedDescription)")
+        }
     }
 #endif
 

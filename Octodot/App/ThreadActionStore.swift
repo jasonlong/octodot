@@ -68,6 +68,7 @@ struct ThreadActionStore {
 
     enum UndoEffect {
         case none
+        case stale
         case cancelQueued(PendingAction)
         case restoreSubscription(notification: GitHubNotification, originalServerIndex: Int)
         case restoreSecurityAlert(notification: GitHubNotification, originalVisibleIndex: Int)
@@ -132,11 +133,14 @@ struct ThreadActionStore {
     }
 
     mutating func applyUndo() -> UndoEffect {
+        var skippedStaleEntry = false
+
         while let entry = undoStack.popLast() {
             switch entry {
             case .cancelPending(let threadId, let requestID):
                 guard let pending = pendingActions[threadId],
                       pending.requestID == requestID else {
+                    skippedStaleEntry = true
                     continue
                 }
 
@@ -151,6 +155,7 @@ struct ThreadActionStore {
 
             case .restoreSubscription(let notification, let originalServerIndex):
                 guard pendingActions[notification.threadId] == nil else {
+                    skippedStaleEntry = true
                     continue
                 }
 
@@ -169,6 +174,9 @@ struct ThreadActionStore {
             }
         }
 
+        if skippedStaleEntry {
+            return .stale
+        }
         return .none
     }
 
@@ -393,6 +401,12 @@ struct ThreadActionStore {
             undoStack.removeFirst()
         }
     }
+
+#if DEBUG
+    mutating func invalidatePendingUndoEntryForTesting(threadId: String) {
+        pendingActions.removeValue(forKey: threadId)
+    }
+#endif
 
     private static func loadCommittedActions(from userDefaults: UserDefaults) -> [String: CommittedAction] {
         guard let data = userDefaults.data(forKey: committedThreadActionsStorageKey) else {

@@ -451,19 +451,25 @@ final class AppState {
         switch threadActions.applyUndo() {
         case .none:
             clampSelection()
+        case .stale:
+            warningMessage = "The last action can no longer be undone"
+            clampSelection()
         case .cancelQueued(let pending):
             actionTasks.removeValue(forKey: pending.notification.threadId)?.cancel()
             errorMessage = nil
+            warningMessage = nil
             if pending.kind.hidesNotification || pending.kind == .restoreSubscription {
                 selectedThreadID = pending.notification.id
                 selectedIndexStorage = pending.originalServerIndex
             }
             clampSelection()
         case .restoreSubscription(let notification, let originalServerIndex):
+            warningMessage = nil
             startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
         case .restoreSecurityAlert(let notification, let originalVisibleIndex):
             inboxStore.restoreDismissedSecurityAlert(notification)
             errorMessage = nil
+            warningMessage = nil
             selectedThreadID = notification.id
             selectedIndexStorage = originalVisibleIndex
             clampSelection()

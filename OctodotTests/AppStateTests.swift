@@ -2013,6 +2013,20 @@ struct AppStateTests {
         #expect(state.notifications.count == before)
     }
 
+    @Test func staleUndoEntryReturnsStaleEffect() {
+        let notification = Self.makeNotification(id: 42)
+        var store = ThreadActionStore(userDefaults: Self.makeIsolatedUserDefaults())
+        _ = store.start(.done, notification: notification, originalServerIndex: 0, pushesUndo: true)
+        store.invalidatePendingUndoEntryForTesting(threadId: notification.threadId)
+
+        let effect = store.applyUndo()
+        if case .stale = effect {
+            #expect(Bool(true))
+        } else {
+            Issue.record("Expected stale undo effect, got \(String(describing: effect))")
+        }
+    }
+
     // MARK: - Clamp selection
 
     @Test func clampSelectionWhenIndexExceedsList() {

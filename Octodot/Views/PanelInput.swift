@@ -9,6 +9,7 @@ enum PanelInput {
         case controlB
         case controlD
         case controlU
+        case commandZ
         case downArrow
         case upArrow
         case escape
@@ -128,7 +129,7 @@ enum PanelInput {
         switch input {
         case .character("j"), .character("k"), .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
-        case .character, .escape, .return, .other:
+        case .character, .commandZ, .escape, .return, .other:
             return false
         }
     }
@@ -147,7 +148,7 @@ enum PanelInput {
              .escape,
              .return:
             return true
-        case .character, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
+        case .character, .commandZ, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
@@ -211,6 +212,11 @@ enum PanelInput {
     }
 
     static func keyInput(for event: NSEvent) -> KeyInput {
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers == "z" {
+            return .commandZ
+        }
+
         if event.modifierFlags.contains(.control) {
             switch event.charactersIgnoringModifiers {
             case "f", "F":
@@ -285,6 +291,7 @@ enum PanelInput {
         case .controlB: return "ctrl-b"
         case .controlD: return "ctrl-d"
         case .controlU: return "ctrl-u"
+        case .commandZ: return "cmd-z"
         case .downArrow: return "down"
         case .upArrow: return "up"
         case .escape: return "escape"
@@ -367,7 +374,7 @@ enum PanelInput {
             return KeyRouting(command: .open, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("y"):
             return KeyRouting(command: .copyURL, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .character("u"):
+        case .character("u"), .commandZ:
             return KeyRouting(command: .undo, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("a"):
             return KeyRouting(command: .toggleInboxMode, pendingG: false, focusDirective: .unchanged, isHandled: true)

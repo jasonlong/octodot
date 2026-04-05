@@ -33,6 +33,7 @@ struct SettingsView: View {
     @Bindable var preferences: AppPreferences
     @AppStorage("SettingsView.selectedTab") private var selectedTabRawValue = Tab.account.rawValue
 
+
     var body: some View {
         VStack(spacing: 0) {
             SettingsTabBar(selection: selection)
@@ -151,9 +152,8 @@ private struct AccountSettingsPane: View {
                         .foregroundStyle(.secondary)
                 }
 
-                SecureField("ghp_...", text: $tokenInput)
+                SecureField("Personal Access Token", text: $tokenInput, prompt: Text("ghp_..."))
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
 
                 Text("Use a classic Personal Access Token with the notifications and repo scopes.")
                     .font(.footnote)
@@ -253,7 +253,7 @@ private struct ShortcutsSettingsPane: View {
         .init(id: "open", action: "Open selected", vim: "o", standard: "Return"),
         .init(id: "done", action: "Done", vim: "d", standard: "—"),
         .init(id: "unsub", action: "Unsubscribe", vim: "x", standard: "—"),
-        .init(id: "undo", action: "Undo pending action", vim: "u", standard: "—"),
+        .init(id: "undo", action: "Undo pending action", vim: "u", standard: "Cmd-Z"),
         .init(id: "copy", action: "Copy URL", vim: "y", standard: "—"),
         .init(id: "search", action: "Focus search", vim: "/", standard: "—"),
         .init(id: "search-submit", action: "Apply search and return to list", vim: "return / tab", standard: "Return / Tab"),

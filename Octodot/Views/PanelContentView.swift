@@ -3,7 +3,9 @@ import SwiftUI
 
 struct PanelContentView: View {
     @Bindable var appState: AppState
+    var updateChecker: UpdateChecker
     let closePanel: () -> Void
+    let showSettings: () -> Void
     @State private var hasAppeared = false
     @State private var windowFocusBridge = PanelWindowFocusBridge()
     @State private var isSearchFieldFocused = false
@@ -161,6 +163,10 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
+            } else if updateChecker.availableVersion != nil || updateChecker.installState != .idle {
+                UpdateBanner(updateChecker: updateChecker)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 6)
             }
 
             // Footer
@@ -168,9 +174,30 @@ struct PanelContentView: View {
                 shortcutHint(key: "j/k", label: "nav")
                 shortcutHint(key: "d", label: "done")
                 shortcutHint(key: "x", label: "unsub")
-                shortcutHint(key: "u", label: "undo")
                 shortcutHint(key: "o", label: "open")
                 shortcutHint(key: "/", label: "search")
+
+                Spacer()
+
+                Menu {
+                    Button("Check for Updates…") {
+                        updateChecker.checkForUpdatesNow()
+                    }
+                    Button("Settings…") {
+                        showSettings()
+                    }
+                    Divider()
+                    Button("Quit Octodot") {
+                        NSApp.terminate(nil)
+                    }
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.quaternary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
@@ -179,10 +206,12 @@ struct PanelContentView: View {
             guard !hasAppeared else { return }
             hasAppeared = true
             focusListAndRefresh()
+            updateChecker.checkForUpdatesIfNeeded()
         }
         .onChange(of: appState.isPanelVisible) { _, visible in
             if visible {
                 focusListAndRefresh()
+                updateChecker.checkForUpdatesIfNeeded()
             }
         }
         .animation(
@@ -392,7 +421,7 @@ struct PanelContentView: View {
                 .cornerRadius(3)
 
             Text(label)
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -402,6 +431,72 @@ struct PanelContentView: View {
         case .down: return "down"
         case .repeat: return "repeat"
         case .up: return "up"
+        }
+    }
+}
+
+private struct UpdateBanner: View {
+    var updateChecker: UpdateChecker
+
+    var body: some View {
+        HStack {
+            Spacer()
+            HStack(spacing: 6) {
+                switch updateChecker.installState {
+                case .idle:
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 10))
+                    if let version = updateChecker.availableVersion {
+                        Text("v\(version) available")
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                    }
+                    Button("Update") {
+                        updateChecker.installUpdate()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .underline()
+                    Button {
+                        updateChecker.dismissUpdate()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(0.6)
+
+                case .downloading(let progress):
+                    ProgressView(value: progress)
+                        .frame(width: 60)
+                        .controlSize(.small)
+                    Text("Downloading…")
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+
+                case .installing:
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Installing…")
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+
+                case .failed(let message):
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text(message)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(updateChecker.installState == .idle ? Color.accentColor : .secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                (updateChecker.installState == .idle ? Color.accentColor : Color.secondary)
+                    .opacity(0.08),
+                in: Capsule()
+            )
         }
     }
 }

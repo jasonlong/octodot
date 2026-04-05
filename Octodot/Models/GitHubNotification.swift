@@ -45,13 +45,15 @@ struct GitHubNotification: Identifiable, Hashable {
             case .merged: .purple
             case .closed: .red
             case .draft: .gray
-            default: .green
+            case .open: .green
+            case .unknown, .closedNotPlanned: .secondary
             }
         case .issue:
             switch subjectState {
             case .closed: .purple
             case .closedNotPlanned: .gray
-            default: .green
+            case .open: .green
+            case .unknown, .merged, .draft: .secondary
             }
         case .release: .blue
         case .discussion: .yellow

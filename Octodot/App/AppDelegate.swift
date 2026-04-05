@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchConfiguration: LaunchConfiguration
     let preferences: AppPreferences
     let appState: AppState
+    let updateChecker: UpdateChecker
     lazy var settingsWindowController = SettingsWindowController(
         appState: appState,
         preferences: preferences
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             userDefaults: configuration.userDefaults,
             bootstrapToken: configuration.bootstrapToken
         )
+        self.updateChecker = UpdateChecker(userDefaults: configuration.userDefaults)
         super.init()
     }
 
@@ -43,8 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(
             appState: appState,
             preferences: preferences,
+            updateChecker: updateChecker,
             settingsWindowController: settingsWindowController
         )
+        updateChecker.checkForUpdatesIfNeeded()
         if launchConfiguration.shouldShowPanelOnLaunch {
             DispatchQueue.main.async { [weak self] in
                 self?.statusItemController?.showPanelOnFirstRun()

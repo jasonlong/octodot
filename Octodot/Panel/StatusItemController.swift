@@ -30,6 +30,7 @@ final class StatusItemController: NSObject {
     private let settingsWindowController: SettingsWindowController
     private let appState: AppState
     private let preferences: AppPreferences
+    private let updateChecker: UpdateChecker
     private let contextMenu: NSMenu
     private let defaultIcon = StatusItemController.makeIcon(named: "menubar-icon")
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
@@ -38,11 +39,14 @@ final class StatusItemController: NSObject {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    init(appState: AppState, preferences: AppPreferences, settingsWindowController: SettingsWindowController) {
+    init(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker, settingsWindowController: SettingsWindowController) {
         self.appState = appState
         self.preferences = preferences
+        self.updateChecker = updateChecker
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        self.panel = NotificationPanel(appState: appState, preferences: preferences)
+        self.panel = NotificationPanel(appState: appState, preferences: preferences, updateChecker: updateChecker, showSettings: { [settingsWindowController] in
+            settingsWindowController.show()
+        })
         self.settingsWindowController = settingsWindowController
 
         self.contextMenu = NSMenu()
@@ -54,6 +58,10 @@ final class StatusItemController: NSObject {
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+
+        let checkForUpdatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        checkForUpdatesItem.target = self
+        contextMenu.addItem(checkForUpdatesItem)
 
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
@@ -289,6 +297,13 @@ final class StatusItemController: NSObject {
     func showPanelOnFirstRun() {
         guard panel.isVisible == false else { return }
         showPanelWhenReady(remainingAttempts: Constants.firstRunPanelRetryCount)
+    }
+
+    @objc private func checkForUpdates() {
+        updateChecker.checkForUpdatesNow()
+        if !panel.isVisible {
+            showPanel()
+        }
     }
 
     @objc private func quit() {

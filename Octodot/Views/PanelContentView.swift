@@ -163,7 +163,7 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
-            } else if updateChecker.availableVersion != nil || updateChecker.installState != .idle {
+            } else if updateChecker.availableVersion != nil || updateChecker.installState != .idle || updateChecker.showingUpToDate {
                 UpdateBanner(updateChecker: updateChecker)
                     .padding(.horizontal, 14)
                     .padding(.top, 6)
@@ -438,11 +438,24 @@ struct PanelContentView: View {
 private struct UpdateBanner: View {
     var updateChecker: UpdateChecker
 
+    private var bannerColor: Color {
+        if updateChecker.showingUpToDate { return .secondary }
+        if updateChecker.installState == .idle { return .green }
+        return .secondary
+    }
+
     var body: some View {
         HStack {
             Spacer()
             HStack(spacing: 6) {
                 switch updateChecker.installState {
+                case .idle where updateChecker.showingUpToDate:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                    Text("No updates available")
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+
                 case .idle:
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 10))
@@ -489,14 +502,10 @@ private struct UpdateBanner: View {
                         .lineLimit(1)
                 }
             }
-            .foregroundStyle(updateChecker.installState == .idle ? Color.accentColor : .secondary)
+            .foregroundStyle(bannerColor)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(
-                (updateChecker.installState == .idle ? Color.accentColor : Color.secondary)
-                    .opacity(0.08),
-                in: Capsule()
-            )
+            .background(bannerColor.opacity(0.08), in: Capsule())
         }
     }
 }

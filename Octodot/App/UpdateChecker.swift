@@ -21,8 +21,10 @@ final class UpdateChecker {
     private(set) var releaseURL: URL?
     private(set) var isChecking = false
     private(set) var installState: InstallState = .idle
+    private(set) var showingUpToDate = false
 
     private var downloadURL: URL?
+    private var upToDateDismissTask: Task<Void, Never>?
     private let session: any NetworkSession
     private let userDefaults: UserDefaults
     private let bundleVersion: String?
@@ -45,7 +47,7 @@ final class UpdateChecker {
     }
 
     func checkForUpdatesNow() {
-        Task { await performCheck() }
+        Task { await performCheck(showUpToDate: true) }
     }
 
     func dismissUpdate() {
@@ -63,7 +65,7 @@ final class UpdateChecker {
 
     // MARK: - Check
 
-    private func performCheck() async {
+    private func performCheck(showUpToDate: Bool = false) async {
         guard !isChecking else { return }
         isChecking = true
         defer {
@@ -76,6 +78,20 @@ final class UpdateChecker {
             applyRelease(release)
         } catch {
             // Silent failure — don't disrupt the user for update-check errors
+        }
+
+        if showUpToDate, availableVersion == nil {
+            flashUpToDate()
+        }
+    }
+
+    private func flashUpToDate() {
+        upToDateDismissTask?.cancel()
+        showingUpToDate = true
+        upToDateDismissTask = Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            showingUpToDate = false
         }
     }
 

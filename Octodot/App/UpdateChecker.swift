@@ -40,7 +40,6 @@ final class UpdateChecker {
     func checkForUpdatesIfNeeded() {
         let lastCheck = userDefaults.double(forKey: Self.lastCheckDateKey)
         let elapsed = Date().timeIntervalSince1970 - lastCheck
-        DebugTrace.log("update checkIfNeeded elapsed=\(Int(elapsed))s threshold=\(Int(Self.checkIntervalSeconds))s")
         guard elapsed >= Self.checkIntervalSeconds else { return }
         Task { await performCheck() }
     }
@@ -74,11 +73,9 @@ final class UpdateChecker {
 
         do {
             let release = try await fetchLatestRelease()
-            DebugTrace.log("update check got tag=\(release.tagName) current=\(bundleVersion ?? "nil") assets=\(release.assets.count)")
             applyRelease(release)
-            DebugTrace.log("update check result: available=\(availableVersion ?? "nil")")
         } catch {
-            DebugTrace.log("update check failed: \(error)")
+            // Silent failure — don't disrupt the user for update-check errors
         }
     }
 

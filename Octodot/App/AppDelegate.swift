@@ -31,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             userDefaults: configuration.userDefaults,
             bootstrapToken: configuration.bootstrapToken
         )
-        self.updateChecker = UpdateChecker(userDefaults: configuration.userDefaults, bundleVersion: "0.0.1") // TODO: revert before committing
+        self.updateChecker = UpdateChecker(userDefaults: configuration.userDefaults)
         super.init()
     }
 

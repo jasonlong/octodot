@@ -31,6 +31,10 @@
 		BB000000000000000000002B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002C /* SettingsView.swift */; };
 		BB000000000000000000002D /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002E /* HotkeyRecorderView.swift */; };
 		BB0000000000000000000030 /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* InboxStore.swift */; };
+		BB0000000000000000000032 /* SemanticVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000032 /* SemanticVersion.swift */; };
+		BB0000000000000000000033 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* UpdateChecker.swift */; };
+			BB0000000000000000000034 /* SemanticVersionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000034 /* SemanticVersionTests.swift */; };
+			BB0000000000000000000035 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* UpdateCheckerTests.swift */; };
 			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
 			BB0000000000000000000021 /* AppStateBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000022 /* AppStateBootstrapTests.swift */; };
 			BB0000000000000000000022 /* GitHubAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* GitHubAPIClientTests.swift */; };
@@ -75,6 +79,10 @@
 		AA000000000000000000002D /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		AA000000000000000000002E /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000030 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
+		AA0000000000000000000032 /* SemanticVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVersion.swift; sourceTree = "<group>"; };
+		AA0000000000000000000033 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
+		AA0000000000000000000034 /* SemanticVersionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVersionTests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000035 /* UpdateCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckerTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		AA0000000000000000000011 /* GitHubAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubAPIClient.swift; sourceTree = "<group>"; };
 			AA0000000000000000000012 /* TokenEntryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenEntryView.swift; sourceTree = "<group>"; };
@@ -125,7 +133,9 @@
 				AA000000000000000000002B /* AppPreferences.swift */,
 				AA0000000000000000000003 /* AppState.swift */,
 				AA0000000000000000000030 /* InboxStore.swift */,
+				AA0000000000000000000032 /* SemanticVersion.swift */,
 				AA0000000000000000000029 /* ThreadActionStore.swift */,
+				AA0000000000000000000033 /* UpdateChecker.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -191,7 +201,9 @@
 					AA0000000000000000000025 /* TestSupport.swift */,
 					AA0000000000000000000026 /* AppShellTests.swift */,
 					AA0000000000000000000027 /* PanelContentViewTests.swift */,
+					AA0000000000000000000034 /* SemanticVersionTests.swift */,
 					AA000000000000000000002D /* SettingsTests.swift */,
+					AA0000000000000000000035 /* UpdateCheckerTests.swift */,
 				);
 				path = OctodotTests;
 				sourceTree = "<group>";
@@ -347,6 +359,8 @@
 				BB000000000000000000000E /* GitHubAPIClient.swift in Sources */,
 				BB000000000000000000000F /* TokenEntryView.swift in Sources */,
 				BB0000000000000000000027 /* DebugTrace.swift in Sources */,
+				BB0000000000000000000032 /* SemanticVersion.swift in Sources */,
+				BB0000000000000000000033 /* UpdateChecker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -362,6 +376,8 @@
 					BB0000000000000000000025 /* AppShellTests.swift in Sources */,
 					BB0000000000000000000026 /* PanelContentViewTests.swift in Sources */,
 					BB000000000000000000002C /* SettingsTests.swift in Sources */,
+					BB0000000000000000000034 /* SemanticVersionTests.swift in Sources */,
+					BB0000000000000000000035 /* UpdateCheckerTests.swift in Sources */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};

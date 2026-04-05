@@ -4,7 +4,7 @@ import SwiftUI
 final class NotificationPanel: NSPanel {
     private let appState: AppState
 
-    init(appState: AppState, preferences: AppPreferences) {
+    init(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker, showSettings: @escaping () -> Void) {
         self.appState = appState
 
         super.init(
@@ -29,9 +29,11 @@ final class NotificationPanel: NSPanel {
         let rootView = PanelRootView(
             appState: appState,
             preferences: preferences,
+            updateChecker: updateChecker,
             closePanel: { [weak self] in
                 self?.close()
-            }
+            },
+            showSettings: showSettings
         )
 
         contentView = NSHostingView(rootView: rootView)
@@ -65,10 +67,12 @@ final class NotificationPanel: NSPanel {
 private struct PanelRootView: View {
     @Bindable var appState: AppState
     @Bindable var preferences: AppPreferences
+    var updateChecker: UpdateChecker
     let closePanel: () -> Void
+    let showSettings: () -> Void
 
     var body: some View {
-        PanelContentView(appState: appState, closePanel: closePanel)
+        PanelContentView(appState: appState, updateChecker: updateChecker, closePanel: closePanel, showSettings: showSettings)
             .preferredColorScheme(preferences.appearanceMode.colorScheme)
     }
 }

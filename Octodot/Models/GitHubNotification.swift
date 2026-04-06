@@ -45,14 +45,14 @@ struct GitHubNotification: Identifiable, Hashable {
             case .merged: .purple
             case .closed: .red
             case .draft: .gray
-            case .open: .green
+            case .open: Color("OcticonGreen")
             case .unknown, .closedNotPlanned: .secondary
             }
         case .issue:
             switch subjectState {
             case .closed: .purple
             case .closedNotPlanned: .gray
-            case .open: .green
+            case .open: Color("OcticonGreen")
             case .unknown, .merged, .draft: .secondary
             }
         case .release: .blue
@@ -160,13 +160,13 @@ struct GitHubNotification: Identifiable, Hashable {
         case securityAlert = "Security alert"
 
         var isDirectlyInvolved: Bool {
-            self == .mentioned || self == .assigned
+            self == .mentioned || self == .assigned || self == .author
         }
 
         var tintColor: Color? {
             switch self {
-            case .mentioned, .assigned:
-                return .green
+            case .mentioned, .assigned, .author:
+                return Color("OcticonGreen")
             default:
                 return nil
             }

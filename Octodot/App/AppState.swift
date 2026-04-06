@@ -1150,7 +1150,10 @@ final class AppState {
         do {
             let fetched = try await client.fetchNotifications(all: false, force: false)
             inboxStore.updateUnreadCountOnly(from: fetched)
-            unreadNotificationCount = inboxStore.unreadNotificationCount
+            // Apply thread action projections so committed done/unsubscribe
+            // actions are excluded from the count, matching what the panel shows.
+            let projected = threadActions.projectedNotifications(from: fetched)
+            unreadNotificationCount = projected.filter(\.isUnread).count
         } catch {
             // Ignore background-only refresh failures while the heavier inbox feed is hidden.
         }

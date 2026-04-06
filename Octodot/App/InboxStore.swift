@@ -140,6 +140,7 @@ final class InboxStore {
         reconcileReadSecurityAlerts(with: projectedSecurityAlerts)
         pruneRecentInboxReadNotifications(
             using: unreadNotifications,
+            serverRecentInboxNotifications: prunedRecentInboxNotifications,
             projectedNotifications: projectedNotifications
         )
         return LoadedState(
@@ -182,6 +183,7 @@ final class InboxStore {
         recentInboxReadNotifications[snapshot.threadId] = snapshot
         pruneRecentInboxReadNotifications(
             using: unreadNotifications,
+            serverRecentInboxNotifications: [],
             projectedNotifications: projectedNotifications
         )
     }
@@ -357,10 +359,24 @@ final class InboxStore {
 
     private func pruneRecentInboxReadNotifications(
         using unreadNotifications: [GitHubNotification],
+        serverRecentInboxNotifications: [GitHubNotification],
         projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
     ) {
+        var base = recentInboxReadNotifications
+
+        // When we have fresh server inbox data, remove locally-cached reads
+        // that the server no longer knows about (e.g., marked done on github.com)
+        if !serverRecentInboxNotifications.isEmpty || !unreadNotifications.isEmpty {
+            let serverThreadIDs = Set(
+                unreadNotifications.map(\.threadId) + serverRecentInboxNotifications.map(\.threadId)
+            )
+            base = base.filter { threadId, _ in
+                serverThreadIDs.contains(threadId)
+            }
+        }
+
         recentInboxReadNotifications = prunedRecentInboxReadNotifications(
-            recentInboxReadNotifications,
+            base,
             using: unreadNotifications,
             projectedNotifications: projectedNotifications
         )

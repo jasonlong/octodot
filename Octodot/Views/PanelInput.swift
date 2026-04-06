@@ -10,6 +10,8 @@ enum PanelInput {
         case controlD
         case controlU
         case commandZ
+        case commandDown
+        case commandUp
         case downArrow
         case upArrow
         case escape
@@ -129,7 +131,7 @@ enum PanelInput {
         switch input {
         case .character("j"), .character("k"), .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
-        case .character, .commandZ, .escape, .return, .other:
+        case .character, .commandZ, .commandDown, .commandUp, .escape, .return, .other:
             return false
         }
     }
@@ -148,7 +150,7 @@ enum PanelInput {
              .escape,
              .return:
             return true
-        case .character, .commandZ, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
+        case .character, .commandZ, .commandDown, .commandUp, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
@@ -212,9 +214,15 @@ enum PanelInput {
     }
 
     static func keyInput(for event: NSEvent) -> KeyInput {
-        if event.modifierFlags.contains(.command),
-           event.charactersIgnoringModifiers == "z" {
-            return .commandZ
+        if event.modifierFlags.contains(.command) {
+            switch event.keyCode {
+            case 125: return .commandDown
+            case 126: return .commandUp
+            default: break
+            }
+            if event.charactersIgnoringModifiers == "z" {
+                return .commandZ
+            }
         }
 
         if event.modifierFlags.contains(.control) {
@@ -292,6 +300,8 @@ enum PanelInput {
         case .controlD: return "ctrl-d"
         case .controlU: return "ctrl-u"
         case .commandZ: return "cmd-z"
+        case .commandDown: return "cmd-down"
+        case .commandUp: return "cmd-up"
         case .downArrow: return "down"
         case .upArrow: return "up"
         case .escape: return "escape"
@@ -362,8 +372,10 @@ enum PanelInput {
             return KeyRouting(command: .halfPageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .controlU:
             return KeyRouting(command: .halfPageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .character("G"):
+        case .character("G"), .commandDown:
             return KeyRouting(command: .jumpToBottom, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .commandUp:
+            return KeyRouting(command: .jumpToTop, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("g"):
             return KeyRouting(command: nil, pendingG: true, focusDirective: .unchanged, isHandled: true)
         case .character("d"):

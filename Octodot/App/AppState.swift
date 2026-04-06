@@ -703,7 +703,7 @@ final class AppState {
             return
         }
         guard target.source == .thread else {
-            errorMessage = "Security alerts can only be opened for now"
+            errorMessage = "Security alerts can only be opened or marked done"
             return
         }
         guard !threadActions.hasPendingAction(for: target.threadId) else { return }

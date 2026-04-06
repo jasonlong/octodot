@@ -13,12 +13,19 @@ struct NotificationRowView: View, Equatable {
                     .frame(width: 6, height: 6)
                     .frame(maxWidth: .infinity)
 
-                Image(notification.iconName)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 14, height: 14)
-                    .foregroundStyle(notification.iconColor)
-                    .opacity(notification.isUnread ? 1.0 : 0.5)
+                Group {
+                    if notification.needsSubjectMetadataResolution {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(notification.iconName)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 14, height: 14)
+                            .foregroundStyle(notification.iconColor)
+                            .opacity(notification.isUnread ? 1.0 : 0.5)
+                    }
+                }
             }
             .frame(width: 40)
 

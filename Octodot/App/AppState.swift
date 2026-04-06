@@ -533,12 +533,15 @@ final class AppState {
             preferredRepositoryOrder: repositoryOrderAnchor,
             repoOrderSource: sortedByRecency(serverModeFiltered)
         )
-        unreadNotificationCount = inboxStore.unreadNotificationCount
         panelUnreadCount = notifications.reduce(into: 0) { count, notification in
             if notification.isUnread {
                 count += 1
             }
         }
+        // Use projected thread-only count for menubar icon (excludes security alerts)
+        let projectedThreadUnread = threadActions.projectedNotifications(from: serverNotifications)
+            .filter(\.isUnread).count
+        unreadNotificationCount = projectedThreadUnread
 
         let filtered = filteredNotifications
         guard !filtered.isEmpty else {

@@ -159,9 +159,11 @@ final class InboxStore {
             projectedNotifications: projectedNotifications
         )
         let unreadThreadIDs = Set(unreadNotifications.map(\.threadId))
-        let serverRecentReads = recentInboxNotifications.filter { notification in
-            !notification.isUnread && !unreadThreadIDs.contains(notification.threadId)
-        }
+        let serverRecentReads = projectedNotifications(
+            recentInboxNotifications.filter { notification in
+                !notification.isUnread && !unreadThreadIDs.contains(notification.threadId)
+            }
+        )
         let serverRecentReadThreadIDs = Set(serverRecentReads.map(\.threadId))
         let additionalRecentReads = recentReads.filter {
             !unreadThreadIDs.contains($0.threadId) && !serverRecentReadThreadIDs.contains($0.threadId)

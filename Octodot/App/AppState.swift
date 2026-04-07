@@ -837,6 +837,7 @@ final class AppState {
                 try await client.markAsDone(notification: pending.notification)
             case .unsubscribe:
                 try await client.unsubscribe(notification: pending.notification)
+                try await client.markAsDone(notification: pending.notification)
             case .restoreSubscription:
                 try await client.restoreSubscription(
                     threadId: pending.notification.threadId,
@@ -1216,9 +1217,12 @@ final class AppState {
         securityAlerts: [GitHubNotification]
     ) {
         serverNotifications = unreadNotifications
+        // Filter out threads with committed done/unsubscribe actions so they
+        // don't linger in the recent inbox read list after the server confirms removal.
+        let projectedRecentInbox = threadActions.projectedNotifications(from: recentInboxNotifications)
         let loadedState = inboxStore.applyLoaded(
             unreadNotifications: unreadNotifications,
-            recentInboxNotifications: recentInboxNotifications,
+            recentInboxNotifications: projectedRecentInbox,
             projectedSecurityAlerts: securityAlerts,
             projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
         )

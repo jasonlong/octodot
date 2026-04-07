@@ -2760,4 +2760,75 @@ struct AppStateTests {
         #expect(state.filteredNotifications.isEmpty)
         #expect((await session.recordedRequests()).count == 3)
     }
+
+    // MARK: - Muted threads
+
+    @Test func mutedThreadsPersistAcrossSessions() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notifications = [
+            Self.makeNotification(id: 1, isUnread: true),
+            Self.makeNotification(id: 2, isUnread: true),
+        ]
+
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"ignored":true}"#.data(using: .utf8)!,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/1/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/1",
+                    statusCode: 204
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: defaults
+        )
+
+        state.inboxMode = .inbox
+        state.groupByRepo = false
+        state.selectNotification(id: "1")
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.contains(where: { $0.id == "1" }) == false)
+        #expect(state.filteredNotifications.contains(where: { $0.id == "2" }) == true)
+
+        // Create a new AppState with the same UserDefaults to simulate a new session
+        let state2 = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: defaults
+        )
+
+        state2.inboxMode = .inbox
+        state2.groupByRepo = false
+
+        #expect(state2.filteredNotifications.contains(where: { $0.id == "1" }) == false)
+        #expect(state2.filteredNotifications.contains(where: { $0.id == "2" }) == true)
+    }
+
+    @Test func mutedThreadsListCapsAtLimit() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+
+        for i in 0...200 {
+            inboxStore.muteThread("thread-\(i)")
+        }
+
+        #expect(inboxStore.isThreadMuted("thread-0") == false)
+        #expect(inboxStore.isThreadMuted("thread-200") == true)
+    }
 }

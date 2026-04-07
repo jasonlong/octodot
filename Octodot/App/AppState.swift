@@ -1230,7 +1230,9 @@ final class AppState {
         serverSecurityAlerts = securityAlerts
         unreadNotificationCount = loadedState.unreadCount
         threadActions.reconcileCommittedActions(with: unreadNotifications)
-        repositoryOrderAnchor = Self.repositoryOrder(from: serverNotificationsForCurrentMode())
+        if repositoryOrderAnchor.isEmpty {
+            repositoryOrderAnchor = Self.repositoryOrder(from: serverNotificationsForCurrentMode())
+        }
     }
 
     private func securityAlertRepositoryCandidates(

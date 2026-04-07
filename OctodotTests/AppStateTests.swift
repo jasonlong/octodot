@@ -2498,6 +2498,36 @@ struct AppStateTests {
         #expect(requests.dropFirst().contains { $0.httpMethod == "GET" })
     }
 
+    static func notificationPayloadForRepo(
+        id: String,
+        repo: String,
+        isUnread: Bool = true,
+        updatedAt: String = "2026-04-01T12:00:00Z"
+    ) -> String {
+        """
+          {
+            "id": "\(id)",
+            "unread": \(isUnread ? "true" : "false"),
+            "reason": "review_requested",
+            "updated_at": "\(updatedAt)",
+            "subject": {
+              "title": "Notification \(id)",
+              "url": null,
+              "type": "PullRequest"
+            },
+            "repository": {
+              "full_name": "\(repo)",
+              "html_url": "https://github.com/\(repo)"
+            }
+          }
+        """
+    }
+
+    static func multiRepoPayload(_ items: [(id: String, repo: String, isUnread: Bool, updatedAt: String)]) -> Data {
+        let entries = items.map { notificationPayloadForRepo(id: $0.id, repo: $0.repo, isUnread: $0.isUnread, updatedAt: $0.updatedAt) }
+        return "[\n\(entries.joined(separator: ",\n"))\n]".data(using: .utf8)!
+    }
+
     @Test func unsubscribeSuccessIsNotUndoableAfterDispatch() async {
         let (state, session) = Self.makeAuthedState(results: [
             .success((
@@ -2550,5 +2580,184 @@ struct AppStateTests {
         }
         #expect(requests.last?.httpMethod == "DELETE")
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
+    }
+
+    // MARK: - Regression: repo order stability
+
+    @Test func repositoryOrderStaysStableAcrossRefreshes() async {
+        // Start with acme/beta having the newest notification (id "1", newer updatedAt)
+        // and acme/alpha having an older notification (id "2", older updatedAt).
+        let initialPayload = Self.multiRepoPayload([
+            (id: "1", repo: "acme/beta", isUnread: true, updatedAt: "2026-04-01T14:00:00Z"),
+            (id: "2", repo: "acme/alpha", isUnread: true, updatedAt: "2026-04-01T12:00:00Z"),
+        ])
+        // On refresh, acme/alpha now has a NEWER updatedAt than acme/beta.
+        let refreshedPayload = Self.multiRepoPayload([
+            (id: "1", repo: "acme/beta", isUnread: true, updatedAt: "2026-04-01T14:00:00Z"),
+            (id: "2", repo: "acme/alpha", isUnread: true, updatedAt: "2026-04-01T16:00:00Z"),
+        ])
+
+        let session = StubNetworkSession(results: [
+            .success((
+                initialPayload,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 14:00:00 GMT"]
+                )
+            )),
+            .success((
+                refreshedPayload,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 16:00:00 GMT"]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = true
+        state.inboxMode = .unread
+
+        await state.loadNotifications(force: true)
+        let initialRepoOrder = state.filteredNotifications.map(\.repository)
+        #expect(initialRepoOrder == ["acme/beta", "acme/alpha"])
+
+        await state.loadNotifications(force: true)
+        let refreshedRepoOrder = state.filteredNotifications.map(\.repository)
+        #expect(refreshedRepoOrder == initialRepoOrder)
+    }
+
+    // MARK: - Regression: unread count excludes pending done
+
+    @Test func backgroundUnreadCountExcludesPendingDoneActions() async {
+        // Use multiRepoPayload to create 2 distinct unread notifications
+        let twoNotifications = Self.multiRepoPayload([
+            (id: "10", repo: "acme/alpha", isUnread: true, updatedAt: "2026-04-01T14:00:00Z"),
+            (id: "20", repo: "acme/beta", isUnread: true, updatedAt: "2026-04-01T12:00:00Z"),
+        ])
+
+        let session = StubNetworkSession(results: [
+            // Initial load: 2 unread notifications
+            .success((
+                twoNotifications,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 14:00:00 GMT"]
+                )
+            )),
+            // Response for the done() DELETE call
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/10",
+                    statusCode: 204
+                )
+            )),
+            // Refresh: server STILL returns the done notification (API lag)
+            .success((
+                twoNotifications,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 14:01:00 GMT"]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .unread
+
+        // Load initial notifications from server
+        await state.loadNotifications(force: true)
+        #expect(state.unreadNotificationCount == 2)
+
+        // Mark notification 10 as done
+        state.selectNotification(id: "10")
+        state.done()
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 2
+        }
+
+        // After done + server ack, count should be down by 1
+        #expect(state.unreadNotificationCount == 1)
+
+        // Refresh where the server STILL returns the done notification
+        await state.loadNotifications(force: true)
+
+        // The done thread should still be excluded from the unread count
+        #expect(state.unreadNotificationCount == 1)
+        #expect(state.filteredNotifications.contains(where: { $0.id == "10" }) == false)
+        #expect(state.filteredNotifications.contains(where: { $0.id == "20" }) == true)
+    }
+
+    // MARK: - Regression: done thread excluded from inbox recent reads
+
+    @Test func inboxMergedNotificationsExcludesDoneThreadsFromRecentReads() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                // Response for the done() DELETE call
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 204
+                    )
+                )),
+                // Refresh: unread feed returns empty (thread is gone from unread)
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200,
+                        headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
+                    )
+                )),
+                // Refresh: all=true feed still returns the thread as read
+                .success((
+                    Self.singleNotificationPayload(id: "0", isUnread: false),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                )),
+            ],
+            count: 1
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+
+        // Mark the only notification as done
+        state.selectedIndex = 0
+        state.done()
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        #expect(state.filteredNotifications.isEmpty)
+
+        // Refresh: unread feed empty, all=true feed returns thread 0 as read
+        await state.loadNotifications(force: true)
+
+        // The done thread should NOT reappear as a recent read
+        #expect(state.filteredNotifications.isEmpty)
+        #expect((await session.recordedRequests()).count == 3)
     }
 }

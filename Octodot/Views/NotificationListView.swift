@@ -79,7 +79,10 @@ struct NotificationListView: View {
                 isSelected: isSelected
             )
             .id(notification.id)
-            .onTapGesture { onSelect(notification.id) }
+            .onTapGesture {
+                onSelect(notification.id)
+                NSWorkspace.shared.open(notification.url)
+            }
             .onAppear { onNotificationVisible(notification.id) }
         }
     }

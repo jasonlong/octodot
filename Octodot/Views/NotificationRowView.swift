@@ -15,8 +15,9 @@ struct NotificationRowView: View, Equatable {
 
                 Group {
                     if notification.needsSubjectMetadataResolution {
-                        ProgressView()
-                            .controlSize(.mini)
+                        Circle()
+                            .fill(Color.primary.opacity(0.06))
+                            .frame(width: 14, height: 14)
                     } else {
                         Image(notification.iconName)
                             .resizable()

@@ -1889,8 +1889,8 @@ struct AppStateTests {
         state.selectNotification(id: "first")
         state.unsubscribeFromThread()
 
-        #expect(state.filteredNotifications.map(\.id) == ["second"])
-        #expect(state.selectedNotification?.id == "second")
+        // Muting a thread hides all activity snapshots sharing that thread ID
+        #expect(state.filteredNotifications.isEmpty)
 
         await Self.waitUntil {
             await session.recordedRequests().count == 3

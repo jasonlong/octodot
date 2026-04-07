@@ -5,6 +5,8 @@ final class InboxStore {
     private static let recentInboxReadsStorageKey = "AppState.recentInboxReads.v1"
     private static let dismissedSecurityAlertsStorageKey = "AppState.dismissedSecurityAlerts.v1"
     private static let readSecurityAlertsStorageKey = "AppState.readSecurityAlerts.v1"
+    private static let mutedThreadsStorageKey = "AppState.mutedThreads.v1"
+    private static let mutedThreadsLimit = 200
     private static let recentInboxReadRetentionInterval: TimeInterval = 14 * 24 * 60 * 60
     private static let recentInboxReadLimit = 100
     private static let inboxRecentReadFallbackWindow: TimeInterval = 12 * 60 * 60
@@ -93,6 +95,7 @@ final class InboxStore {
     private var recentInboxReadNotifications: [String: GitHubNotification]
     private var dismissedSecurityAlerts: [String: Date]
     private var readSecurityAlerts: [String: Date]
+    private var mutedThreads: [String: Date] // threadID → mutedAt
     private(set) var lastFetchedUnreadNotifications: [GitHubNotification]
     private(set) var unreadNotificationCount: Int
 
@@ -101,6 +104,7 @@ final class InboxStore {
         self.recentInboxReadNotifications = Self.loadRecentInboxReadNotifications(from: userDefaults)
         self.dismissedSecurityAlerts = Self.loadDismissedSecurityAlerts(from: userDefaults)
         self.readSecurityAlerts = Self.loadReadSecurityAlerts(from: userDefaults)
+        self.mutedThreads = Self.loadMutedThreads(from: userDefaults)
         self.lastFetchedUnreadNotifications = initialNotifications.filter(\.isUnread)
         self.unreadNotificationCount = initialNotifications.reduce(into: 0) { count, notification in
             if notification.isUnread {
@@ -168,7 +172,8 @@ final class InboxStore {
         let additionalRecentReads = recentReads.filter {
             !unreadThreadIDs.contains($0.threadId) && !serverRecentReadThreadIDs.contains($0.threadId)
         }
-        return unreadNotifications + serverRecentReads + additionalRecentReads
+        let merged = unreadNotifications + serverRecentReads + additionalRecentReads
+        return filterMutedThreads(merged)
     }
 
     func recordRecentReadNotification(
@@ -547,5 +552,41 @@ final class InboxStore {
         }
         guard let data = try? encoder.encode(persisted) else { return }
         userDefaults.set(data, forKey: Self.readSecurityAlertsStorageKey)
+    }
+
+    // MARK: - Muted threads
+
+    func muteThread(_ threadId: String) {
+        mutedThreads[threadId] = Date()
+        // Cap size by removing oldest entries
+        if mutedThreads.count > Self.mutedThreadsLimit {
+            let sorted = mutedThreads.sorted { $0.value < $1.value }
+            let excess = mutedThreads.count - Self.mutedThreadsLimit
+            for (key, _) in sorted.prefix(excess) {
+                mutedThreads.removeValue(forKey: key)
+            }
+        }
+        persistMutedThreads()
+    }
+
+    func isThreadMuted(_ threadId: String) -> Bool {
+        mutedThreads[threadId] != nil
+    }
+
+    func filterMutedThreads(_ notifications: [GitHubNotification]) -> [GitHubNotification] {
+        notifications.filter { !isThreadMuted($0.threadId) }
+    }
+
+    private static func loadMutedThreads(from userDefaults: UserDefaults) -> [String: Date] {
+        guard let data = userDefaults.data(forKey: mutedThreadsStorageKey),
+              let persisted = try? JSONDecoder().decode([String: Date].self, from: data) else {
+            return [:]
+        }
+        return persisted
+    }
+
+    private func persistMutedThreads() {
+        guard let data = try? JSONEncoder().encode(mutedThreads) else { return }
+        userDefaults.set(data, forKey: Self.mutedThreadsStorageKey)
     }
 }

@@ -424,6 +424,9 @@ final class AppState {
     }
 
     func unsubscribeFromThread() {
+        if let notification = selectedNotification {
+            inboxStore.muteThread(notification.threadId)
+        }
         startThreadAction(.unsubscribe)
     }
 

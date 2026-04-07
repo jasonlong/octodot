@@ -52,16 +52,20 @@ actor GitHubAPIClient {
         let session: any NetworkSession
     }
 
+    private let useGraphQLForSubjectMetadata: Bool
+
     init(
         token: String,
         session: any NetworkSession = URLSession.shared,
         maxConcurrentSubjectRequests: Int = 6,
-        maxConcurrentSecurityRequests: Int = 4
+        maxConcurrentSecurityRequests: Int = 4,
+        useGraphQLForSubjectMetadata: Bool = true
     ) {
         self.token = token
         self.session = session
         self.maxConcurrentSubjectRequests = max(1, maxConcurrentSubjectRequests)
         self.maxConcurrentSecurityRequests = max(1, maxConcurrentSecurityRequests)
+        self.useGraphQLForSubjectMetadata = useGraphQLForSubjectMetadata
     }
 
     func updateToken(_ token: String) {
@@ -286,20 +290,38 @@ actor GitHubAPIClient {
         let candidateNotifications = Array(pendingSubjectNotifications)
         guard !candidateNotifications.isEmpty else { return [:] }
 
-        let subjectRequestContext = SubjectRequestContext(token: token, session: session)
-        let subjectMetadataResult = await Self.fetchSubjectMetadata(
-            for: candidateNotifications,
-            maxConcurrent: maxConcurrentSubjectRequests,
-            context: subjectRequestContext
-        )
-        let subjectMetadataByID = subjectMetadataResult.metadataByID
+        let context = SubjectRequestContext(token: token, session: session)
+
+        var result: SubjectMetadataBatchResult
+        if useGraphQLForSubjectMetadata {
+            result = await Self.fetchSubjectMetadataViaGraphQL(
+                for: candidateNotifications,
+                context: context
+            )
+            if result.metadataByID.isEmpty && !candidateNotifications.isEmpty {
+                DebugTrace.log("graphql subject metadata failed, falling back to REST")
+                result = await Self.fetchSubjectMetadata(
+                    for: candidateNotifications,
+                    maxConcurrent: maxConcurrentSubjectRequests,
+                    context: context
+                )
+            }
+        } else {
+            result = await Self.fetchSubjectMetadata(
+                for: candidateNotifications,
+                maxConcurrent: maxConcurrentSubjectRequests,
+                context: context
+            )
+        }
+
+        if result.failureCount > 0 {
+            nonFatalWarningMessage = Self.subjectMetadataWarningMessage
+            DebugTrace.log("subject metadata degraded failures=\(result.failureCount)")
+        }
+
+        let subjectMetadataByID = result.metadataByID
 
         guard !subjectMetadataByID.isEmpty else { return [:] }
-
-        if subjectMetadataResult.failureCount > 0 {
-            nonFatalWarningMessage = Self.subjectMetadataWarningMessage
-            DebugTrace.log("subject metadata degraded failures=\(subjectMetadataResult.failureCount)")
-        }
 
         for scope in FeedScope.allCases {
             updateFeedCache(scope) { cache in
@@ -469,6 +491,204 @@ actor GitHubAPIClient {
 
     private static func shouldResolveSubjectMetadata(_ notification: GitHubNotification) -> Bool {
         notification.needsSubjectMetadataResolution
+    }
+
+    // MARK: - GraphQL batch subject metadata
+
+    private struct SubjectRef {
+        let notificationID: String
+        let owner: String
+        let repo: String
+        let type: GitHubNotification.SubjectType
+        let number: Int
+    }
+
+    private static func parseSubjectRef(
+        from notification: GitHubNotification
+    ) -> SubjectRef? {
+        guard let urlString = notification.subjectURL,
+              let url = URL(string: urlString) else { return nil }
+        let parts = url.pathComponents
+        // ["", "repos", owner, repo, "pulls"|"issues", number]
+        guard parts.count >= 6,
+              let number = Int(parts[5]) else { return nil }
+        let owner = parts[2]
+        let repo = parts[3]
+        return SubjectRef(
+            notificationID: notification.id,
+            owner: owner,
+            repo: repo,
+            type: notification.type,
+            number: number
+        )
+    }
+
+    private static func escapeGraphQL(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func buildGraphQLQuery(for refs: [SubjectRef]) -> String {
+        var fields: [String] = []
+        for (i, ref) in refs.enumerated() {
+            let owner = escapeGraphQL(ref.owner)
+            let repo = escapeGraphQL(ref.repo)
+            switch ref.type {
+            case .pullRequest:
+                fields.append("""
+                  n\(i): repository(owner: "\(owner)", name: "\(repo)") {
+                    pullRequest(number: \(ref.number)) {
+                      state
+                      isDraft
+                      mergedAt
+                      commits(last: 1) {
+                        nodes {
+                          commit {
+                            statusCheckRollup {
+                              state
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                """)
+            case .issue:
+                fields.append("""
+                  n\(i): repository(owner: "\(owner)", name: "\(repo)") {
+                    issue(number: \(ref.number)) {
+                      state
+                      stateReason
+                    }
+                  }
+                """)
+            default:
+                continue
+            }
+        }
+        return "{\n\(fields.joined(separator: "\n"))\n}"
+    }
+
+    private static func fetchSubjectMetadataViaGraphQL(
+        for notifications: [GitHubNotification],
+        context: SubjectRequestContext
+    ) async -> SubjectMetadataBatchResult {
+        let refs = notifications.compactMap { parseSubjectRef(from: $0) }
+        guard !refs.isEmpty else { return SubjectMetadataBatchResult() }
+
+        let query = buildGraphQLQuery(for: refs)
+        let graphQLURL = URL(string: "https://api.github.com/graphql")!
+        var req = URLRequest(url: graphQLURL)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(context.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = ["query": query]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        DebugTrace.log("graphql subject metadata start count=\(refs.count)")
+
+        do {
+            let (data, response) = try await context.session.data(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200...299).contains(status) else {
+                DebugTrace.log("graphql subject metadata http error status=\(status)")
+                return SubjectMetadataBatchResult()
+            }
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let dataObj = json["data"] as? [String: Any] else {
+                DebugTrace.log("graphql subject metadata parse error")
+                return SubjectMetadataBatchResult()
+            }
+
+            var result = SubjectMetadataBatchResult()
+            for (i, ref) in refs.enumerated() {
+                guard let repoObj = dataObj["n\(i)"] as? [String: Any] else {
+                    result.failureCount += 1
+                    continue
+                }
+
+                let metadata: GitHubNotification.SubjectMetadata
+                switch ref.type {
+                case .pullRequest:
+                    guard let pr = repoObj["pullRequest"] as? [String: Any] else {
+                        result.failureCount += 1
+                        continue
+                    }
+                    metadata = parsePullRequestMetadata(pr)
+                case .issue:
+                    guard let issue = repoObj["issue"] as? [String: Any] else {
+                        result.failureCount += 1
+                        continue
+                    }
+                    metadata = parseIssueMetadata(issue)
+                default:
+                    continue
+                }
+                result.metadataByID[ref.notificationID] = metadata
+            }
+
+            DebugTrace.log("graphql subject metadata complete resolved=\(result.metadataByID.count) failures=\(result.failureCount)")
+            return result
+        } catch {
+            DebugTrace.log("graphql subject metadata request failed error=\(error.localizedDescription)")
+            return SubjectMetadataBatchResult()
+        }
+    }
+
+    private static func parsePullRequestMetadata(_ pr: [String: Any]) -> GitHubNotification.SubjectMetadata {
+        let stateString = pr["state"] as? String ?? ""
+        let isDraft = pr["draft"] as? Bool ?? false
+        let mergedAt = pr["mergedAt"] as? String
+
+        let state: GitHubNotification.SubjectState
+        if stateString == "MERGED" || mergedAt != nil {
+            state = .merged
+        } else if isDraft {
+            state = .draft
+        } else if stateString == "OPEN" {
+            state = .open
+        } else if stateString == "CLOSED" {
+            state = .closed
+        } else {
+            state = .unknown
+        }
+
+        var ciStatus: GitHubNotification.CIStatus?
+        if state == .open,
+           let commits = pr["commits"] as? [String: Any],
+           let nodes = commits["nodes"] as? [[String: Any]],
+           let firstCommit = nodes.first,
+           let commit = firstCommit["commit"] as? [String: Any],
+           let rollup = commit["statusCheckRollup"] as? [String: Any],
+           let rollupState = rollup["state"] as? String {
+            switch rollupState {
+            case "SUCCESS": ciStatus = .success
+            case "FAILURE", "ERROR": ciStatus = .failure
+            case "PENDING", "EXPECTED": ciStatus = .pending
+            default: break
+            }
+        }
+
+        return GitHubNotification.SubjectMetadata(state: state, ciStatus: ciStatus)
+    }
+
+    private static func parseIssueMetadata(_ issue: [String: Any]) -> GitHubNotification.SubjectMetadata {
+        let stateString = issue["state"] as? String ?? ""
+        let stateReason = issue["stateReason"] as? String
+
+        let state: GitHubNotification.SubjectState
+        switch stateString {
+        case "OPEN":
+            state = .open
+        case "CLOSED":
+            state = stateReason == "NOT_PLANNED" ? .closedNotPlanned : .closed
+        default:
+            state = .unknown
+        }
+
+        return GitHubNotification.SubjectMetadata(state: state, ciStatus: nil)
     }
 
     private func fetchDependabotAlertsForRepository(_ repositoryFullName: String) async throws -> [GitHubNotification] {

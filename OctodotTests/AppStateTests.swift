@@ -69,7 +69,7 @@ struct AppStateTests {
         urlOpener: @escaping AppState.URLOpener = { _ in true }
     ) -> (AppState, StubNetworkSession) {
         let session = StubNetworkSession(results: results)
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = makeState(
             count,
             apiClient: client,
@@ -417,7 +417,7 @@ struct AppStateTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -517,7 +517,7 @@ struct AppStateTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -584,7 +584,7 @@ struct AppStateTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -658,7 +658,7 @@ struct AppStateTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -716,7 +716,7 @@ struct AppStateTests {
             ),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -1083,7 +1083,7 @@ struct AppStateTests {
                 delayNanoseconds: 50_000_000
             ),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = Self.makeState(0, apiClient: client)
 
         state.inboxMode = .unread
@@ -1134,7 +1134,7 @@ struct AppStateTests {
                 delayNanoseconds: 50_000_000
             ),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -1177,7 +1177,7 @@ struct AppStateTests {
                 delayNanoseconds: 10_000_000
             ),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = Self.makeState(0, apiClient: client)
 
         state.inboxMode = .unread
@@ -1242,7 +1242,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [Self.makeNotification(id: 0, isUnread: false)],
             authStatus: .signedIn(username: "octodot"),
@@ -1291,7 +1291,7 @@ struct AppStateTests {
                 delayNanoseconds: 0
             ),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = Self.makeState(0, apiClient: client)
         state.inboxMode = .unread
         state.groupByRepo = false
@@ -1399,7 +1399,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1479,7 +1479,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1553,7 +1553,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1631,7 +1631,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1710,7 +1710,7 @@ struct AppStateTests {
             ),
         ]
         let session = StubNetworkSession(results: [])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1805,7 +1805,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -1876,7 +1876,7 @@ struct AppStateTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: notifications,
             authStatus: .signedIn(username: "octodot"),
@@ -2615,7 +2615,7 @@ struct AppStateTests {
                 )
             )),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),
@@ -2671,7 +2671,7 @@ struct AppStateTests {
                 )
             )),
         ])
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: [],
             authStatus: .signedIn(username: "octodot"),

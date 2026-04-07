@@ -31,7 +31,7 @@ struct AppStateBootstrapTests {
                 delayNanoseconds: 0
             )
         ])
-        let client = GitHubAPIClient(token: "ghp_saved", session: session)
+        let client = GitHubAPIClient(token: "ghp_saved", session: session, useGraphQLForSubjectMetadata: false)
         let initialNotifications = [
             AppStateTests.makeNotification(id: 1),
             AppStateTests.makeNotification(id: 0)
@@ -81,7 +81,7 @@ struct AppStateBootstrapTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_new", session: session)
+        let client = GitHubAPIClient(token: "ghp_new", session: session, useGraphQLForSubjectMetadata: false)
         var savedToken: String?
 
         let state = AppState(
@@ -115,7 +115,7 @@ struct AppStateBootstrapTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_bad", session: session)
+        let client = GitHubAPIClient(token: "ghp_bad", session: session, useGraphQLForSubjectMetadata: false)
         var savedToken: String?
 
         let state = AppState(
@@ -146,7 +146,7 @@ struct AppStateBootstrapTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_saved", session: session)
+        let client = GitHubAPIClient(token: "ghp_saved", session: session, useGraphQLForSubjectMetadata: false)
         var deletedTokenCount = 0
 
         let state = AppState(
@@ -180,7 +180,7 @@ struct AppStateBootstrapTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_saved", session: session)
+        let client = GitHubAPIClient(token: "ghp_saved", session: session, useGraphQLForSubjectMetadata: false)
         var deletedTokenCount = 0
 
         let state = AppState(
@@ -220,7 +220,7 @@ struct AppStateBootstrapTests {
                 )
             ))
         ])
-        let client = GitHubAPIClient(token: "ghp_saved", session: session)
+        let client = GitHubAPIClient(token: "ghp_saved", session: session, useGraphQLForSubjectMetadata: false)
         let state = AppState(
             notifications: AppStateTests.makeNotifications(5),
             userDefaults: AppStateTests.makeIsolatedUserDefaults(),

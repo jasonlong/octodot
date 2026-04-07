@@ -151,7 +151,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let username = try await client.validateToken()
         let requests = await session.recordedRequests()
 
@@ -185,7 +185,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(force: true)
         let cached = try await client.fetchNotifications(force: false)
         let requests = await session.recordedRequests()
@@ -238,7 +238,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(force: true)
         let refreshed = try await client.fetchNotifications(force: false)
         let requests = await session.recordedRequests()
@@ -278,7 +278,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         _ = try await client.fetchNotifications(force: true)
         let refreshed = try await client.fetchNotifications(force: true)
         let requests = await session.recordedRequests()
@@ -318,7 +318,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let requests = await session.recordedRequests()
 
@@ -359,7 +359,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let requests = await session.recordedRequests()
 
@@ -409,7 +409,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: initial)
         let refreshed = try await client.fetchNotifications(force: true)
@@ -467,7 +467,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let unreadInitial = try await client.fetchNotifications(all: false, force: true)
         let allInitial = try await client.fetchNotifications(all: true, force: true)
         let unreadCached = try await client.fetchNotifications(all: false, force: false)
@@ -498,7 +498,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let since = ISO8601DateFormatter().date(from: "2026-03-20T12:00:00Z")!
         let notifications = try await client.fetchRecentInboxNotifications(since: since, force: true)
         let requests = await session.recordedRequests()
@@ -537,7 +537,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let since = ISO8601DateFormatter().date(from: "2026-03-20T12:00:00Z")!
         let notifications = try await client.fetchRecentInboxNotifications(
             since: since,
@@ -591,7 +591,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let alerts = try await client.fetchDependabotAlerts(
             repositoryNames: ["acme/api", "octodot/personal"],
             currentUsername: "octodot",
@@ -643,7 +643,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let alerts = try await client.fetchDependabotAlerts(
             repositoryNames: ["acme/api", "octodot/personal"],
             currentUsername: "octodot",
@@ -686,7 +686,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let alerts = try await client.fetchDependabotAlerts(
             repositoryNames: ["acme/api"],
             currentUsername: "octodot",
@@ -760,7 +760,7 @@ struct GitHubAPIClientTests {
         ]).data(using: .utf8)!
 
         let session = SubjectConcurrencyTrackingSession(notificationsPayload: payload)
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
 
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
@@ -813,7 +813,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
 
@@ -851,7 +851,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
 
@@ -881,7 +881,7 @@ struct GitHubAPIClientTests {
             .failure(GitHubAPIClient.APIError.forbidden)
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
         let warning = await client.takeNonFatalWarningMessage()
@@ -931,7 +931,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
 
@@ -972,7 +972,7 @@ struct GitHubAPIClientTests {
             .failure(GitHubAPIClient.APIError.forbidden),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
         let warning = await client.takeNonFatalWarningMessage()
@@ -1030,7 +1030,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(force: true)
         let resolvedMetadata = await client.resolveSubjectMetadata(for: initial)
         let refreshed = try await client.fetchNotifications(force: true)
@@ -1065,7 +1065,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let notifications = try await client.fetchNotifications(force: true)
         let notification = try #require(notifications.first)
 
@@ -1111,7 +1111,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(all: false, force: true)
         try await client.markAsRead(threadId: "1")
         let refreshed = try await client.fetchNotifications(all: false, force: false)
@@ -1160,7 +1160,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         try await client.unsubscribe(notification: notification)
         let requests = await session.recordedRequests()
         let request = try #require(requests.first)
@@ -1227,7 +1227,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(all: false, force: true)
         try await client.markAsDone(notification: notification)
         let refreshed = try await client.fetchNotifications(all: false, force: false)
@@ -1299,7 +1299,7 @@ struct GitHubAPIClientTests {
             )),
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(all: false, force: true)
         try await client.unsubscribe(notification: notification)
         let refreshed = try await client.fetchNotifications(all: false, force: false)
@@ -1338,7 +1338,7 @@ struct GitHubAPIClientTests {
             ))
         ])
 
-        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         try await client.restoreSubscription(threadId: "thread-1", notification: notification)
         let requests = await session.recordedRequests()
         let request = try #require(requests.first)

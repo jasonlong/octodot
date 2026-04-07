@@ -14,6 +14,7 @@ struct GitHubNotification: Identifiable, Hashable {
     let subjectURL: String?
     var subjectState: SubjectState
     var ciStatus: CIStatus?
+    var graphQLNodeID: String?
     var source: Source = .thread
 
     var iconName: String {
@@ -139,8 +140,9 @@ struct GitHubNotification: Identifiable, Hashable {
     }
 
     struct SubjectMetadata: Hashable {
-        let state: SubjectState
-        let ciStatus: CIStatus?
+        var state: SubjectState
+        var ciStatus: CIStatus?
+        var nodeID: String? = nil
     }
 
     enum Source: String, Hashable, Codable {

@@ -329,6 +329,9 @@ actor GitHubAPIClient {
                     if let metadata = subjectMetadataByID[cache.notifications[index].id] {
                         cache.notifications[index].subjectState = metadata.state
                         cache.notifications[index].ciStatus = metadata.ciStatus
+                        if let nodeID = metadata.nodeID {
+                            cache.notifications[index].graphQLNodeID = nodeID
+                        }
                     }
                 }
             }
@@ -538,6 +541,7 @@ actor GitHubAPIClient {
                 fields.append("""
                   n\(i): repository(owner: "\(owner)", name: "\(repo)") {
                     pullRequest(number: \(ref.number)) {
+                      id
                       state
                       isDraft
                       mergedAt
@@ -557,6 +561,7 @@ actor GitHubAPIClient {
                 fields.append("""
                   n\(i): repository(owner: "\(owner)", name: "\(repo)") {
                     issue(number: \(ref.number)) {
+                      id
                       state
                       stateReason
                     }
@@ -671,7 +676,7 @@ actor GitHubAPIClient {
             }
         }
 
-        return GitHubNotification.SubjectMetadata(state: state, ciStatus: ciStatus)
+        return GitHubNotification.SubjectMetadata(state: state, ciStatus: ciStatus, nodeID: pr["id"] as? String)
     }
 
     private static func parseIssueMetadata(_ issue: [String: Any]) -> GitHubNotification.SubjectMetadata {
@@ -688,7 +693,7 @@ actor GitHubAPIClient {
             state = .unknown
         }
 
-        return GitHubNotification.SubjectMetadata(state: state, ciStatus: nil)
+        return GitHubNotification.SubjectMetadata(state: state, ciStatus: nil, nodeID: issue["id"] as? String)
     }
 
     private func fetchDependabotAlertsForRepository(_ repositoryFullName: String) async throws -> [GitHubNotification] {
@@ -779,18 +784,30 @@ actor GitHubAPIClient {
 
     func unsubscribe(notification: GitHubNotification) async throws {
         let traceID = UUID().uuidString
-        let subscriptionURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)/subscription")
-        var subscriptionRequest = makeRequest(url: subscriptionURL)
-        subscriptionRequest.httpMethod = "PUT"
-        subscriptionRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        subscriptionRequest.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: true))
-        let (subscriptionData, subscriptionResponse) = try await session.data(for: subscriptionRequest)
-        let subscriptionStatus = (subscriptionResponse as? HTTPURLResponse)?.statusCode ?? 0
-        logActionResponse(traceID: traceID, action: "unsubscribe", step: "ignore-thread", threadId: notification.threadId, request: subscriptionRequest, response: subscriptionResponse, data: subscriptionData)
-        guard (200...299).contains(subscriptionStatus) || subscriptionStatus == 304 else {
-            throw APIError.httpError(subscriptionStatus)
+
+        // Use GraphQL updateSubscription(state: IGNORED) for a true mute.
+        // The REST PUT ignored=true endpoint is documented but silently broken.
+        if let nodeID = notification.graphQLNodeID {
+            // Fast path: node ID was cached during subject metadata resolution
+            do {
+                try await ignoreViaGraphQLNodeID(nodeID, traceID: traceID)
+            } catch {
+                DebugTrace.log("graphql ignore (cached) failed, falling back to REST thread=\(notification.threadId) error=\(error.localizedDescription)")
+                try await ignoreViaREST(threadId: notification.threadId, traceID: traceID)
+            }
+        } else if let ref = Self.parseSubjectRef(from: notification) {
+            // Slow path: fetch node ID then mute
+            do {
+                try await ignoreViaGraphQL(ref: ref, traceID: traceID)
+            } catch {
+                DebugTrace.log("graphql ignore failed, falling back to REST thread=\(notification.threadId) error=\(error.localizedDescription)")
+                try await ignoreViaREST(threadId: notification.threadId, traceID: traceID)
+            }
+        } else {
+            try await ignoreViaREST(threadId: notification.threadId, traceID: traceID)
         }
 
+        // Mark as done to remove from inbox
         let doneURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
         var doneRequest = makeRequest(url: doneURL)
         doneRequest.httpMethod = "DELETE"
@@ -802,6 +819,85 @@ actor GitHubAPIClient {
         }
 
         invalidateFeedCaches(FeedScope.allCases)
+    }
+
+    private func ignoreViaGraphQL(ref: SubjectRef, traceID: String) async throws {
+        let typeField = ref.type == .pullRequest ? "pullRequest" : "issue"
+        let owner = Self.escapeGraphQL(ref.owner)
+        let repo = Self.escapeGraphQL(ref.repo)
+
+        // Fetch the node ID
+        let nodeQuery = """
+        {
+          repository(owner: "\(owner)", name: "\(repo)") {
+            \(typeField)(number: \(ref.number)) {
+              id
+            }
+          }
+        }
+        """
+
+        let nodeData = try await graphQLRequest(query: nodeQuery)
+        guard let repoObj = nodeData["repository"] as? [String: Any],
+              let subjectObj = repoObj[typeField] as? [String: Any],
+              let nodeId = subjectObj["id"] as? String else {
+            throw APIError.graphQLNodeIDNotFound
+        }
+
+        try await ignoreViaGraphQLNodeID(nodeId, traceID: traceID)
+    }
+
+    private func ignoreViaGraphQLNodeID(_ nodeID: String, traceID: String) async throws {
+        let mutationQuery = """
+        mutation {
+          updateSubscription(input: {subscribableId: "\(Self.escapeGraphQL(nodeID))", state: IGNORED}) {
+            subscribable {
+              ... on PullRequest { viewerSubscription }
+              ... on Issue { viewerSubscription }
+            }
+          }
+        }
+        """
+
+        let mutationData = try await graphQLRequest(query: mutationQuery)
+        DebugTrace.log("graphql ignore success traceID=\(traceID) nodeId=\(nodeID) response=\(mutationData)")
+    }
+
+    private func ignoreViaREST(threadId: String, traceID: String) async throws {
+        let subscriptionURL = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
+        var subscriptionRequest = makeRequest(url: subscriptionURL)
+        subscriptionRequest.httpMethod = "PUT"
+        subscriptionRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        subscriptionRequest.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: true))
+        let (subscriptionData, subscriptionResponse) = try await session.data(for: subscriptionRequest)
+        let subscriptionStatus = (subscriptionResponse as? HTTPURLResponse)?.statusCode ?? 0
+        logActionResponse(traceID: traceID, action: "unsubscribe", step: "ignore-thread-rest", threadId: threadId, request: subscriptionRequest, response: subscriptionResponse, data: subscriptionData)
+        guard (200...299).contains(subscriptionStatus) || subscriptionStatus == 304 else {
+            throw APIError.httpError(subscriptionStatus)
+        }
+    }
+
+    private func graphQLRequest(query: String) async throws -> [String: Any] {
+        let graphQLURL = URL(string: "https://api.github.com/graphql")!
+        var req = URLRequest(url: graphQLURL)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["query": query]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) else {
+            throw APIError.httpError(status)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataObj = json["data"] as? [String: Any] else {
+            throw APIError.graphQLParseError
+        }
+
+        return dataObj
     }
 
     func restoreSubscription(threadId: String, notification _: GitHubNotification) async throws {
@@ -1050,6 +1146,8 @@ actor GitHubAPIClient {
         case rateLimited
         case httpError(Int)
         case markReadFailed(Int)
+        case graphQLNodeIDNotFound
+        case graphQLParseError
 
         var errorDescription: String? {
             switch self {
@@ -1058,6 +1156,8 @@ actor GitHubAPIClient {
             case .rateLimited: "GitHub API rate limit exceeded"
             case .httpError(let code): "GitHub API error (\(code))"
             case .markReadFailed(let code): "Failed to mark as read (\(code))"
+            case .graphQLNodeIDNotFound: "Could not resolve subject for subscription update"
+            case .graphQLParseError: "GraphQL response could not be parsed"
             }
         }
     }

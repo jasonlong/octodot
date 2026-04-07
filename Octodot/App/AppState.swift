@@ -1035,6 +1035,9 @@ final class AppState {
 
             notifications[index].subjectState = metadata.state
             notifications[index].ciStatus = metadata.ciStatus
+            if let nodeID = metadata.nodeID {
+                notifications[index].graphQLNodeID = nodeID
+            }
             didChange = true
         }
 
@@ -1057,6 +1060,9 @@ final class AppState {
             var updated = notification
             updated.subjectState = metadata.state
             updated.ciStatus = metadata.ciStatus
+            if let nodeID = metadata.nodeID {
+                updated.graphQLNodeID = nodeID
+            }
             notificationsByThreadID[threadID] = updated
             didChange = true
         }

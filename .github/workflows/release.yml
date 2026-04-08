@@ -228,3 +228,51 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN_PATH" || true
+
+  update-homebrew:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Update Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://github.com/jasonlong/octodot/releases/download/v${VERSION}/Octodot-v${VERSION}-macos.zip"
+          SHA256=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/jasonlong/homebrew-tap.git tap
+          cd tap
+
+          cat > Casks/octodot.rb << CASK
+          cask "octodot" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/jasonlong/octodot/releases/download/v#{version}/Octodot-v#{version}-macos.zip"
+            name "Octodot"
+            desc "GitHub notifications in the macOS menu bar"
+            homepage "https://github.com/jasonlong/octodot"
+
+            depends_on macos: ">= :ventura"
+
+            preflight do
+              system_command "/usr/bin/xattr",
+                args: ["-cr", "#{staged_path}/Octodot.app"]
+            end
+
+            app "Octodot.app"
+
+            zap trash: [
+              "~/Library/Application Support/Octodot",
+              "~/Library/Preferences/com.octodot.app.plist",
+            ]
+          end
+          CASK
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/octodot.rb
+          git commit -m "Update octodot to ${VERSION}"
+          git push

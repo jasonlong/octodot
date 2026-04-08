@@ -2,64 +2,56 @@ import SwiftUI
 
 struct SettingsView: View {
     enum Tab: String, Hashable {
-        case account
-        case appearance
+        case general
         case shortcuts
+        case account
 
         var title: String {
             switch self {
-            case .account:
-                "Account"
-            case .appearance:
-                "Appearance"
+            case .general:
+                "General"
             case .shortcuts:
                 "Shortcuts"
+            case .account:
+                "Account"
             }
         }
 
         var systemImage: String {
             switch self {
-            case .account:
-                "person.crop.circle"
-            case .appearance:
-                "circle.lefthalf.filled"
+            case .general:
+                "gearshape"
             case .shortcuts:
                 "keyboard"
+            case .account:
+                "person.crop.circle"
             }
         }
     }
 
     @Bindable var appState: AppState
     @Bindable var preferences: AppPreferences
-    @AppStorage("SettingsView.selectedTab") private var selectedTabRawValue = Tab.account.rawValue
-
+    @State private var selectedTab: Tab = .general
 
     var body: some View {
         VStack(spacing: 0) {
-            SettingsTabBar(selection: selection)
+            SettingsTabBar(selection: $selectedTab)
 
             Divider()
 
             Group {
-                switch selection.wrappedValue {
-                case .account:
-                    AccountSettingsPane(appState: appState)
-                case .appearance:
-                    AppearanceSettingsPane(preferences: preferences)
+                switch selectedTab {
+                case .general:
+                    GeneralSettingsPane(preferences: preferences)
                 case .shortcuts:
                     ShortcutsSettingsPane(preferences: preferences)
+                case .account:
+                    AccountSettingsPane(appState: appState)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: 600, height: 560)
-    }
-
-    private var selection: Binding<Tab> {
-        Binding(
-            get: { Tab(rawValue: selectedTabRawValue) ?? .account },
-            set: { selectedTabRawValue = $0.rawValue }
-        )
     }
 }
 
@@ -71,9 +63,9 @@ private struct SettingsTabBar: View {
             Spacer()
 
             ForEach([
-                SettingsView.Tab.account,
-                .appearance,
-                .shortcuts
+                SettingsView.Tab.general,
+                .shortcuts,
+                .account
             ], id: \.self) { tab in
                 SettingsTabItem(
                     tab: tab,
@@ -208,7 +200,7 @@ private struct AccountSettingsPane: View {
     }
 }
 
-private struct AppearanceSettingsPane: View {
+private struct GeneralSettingsPane: View {
     @Bindable var preferences: AppPreferences
 
     var body: some View {
@@ -224,6 +216,10 @@ private struct AppearanceSettingsPane: View {
                 Text("The panel and settings window will follow this appearance.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Startup") {
+                Toggle("Launch at login", isOn: $preferences.launchAtLogin)
             }
         }
         .formStyle(.grouped)

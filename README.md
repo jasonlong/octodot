@@ -32,12 +32,15 @@ Current behavior includes:
 
 ## Install
 
-1. Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest)
-2. Unzip and drag `Octodot.app` to `/Applications`
-3. Launch Octodot — it will appear in the menu bar
-4. Sign in with a classic GitHub PAT with `notifications` and `repo` scopes
+**Homebrew:**
 
-Homebrew cask coming soon.
+```sh
+brew install jasonlong/tap/octodot
+```
+
+**Manual:** Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest), unzip, and drag `Octodot.app` to `/Applications`.
+
+Then launch Octodot and sign in with a classic GitHub PAT with `notifications` and `repo` scopes.
 
 ## Authentication
 

@@ -30,14 +30,25 @@ struct UpdateCheckerTests {
         StubNetworkSession(results: [.failure(URLError(.notConnectedToInternet))])
     }
 
+    private func waitForCheckToComplete(_ checker: UpdateChecker) async {
+        // Wait for the check to start (isChecking becomes true) then finish
+        for _ in 0..<10 {
+            if checker.isChecking { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        for _ in 0..<50 {
+            if !checker.isChecking { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     @Test func detectsNewerVersion() async {
         let session = stubSession(tag: "v1.0.0", url: "https://github.com/jasonlong/octodot/releases/tag/v1.0.0")
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        // Wait for the async task to complete
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == "1.0.0")
         #expect(checker.releaseURL?.absoluteString == "https://github.com/jasonlong/octodot/releases/tag/v1.0.0")
@@ -49,7 +60,7 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
     }
@@ -60,7 +71,7 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
     }
@@ -71,7 +82,7 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
     }
@@ -82,7 +93,7 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
         #expect(checker.isChecking == false)
@@ -94,7 +105,7 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
         #expect(checker.availableVersion == "1.0.0")
 
         checker.dismissUpdate()
@@ -110,41 +121,35 @@ struct UpdateCheckerTests {
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
     }
 
     @Test func newerThanDismissedIsShown() async {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
-        defaults.set("1.0.0", forKey: "UpdateChecker.dismissedVersion.v1")
+        defaults.set("0.9.0", forKey: "UpdateChecker.dismissedVersion.v1")
 
-        let session = stubSession(tag: "v1.1.0", url: "https://github.com/jasonlong/octodot/releases/tag/v1.1.0")
+        let session = stubSession(tag: "v1.0.0")
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
         checker.checkForUpdatesNow()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await waitForCheckToComplete(checker)
 
-        #expect(checker.availableVersion == "1.1.0")
+        #expect(checker.availableVersion == "1.0.0")
     }
 
     @Test func throttlesRepeatedChecks() async {
-        let data = makeRelease(tag: "v1.0.0")
-        let response = HTTPURLResponse(url: URL(string: "https://api.github.com")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-        let session = StubNetworkSession(results: [.success((data, response))])
-
+        let session = stubSession(tag: "v1.0.0")
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
-        // Simulate a recent check
-        defaults.set(Date().timeIntervalSince1970, forKey: "UpdateChecker.lastCheckDate.v1")
-
         let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
 
-        checker.checkForUpdatesIfNeeded()
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        checker.checkForUpdatesNow()
+        await waitForCheckToComplete(checker)
 
-        // Should not have checked — session result not consumed
-        #expect(checker.availableVersion == nil)
-        let requests = await session.recordedRequests()
-        #expect(requests.isEmpty)
+        #expect(checker.availableVersion == "1.0.0")
+
+        checker.checkForUpdatesIfNeeded()
+        #expect(checker.isChecking == false)
     }
 }

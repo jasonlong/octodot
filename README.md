@@ -2,7 +2,7 @@
 
 Octodot is a native macOS menu bar app for triaging GitHub notifications with a keyboard-first workflow.
 
-![Octodot screenshot](screenshot.png)
+<img src="screenshot.png" width="491" height="559" alt="Octodot screenshot">
 
 It is built for fast inbox processing:
 

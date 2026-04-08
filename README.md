@@ -114,32 +114,3 @@ Convenience dev loop:
 ```
 
 This builds, launches, and watches for subsequent rebuilds.
-
-## Project Structure
-
-- `Octodot/App/AppState.swift`: app orchestration, fetching, polling, selection
-- `Octodot/App/InboxStore.swift`: inbox projection and recent-read/security alert behavior
-- `Octodot/App/ThreadActionStore.swift`: optimistic actions, undo, reconciliation
-- `Octodot/Auth/GitHubAPIClient.swift`: GitHub API client and caching
-- `Octodot/Panel/StatusItemController.swift`: menu bar item and panel lifecycle
-- `Octodot/Views/PanelContentView.swift`: main panel UI and key routing
-- `OctodotTests`: state, client, keychain, shell, and panel tests
-
-## Test Coverage
-
-The project includes focused tests for:
-
-- optimistic mutation behavior
-- refresh and reconciliation logic
-- GitHub API caching and pagination
-- inbox projection and recent inbox seeding
-- security alert ingestion and local dismiss/read behavior
-- pull request subject state and CI metadata
-- keychain persistence
-- panel key routing
-- shell behavior, menu bar appearance, and settings preferences
-
-The app also ships with:
-
-- CI on pushes and pull requests
-- a tag-driven release workflow that builds the macOS app and attaches the zip to GitHub releases

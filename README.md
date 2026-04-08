@@ -89,30 +89,9 @@ Octodot includes a native settings window with:
 - `Appearance`: `System`, `Light`, or `Dark`
 - `Shortcuts`: global shortcut recorder and full panel keybinding reference
 
-## Development
+## Install
 
-Requirements:
-
-- macOS
-- Xcode 17+
-
-Run in Xcode:
-
-1. Open `Octodot.xcodeproj`.
-2. Build and run the `Octodot` scheme.
-3. Sign in with a classic GitHub PAT that has the `notifications` and `repo` scopes.
-
-Command line:
-
-```sh
-xcodebuild build -project Octodot.xcodeproj -scheme Octodot -destination 'platform=macOS' -derivedDataPath .deriveddata
-xcodebuild test -project Octodot.xcodeproj -scheme Octodot -destination 'platform=macOS' -derivedDataPath .deriveddata
-```
-
-Convenience dev loop:
-
-```sh
-./scripts/dev.sh
-```
-
-This builds, launches, and watches for subsequent rebuilds.
+1. Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest)
+2. Unzip and drag `Octodot.app` to `/Applications`
+3. Launch Octodot — it will appear in the menu bar
+4. Sign in with a classic GitHub PAT with `notifications` and `repo` scopes

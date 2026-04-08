@@ -43,9 +43,16 @@ struct PanelContentView: View {
             // Header
             VStack(spacing: 8) {
                 HStack(alignment: .center, spacing: 10) {
-                    Text("Notifications")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
+                    HStack(spacing: 4) {
+                        Text("Notifications")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        #if DEBUG
+                        Text("[DEBUG]")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                        #endif
+                    }
 
                     Spacer()
 

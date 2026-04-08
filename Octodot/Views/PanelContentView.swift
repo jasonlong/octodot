@@ -445,6 +445,11 @@ struct PanelContentView: View {
 private struct UpdateBanner: View {
     var updateChecker: UpdateChecker
 
+    private static let isHomebrewInstall: Bool = {
+        let path = Bundle.main.bundlePath
+        return path.contains("/Homebrew/") || path.contains("/Caskroom/")
+    }()
+
     private var bannerColor: Color {
         if updateChecker.showingUpToDate { return .secondary }
         if updateChecker.installState == .idle { return .green }
@@ -462,6 +467,23 @@ private struct UpdateBanner: View {
                     Text("No updates available")
                         .font(.system(size: 11))
                         .lineLimit(1)
+
+                case .idle where Self.isHomebrewInstall:
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 10))
+                    if let version = updateChecker.availableVersion {
+                        Text("v\(version) available · brew upgrade octodot")
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                    }
+                    Button {
+                        updateChecker.dismissUpdate()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(0.6)
 
                 case .idle:
                     Image(systemName: "arrow.up.circle.fill")

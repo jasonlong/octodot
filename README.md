@@ -32,13 +32,9 @@ Current behavior includes:
 
 ## Install
 
-**Homebrew:**
-
 ```sh
 brew install jasonlong/tap/octodot
 ```
-
-**Manual:** Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest), unzip, and drag `Octodot.app` to `/Applications`.
 
 Then launch Octodot and sign in with a classic GitHub PAT with `notifications` and `repo` scopes.
 

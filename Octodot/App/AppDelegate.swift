@@ -16,7 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let updateChecker: UpdateChecker
     lazy var settingsWindowController = SettingsWindowController(
         appState: appState,
-        preferences: preferences
+        preferences: preferences,
+        updateChecker: updateChecker
     )
     private var statusItemController: StatusItemController?
 

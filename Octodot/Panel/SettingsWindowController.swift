@@ -5,13 +5,15 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     private let appState: AppState
     private let preferences: AppPreferences
+    private let updateChecker: UpdateChecker
     private let hostingController: NSHostingController<AnyView>
 
-    init(appState: AppState, preferences: AppPreferences) {
+    init(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker) {
         self.appState = appState
         self.preferences = preferences
+        self.updateChecker = updateChecker
         self.hostingController = NSHostingController(
-            rootView: Self.makeRootView(appState: appState, preferences: preferences)
+            rootView: Self.makeRootView(appState: appState, preferences: preferences, updateChecker: updateChecker)
         )
 
         super.init(window: nil)
@@ -36,7 +38,7 @@ final class SettingsWindowController: NSWindowController {
         guard let window else {
             return
         }
-        hostingController.rootView = Self.makeRootView(appState: appState, preferences: preferences)
+        hostingController.rootView = Self.makeRootView(appState: appState, preferences: preferences, updateChecker: updateChecker)
         window.appearance = preferences.appearanceMode.windowAppearance
         window.invalidateShadow()
         window.displayIfNeeded()
@@ -59,9 +61,9 @@ final class SettingsWindowController: NSWindowController {
         return window
     }
 
-    private static func makeRootView(appState: AppState, preferences: AppPreferences) -> AnyView {
+    private static func makeRootView(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker) -> AnyView {
         AnyView(
-            SettingsView(appState: appState, preferences: preferences)
+            SettingsView(appState: appState, preferences: preferences, updateChecker: updateChecker)
                 .preferredColorScheme(preferences.appearanceMode.colorScheme)
         )
     }

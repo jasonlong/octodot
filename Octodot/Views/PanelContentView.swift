@@ -48,7 +48,7 @@ struct PanelContentView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
                         #if DEBUG
-                        Text("[DEBUG]")
+                        Text("[DEV]")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.tertiary)
                         #endif

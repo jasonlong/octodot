@@ -6,7 +6,7 @@ struct OctodotApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(appState: appDelegate.appState, preferences: appDelegate.preferences)
+            SettingsView(appState: appDelegate.appState, preferences: appDelegate.preferences, updateChecker: appDelegate.updateChecker)
                 .preferredColorScheme(appDelegate.preferences.appearanceMode.colorScheme)
         }
         .commands {

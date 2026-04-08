@@ -5,32 +5,30 @@ struct SettingsView: View {
         case general
         case shortcuts
         case account
+        case about
 
         var title: String {
             switch self {
-            case .general:
-                "General"
-            case .shortcuts:
-                "Shortcuts"
-            case .account:
-                "Account"
+            case .general: "General"
+            case .shortcuts: "Shortcuts"
+            case .account: "Account"
+            case .about: "About"
             }
         }
 
         var systemImage: String {
             switch self {
-            case .general:
-                "gearshape"
-            case .shortcuts:
-                "keyboard"
-            case .account:
-                "person.crop.circle"
+            case .general: "gearshape"
+            case .shortcuts: "keyboard"
+            case .account: "person.crop.circle"
+            case .about: "info.circle"
             }
         }
     }
 
     @Bindable var appState: AppState
     @Bindable var preferences: AppPreferences
+    var updateChecker: UpdateChecker
     @State private var selectedTab: Tab = .general
 
     var body: some View {
@@ -47,6 +45,8 @@ struct SettingsView: View {
                     ShortcutsSettingsPane(preferences: preferences)
                 case .account:
                     AccountSettingsPane(appState: appState)
+                case .about:
+                    AboutSettingsPane(updateChecker: updateChecker)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -65,7 +65,8 @@ private struct SettingsTabBar: View {
             ForEach([
                 SettingsView.Tab.general,
                 .shortcuts,
-                .account
+                .account,
+                .about
             ], id: \.self) { tab in
                 SettingsTabItem(
                     tab: tab,
@@ -327,6 +328,90 @@ private struct ShortcutsSettingsPane: View {
             .foregroundStyle(text == "—" ? .tertiary : .primary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .lineLimit(1)
+    }
+}
+
+private struct AboutSettingsPane: View {
+    var updateChecker: UpdateChecker
+
+    private var appVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "–"
+        #if DEBUG
+        return "\(version)-dev"
+        #else
+        return version
+        #endif
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 16) {
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 96, height: 96)
+                }
+
+                VStack(spacing: 4) {
+                    Text("Octodot")
+                        .font(.system(size: 20, weight: .semibold))
+
+                    Text("v\(appVersion)")
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(spacing: 8) {
+                    Button {
+                        updateChecker.checkForUpdatesNow()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if updateChecker.isChecking {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                            Text("Check for Updates")
+                        }
+                        .frame(width: 180)
+                    }
+                    .disabled(updateChecker.isChecking)
+
+                    Group {
+                        if let version = updateChecker.availableVersion {
+                            Text("v\(version) is available")
+                                .foregroundStyle(.green)
+                        } else if updateChecker.showingUpToDate {
+                            Text("You're up to date")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(" ")
+                        }
+                    }
+                    .font(.system(size: 12))
+                }
+
+                HStack(spacing: 6) {
+                    Text("Made by [Jason Long](https://github.com/jasonlong)")
+                    Text("·")
+                    Text("[GitHub repository](https://github.com/jasonlong/octodot)")
+                }
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .tint(.primary)
+
+                Text("Icons by [GitHub Octicons](https://github.com/primer/octicons)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .tint(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+
+            Spacer()
+        }
     }
 }
 

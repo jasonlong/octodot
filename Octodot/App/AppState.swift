@@ -325,7 +325,7 @@ final class AppState {
             async let unreadFetch = client.fetchNotifications(all: false, force: force)
             let fetched = try await unreadFetch
             let fetchedRecentInbox: [GitHubNotification]
-            let shouldFetchRecentInbox = inboxMode == .inbox && (serverRecentInboxNotifications.isEmpty || force)
+            let shouldFetchRecentInbox = inboxMode == .inbox
             if shouldFetchRecentInbox {
                 fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
                     since: inboxStore.recentInboxSinceDate(relativeTo: fetched),

@@ -30,6 +30,15 @@ Current behavior includes:
 - pull request CI status indicators in the list
 - Dependabot/security alerts layered into `Inbox`
 
+## Install
+
+1. Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest)
+2. Unzip and drag `Octodot.app` to `/Applications`
+3. Launch Octodot — it will appear in the menu bar
+4. Sign in with a classic GitHub PAT with `notifications` and `repo` scopes
+
+Homebrew cask coming soon.
+
 ## Authentication
 
 Octodot currently uses a **classic GitHub Personal Access Token** with the `notifications` and `repo` scopes.
@@ -88,10 +97,3 @@ Octodot includes a native settings window with:
 - `Account`: sign in, update token, sign out
 - `Appearance`: `System`, `Light`, or `Dark`
 - `Shortcuts`: global shortcut recorder and full panel keybinding reference
-
-## Install
-
-1. Download the latest `.zip` from [Releases](https://github.com/jasonlong/octodot/releases/latest)
-2. Unzip and drag `Octodot.app` to `/Applications`
-3. Launch Octodot — it will appear in the menu bar
-4. Sign in with a classic GitHub PAT with `notifications` and `repo` scopes

@@ -547,9 +547,10 @@ final class AppState {
                 count += 1
             }
         }
-        // Use projected thread-only count for menubar icon (excludes security alerts)
-        let projectedThreadUnread = threadActions.projectedNotifications(from: serverNotifications)
-            .filter(\.isUnread).count
+        // Use projected thread-only count for menubar icon (excludes security alerts and muted threads)
+        let projectedThreadUnread = inboxStore.filterMutedThreads(
+            threadActions.projectedNotifications(from: serverNotifications)
+        ).filter(\.isUnread).count
         unreadNotificationCount = projectedThreadUnread
 
         let filtered = filteredNotifications
@@ -1168,7 +1169,9 @@ final class AppState {
             inboxStore.updateUnreadCountOnly(from: fetched)
             // Apply thread action projections so committed done/unsubscribe
             // actions are excluded from the count, matching what the panel shows.
-            let projected = threadActions.projectedNotifications(from: fetched)
+            let projected = inboxStore.filterMutedThreads(
+                threadActions.projectedNotifications(from: fetched)
+            )
             unreadNotificationCount = projected.filter(\.isUnread).count
         } catch {
             // Ignore background-only refresh failures while the heavier inbox feed is hidden.

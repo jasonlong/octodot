@@ -2831,4 +2831,47 @@ struct AppStateTests {
         #expect(inboxStore.isThreadMuted("thread-0") == false)
         #expect(inboxStore.isThreadMuted("thread-200") == true)
     }
+
+    @Test func mutedThreadDoesNotCountAsUnread() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/0/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/0",
+                    statusCode: 204
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/0",
+                    statusCode: 204
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(
+            2,
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: defaults
+        )
+        state.inboxMode = .unread
+        state.groupByRepo = false
+        state.selectNotification(id: "0")
+
+        #expect(state.unreadNotificationCount == 2)
+
+        state.unsubscribeFromThread()
+
+        #expect(state.unreadNotificationCount == 1)
+    }
 }

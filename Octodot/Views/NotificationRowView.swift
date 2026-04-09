@@ -84,8 +84,9 @@ struct NotificationRowView: View, Equatable {
             .padding(.trailing, 10)
         }
         .frame(height: 44)
-        .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
         .contentShape(Rectangle())
+        .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+        .overlay(HoverBackground())
     }
 
     private var relativeTime: String {
@@ -106,5 +107,16 @@ struct NotificationRowView: View, Equatable {
         if interval < 3600 { return "\(Int(interval / 60))m" }
         if interval < 86400 { return "\(Int(interval / 3600))h" }
         return "\(Int(interval / 86400))d"
+    }
+}
+
+private struct HoverBackground: View {
+    @State private var isHovered = false
+
+    var body: some View {
+        Rectangle()
+            .fill(isHovered ? Color.primary.opacity(0.05) : Color.clear)
+            .allowsHitTesting(false)
+            .onHover { isHovered = $0 }
     }
 }

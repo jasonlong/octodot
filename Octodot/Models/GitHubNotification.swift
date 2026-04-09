@@ -173,6 +173,15 @@ struct GitHubNotification: Identifiable, Hashable {
                 return nil
             }
         }
+
+        var badgeBackgroundColor: Color? {
+            switch self {
+            case .mentioned, .assigned, .author:
+                return Color(red: 0.18, green: 0.7, blue: 0.35)
+            default:
+                return nil
+            }
+        }
     }
 
     enum SubjectType: String, CaseIterable, Codable {

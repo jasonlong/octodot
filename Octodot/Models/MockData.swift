@@ -5,6 +5,13 @@ enum MockData {
         let now = Date()
         return [
             GitHubNotification(
+                id: "0", threadId: "0", title: "Test highlighted reason badges",
+                repository: "acme/backend", reason: .mentioned, type: .issue,
+                updatedAt: now.addingTimeInterval(-60), isUnread: true,
+                url: URL(string: "https://github.com/acme/backend/issues/999")!,
+                subjectURL: nil, subjectState: .open
+            ),
+            GitHubNotification(
                 id: "1", threadId: "1", title: "Fix memory leak in WebSocket handler",
                 repository: "acme/backend", reason: .reviewRequested, type: .pullRequest,
                 updatedAt: now.addingTimeInterval(-120), isUnread: true,

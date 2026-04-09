@@ -199,17 +199,23 @@ final class AppState {
         userDefaults: UserDefaults = .standard,
         bootstrapToken: String? = KeychainHelper.loadToken()
     ) {
+        #if DEBUG
+        let useMockData = bootstrapToken == nil
+        #else
+        let useMockData = false
+        #endif
         self.init(
-            notifications: [],
+            notifications: useMockData ? MockData.generateNotifications() : [],
+            authStatus: useMockData ? .signedIn(username: "demo") : .signedOut,
             actionDispatchDelayNanoseconds: defaultActionDispatchDelayNanoseconds,
-            backgroundRefreshEnabled: true,
+            backgroundRefreshEnabled: !useMockData,
             sleepHandler: defaultSleepHandler,
             userDefaults: userDefaults,
             urlOpener: { NSWorkspace.shared.open($0) },
             tokenSaver: { try KeychainHelper.saveToken($0) },
             tokenDeleter: { KeychainHelper.deleteToken() },
             apiClientFactory: { GitHubAPIClient(token: $0) },
-            bootstrapToken: bootstrapToken
+            bootstrapToken: useMockData ? nil : bootstrapToken
         )
     }
 

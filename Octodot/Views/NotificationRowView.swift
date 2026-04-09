@@ -55,6 +55,12 @@ struct NotificationRowView: View, Equatable {
                     .foregroundStyle(notification.reason.tintColor.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(notification.reason.badgeBackgroundColor?.opacity(0.14) ?? Color.clear)
+                    )
 
                 HStack(spacing: 4) {
                     if let ciIconName = notification.ciStatusIconName,

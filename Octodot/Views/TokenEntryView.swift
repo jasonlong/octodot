@@ -17,11 +17,18 @@ struct TokenEntryView: View {
             Text("Sign in to GitHub")
                 .font(.system(size: 15, weight: .semibold))
 
-            Text("Create a classic Personal Access Token with the\n**notifications** and **repo** scopes at GitHub → Settings → Tokens")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineSpacing(2)
+            VStack(spacing: 4) {
+                Text("Create a classic Personal Access Token with the\n**notifications** and **repo** scopes.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2)
+
+                Link("Create token on GitHub →",
+                     destination: URL(string: "https://github.com/settings/tokens")!)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.accentColor)
+            }
 
             VStack(spacing: 8) {
                 SecureField("ghp_...", text: $tokenInput)

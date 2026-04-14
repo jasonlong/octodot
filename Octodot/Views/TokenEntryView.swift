@@ -27,7 +27,7 @@ struct TokenEntryView: View {
                 Link("Create token on GitHub →",
                      destination: URL(string: "https://github.com/settings/tokens")!)
                     .font(.system(size: 12))
-                    .foregroundStyle(.accent)
+                    .foregroundStyle(Color.accentColor)
             }
 
             VStack(spacing: 8) {

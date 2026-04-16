@@ -2874,4 +2874,56 @@ struct AppStateTests {
 
         #expect(state.unreadNotificationCount == 1)
     }
+
+    @Test func reconcileMutedThreadsRemovesStaleMuteOnNewUnread() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+
+        inboxStore.muteThread("100")
+        #expect(inboxStore.isThreadMuted("100") == true)
+
+        // Server sends new unread notification for that thread, no committed action protects it
+        let unreadNotification = Self.makeNotification(id: 100, isUnread: true)
+        inboxStore.reconcileMutedThreadsWithUnread(
+            [unreadNotification],
+            committedThreadIDs: []
+        )
+
+        // Mute should be permanently removed
+        #expect(inboxStore.isThreadMuted("100") == false)
+    }
+
+    @Test func reconcileMutedThreadsKeepsMuteWhenCommittedActionExists() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+
+        inboxStore.muteThread("100")
+
+        // Server still has the thread, but committed unsubscribe action protects the mute
+        let unreadNotification = Self.makeNotification(id: 100, isUnread: true)
+        inboxStore.reconcileMutedThreadsWithUnread(
+            [unreadNotification],
+            committedThreadIDs: ["100"]
+        )
+
+        #expect(inboxStore.isThreadMuted("100") == true)
+    }
+
+    @Test func reconcileMutedThreadsPreservesUnrelatedMutes() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+
+        inboxStore.muteThread("100")
+        inboxStore.muteThread("200")
+
+        // Only thread 100 has a new unread notification with no committed action
+        let unreadNotification = Self.makeNotification(id: 100, isUnread: true)
+        inboxStore.reconcileMutedThreadsWithUnread(
+            [unreadNotification],
+            committedThreadIDs: []
+        )
+
+        #expect(inboxStore.isThreadMuted("100") == false)
+        #expect(inboxStore.isThreadMuted("200") == true)
+    }
 }

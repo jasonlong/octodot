@@ -542,6 +542,12 @@ final class AppState {
             preferredRepositoryOrder: repositoryOrderAnchor,
             repoOrderSource: sortedByRecency(serverModeFiltered)
         )
+        #if DEBUG
+        let repoOrder = notifications.reduce(into: [String]()) { order, n in
+            if !order.contains(n.repository) { order.append(n.repository) }
+        }
+        DebugTrace.log("rebuildDerivedState repoOrder=\(repoOrder) anchor=\(repositoryOrderAnchor)")
+        #endif
         panelUnreadCount = notifications.reduce(into: 0) { count, notification in
             if notification.isUnread {
                 count += 1
@@ -1248,6 +1254,10 @@ final class AppState {
         serverSecurityAlerts = securityAlerts
         unreadNotificationCount = loadedState.unreadCount
         threadActions.reconcileCommittedActions(with: unreadNotifications)
+        inboxStore.reconcileMutedThreadsWithUnread(
+            unreadNotifications,
+            committedThreadIDs: Set(threadActions.committedActions.keys)
+        )
         if repositoryOrderAnchor.isEmpty {
             repositoryOrderAnchor = Self.repositoryOrder(from: serverNotificationsForCurrentMode())
         }

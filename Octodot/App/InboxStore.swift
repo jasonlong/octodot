@@ -577,6 +577,25 @@ final class InboxStore {
         notifications.filter { !isThreadMuted($0.threadId) }
     }
 
+    /// Remove stale mutes for threads that have new unread notifications from the server
+    /// and no committed action still protecting them. This handles the case where a user
+    /// unsubscribed long ago, but the server later sends a new notification (e.g., re-mention).
+    func reconcileMutedThreadsWithUnread(
+        _ unreadNotifications: [GitHubNotification],
+        committedThreadIDs: Set<String>
+    ) {
+        var didChange = false
+        for notification in unreadNotifications where notification.isUnread {
+            guard isThreadMuted(notification.threadId),
+                  !committedThreadIDs.contains(notification.threadId) else { continue }
+            mutedThreads.removeValue(forKey: notification.threadId)
+            didChange = true
+        }
+        if didChange {
+            persistMutedThreads()
+        }
+    }
+
     private static func loadMutedThreads(from userDefaults: UserDefaults) -> [String: Date] {
         guard let data = userDefaults.data(forKey: mutedThreadsStorageKey),
               let persisted = try? JSONDecoder().decode([String: Date].self, from: data) else {

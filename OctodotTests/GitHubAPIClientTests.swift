@@ -3,6 +3,11 @@ import Testing
 @testable import Octodot
 
 struct GitHubAPIClientTests {
+    private static let recentDateString: String = {
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date().addingTimeInterval(-2 * 24 * 60 * 60))
+    }()
+
     private struct NotificationFixture {
         let id: String
         let unread: Bool
@@ -48,7 +53,7 @@ struct GitHubAPIClientTests {
             repositoryHTMLURL: String,
             summary: String,
             ghsaID: String,
-            updatedAt: String = "2026-04-01T12:00:00Z"
+            updatedAt: String = recentDateString
         ) {
             self.number = number
             self.repositoryFullName = repositoryFullName
@@ -661,8 +666,7 @@ struct GitHubAPIClientTests {
                 repositoryFullName: "acme/api",
                 repositoryHTMLURL: "https://github.com/acme/api",
                 summary: "Recent electron issue",
-                ghsaID: "GHSA-1234",
-                updatedAt: "2026-04-01T12:00:00Z"
+                ghsaID: "GHSA-1234"
             ),
             DependabotAlertFixture(
                 number: 8,

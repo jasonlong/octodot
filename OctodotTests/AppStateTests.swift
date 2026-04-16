@@ -4,6 +4,16 @@ import Testing
 
 @MainActor
 struct AppStateTests {
+    static let recentDateString: String = {
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date().addingTimeInterval(-2 * 24 * 60 * 60))
+    }()
+
+    static let recentUpdatedDateString: String = {
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date().addingTimeInterval(-1 * 24 * 60 * 60))
+    }()
+
     static func makeNotification(id: Int, repo: String = "acme/alpha", isUnread: Bool = true) -> GitHubNotification {
         GitHubNotification(
             id: "\(id)",
@@ -98,7 +108,7 @@ struct AppStateTests {
     static func singleNotificationPayload(
         id: String,
         isUnread: Bool = true,
-        updatedAt: String = "2026-04-01T12:00:00Z",
+        updatedAt: String = recentDateString,
         subjectURL: String? = nil
     ) -> Data {
         let subjectURLField: String
@@ -129,7 +139,7 @@ struct AppStateTests {
         """.data(using: .utf8)!
     }
 
-    static func notificationsPayload(ids: [String], updatedAt: String = "2026-04-01T12:00:00Z") -> Data {
+    static func notificationsPayload(ids: [String], updatedAt: String = recentDateString) -> Data {
         let items = ids.map { id in
             """
               {
@@ -153,7 +163,7 @@ struct AppStateTests {
         return "[\n\(items)\n]".data(using: .utf8)!
     }
 
-    static func dependabotAlertsPayload(updatedAt: String = "2026-04-01T12:00:00Z") -> Data {
+    static func dependabotAlertsPayload(updatedAt: String = recentDateString) -> Data {
         """
         [
           {
@@ -465,7 +475,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.dependabotAlertsPayload(),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200
@@ -487,7 +497,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.dependabotAlertsPayload(),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200
@@ -509,7 +519,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-02T12:00:00Z"),
+                Self.dependabotAlertsPayload(updatedAt: Self.recentUpdatedDateString),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200
@@ -576,7 +586,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.dependabotAlertsPayload(),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200
@@ -628,7 +638,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.dependabotAlertsPayload(),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200
@@ -650,7 +660,7 @@ struct AppStateTests {
                 )
             )),
             .success((
-                Self.dependabotAlertsPayload(updatedAt: "2026-04-01T12:00:00Z"),
+                Self.dependabotAlertsPayload(),
                 Self.httpResponse(
                     url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
                     statusCode: 200

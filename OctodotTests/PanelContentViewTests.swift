@@ -143,6 +143,6 @@ struct PanelContentViewTests {
         #expect(PanelInput.isSingleFireListCommand(.moveDown) == false)
         #expect(PanelInput.isSingleFireListCommand(.moveUp) == false)
         #expect(PanelInput.isSingleFireListCommand(.forceRefresh) == false)
-        #expect(PanelInput.singleFireCommandDeduplicationInterval == 0.2)
+        #expect(PanelInput.singleFireCommandDeduplicationInterval == 0.05)
     }
 }

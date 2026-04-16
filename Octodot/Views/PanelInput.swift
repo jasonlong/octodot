@@ -65,7 +65,7 @@ enum PanelInput {
         let isHandled: Bool
     }
 
-    static let singleFireCommandDeduplicationInterval: TimeInterval = 0.2
+    static let singleFireCommandDeduplicationInterval: TimeInterval = 0.05
 
     static func notificationSummary(
         unreadCount: Int,

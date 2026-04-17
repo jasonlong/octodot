@@ -182,7 +182,7 @@ struct PanelContentView: View {
             HStack(spacing: 10) {
                 shortcutHint(key: "j/k", label: "nav")
                 shortcutHint(key: "d", label: "done")
-                shortcutHint(key: "x", label: "unsub")
+                shortcutHint(key: "u", label: "unsub")
                 shortcutHint(key: "o", label: "open")
                 shortcutHint(key: "/", label: "search")
 
@@ -357,8 +357,6 @@ struct PanelContentView: View {
             }
         case .copyURL:
             appState.copyURL()
-        case .undo:
-            appState.undo()
         case .toggleChecked:
             appState.toggleChecked()
         case .toggleInboxMode:

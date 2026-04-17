@@ -472,8 +472,7 @@ final class AppState {
                         startThreadAction(
                             .markRead,
                             target: notification,
-                            delayNanosecondsOverride: 0,
-                            pushesUndo: false
+                            delayNanosecondsOverride: 0
                         )
                     } else if notification.source == .dependabotAlert, notification.isUnread {
                         inboxStore.markSecurityAlertRead(notification)
@@ -488,7 +487,7 @@ final class AppState {
         let didOpen = urlOpener(notification.url)
         if didOpen {
             if notification.source == .thread, notification.isUnread {
-                startThreadAction(.markRead, delayNanosecondsOverride: 0, pushesUndo: false)
+                startThreadAction(.markRead, delayNanosecondsOverride: 0)
             } else if notification.source == .dependabotAlert, notification.isUnread {
                 inboxStore.markSecurityAlertRead(notification)
                 clampSelection()
@@ -501,35 +500,6 @@ final class AppState {
         guard !checkedThreadIDs.isEmpty else { return nil }
         let ordered = filteredNotifications.filter { checkedThreadIDs.contains($0.id) }
         return ordered.isEmpty ? nil : ordered
-    }
-
-    func undo() {
-        switch threadActions.applyUndo() {
-        case .none:
-            clampSelection()
-        case .stale:
-            warningMessage = "The last action can no longer be undone"
-            clampSelection()
-        case .cancelQueued(let pending):
-            actionTasks.removeValue(forKey: pending.notification.threadId)?.cancel()
-            errorMessage = nil
-            warningMessage = nil
-            if pending.kind.hidesNotification || pending.kind == .restoreSubscription {
-                selectedThreadID = pending.notification.id
-                selectedIndexStorage = pending.originalServerIndex
-            }
-            clampSelection()
-        case .restoreSubscription(let notification, let originalServerIndex):
-            warningMessage = nil
-            startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
-        case .restoreSecurityAlert(let notification, let originalVisibleIndex):
-            inboxStore.restoreDismissedSecurityAlert(notification)
-            errorMessage = nil
-            warningMessage = nil
-            selectedThreadID = notification.id
-            selectedIndexStorage = originalVisibleIndex
-            clampSelection()
-        }
     }
 
     func refresh(force: Bool = false) {
@@ -781,8 +751,7 @@ final class AppState {
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
         target explicitTarget: GitHubNotification? = nil,
-        delayNanosecondsOverride: UInt64? = nil,
-        pushesUndo: Bool = true
+        delayNanosecondsOverride: UInt64? = nil
     ) {
         guard let client = apiClient else { return }
         guard let target = explicitTarget ?? selectedNotification else { return }
@@ -804,8 +773,7 @@ final class AppState {
         let pending = threadActions.start(
             kind,
             notification: target,
-            originalServerIndex: originalServerIndex,
-            pushesUndo: pushesUndo
+            originalServerIndex: originalServerIndex
         )
 
         let visibleBeforeMutation = filteredNotifications
@@ -842,35 +810,12 @@ final class AppState {
         guard target.source == .dependabotAlert else { return }
 
         let visibleBeforeMutation = filteredNotifications
-        let originalVisibleIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndex
-        threadActions.pushSecurityAlertDismissUndo(
-            notification: target,
-            originalVisibleIndex: originalVisibleIndex
-        )
         inboxStore.dismissSecurityAlert(target)
         errorMessage = nil
 
         selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
         selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
         clampSelection()
-    }
-
-    private func startRestoreSubscriptionUndo(notification: GitHubNotification, originalServerIndex: Int) {
-        guard let client = apiClient else { return }
-
-        let pending = threadActions.start(
-            .restoreSubscription,
-            notification: notification,
-            originalServerIndex: originalServerIndex,
-            pushesUndo: false
-        )
-
-        selectedThreadID = notification.id
-        selectedIndexStorage = originalServerIndex
-        errorMessage = nil
-        clampSelection()
-
-        dispatchPendingActionImmediately(client: client, pending: pending)
     }
 
     private func scheduleBatchDispatch(client: GitHubAPIClient, delayNanoseconds: UInt64) {
@@ -927,11 +872,6 @@ final class AppState {
             case .unsubscribe:
                 try await client.unsubscribe(notification: pending.notification)
                 try await client.markAsDone(notification: pending.notification)
-            case .restoreSubscription:
-                try await client.restoreSubscription(
-                    threadId: pending.notification.threadId,
-                    notification: pending.notification
-                )
             }
 
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
@@ -955,7 +895,7 @@ final class AppState {
 
     private func handlePendingActionSuccess(_ pending: ThreadActionStore.PendingAction) {
         actionTasks[pending.notification.threadId] = nil
-        let successEffect = threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
+        threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
         switch pending.kind {
         case .markRead:
             var readNotification = pending.notification
@@ -967,19 +907,11 @@ final class AppState {
             )
         case .done, .unsubscribe:
             inboxStore.removeRecentReadNotification(threadId: pending.notification.threadId)
-        case .restoreSubscription:
-            break
         }
         DebugTrace.log(
             "success kind=\(pending.kind.rawValue) target.id=\(pending.notification.id) " +
             "target.thread=\(pending.notification.threadId) server=\(serverNotifications.map(\.id).joined(separator: ","))"
         )
-        if case .restoreSubscription(let notification, let originalServerIndex) = successEffect {
-            startRestoreSubscriptionUndo(
-                notification: notification,
-                originalServerIndex: originalServerIndex
-            )
-        }
 
         errorMessage = nil
         rebuildDerivedState()
@@ -1193,8 +1125,6 @@ final class AppState {
 
     private func actionDelay(for kind: ThreadActionStore.ActionKind) -> UInt64 {
         switch kind {
-        case .restoreSubscription:
-            return 0
         case .markRead, .done, .unsubscribe:
             return actionDispatchDelayNanoseconds
         }

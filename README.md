@@ -42,16 +42,15 @@ The app is intentionally keyboard-centric.
 
 - `j` / `k`: move selection
 - `Up` / `Down`: move selection
-- `Space`: toggle the current row's selection for bulk actions (`d`, `x`, `o` apply to every checked row when the set is non-empty)
-- `ctrl-f`: page down
+- `ctrl-f` or `Space`: page down
 - `ctrl-b`: page up
 - `ctrl-d` / `ctrl-u`: half-page down / up
 - `gg` / `G`: jump to top / bottom
 - `Home` / `End`: jump to top / bottom
 - `o` or `Return`: open in browser and mark read
 - `d`: mark done
-- `x`: unsubscribe
-- `u`: undo queued action (available for a few seconds)
+- `u`: unsubscribe
+- `x`: toggle the current row's selection for bulk actions (`d`, `u`, `o` apply to every checked row when the set is non-empty)
 - `y`: copy URL
 - `a`: toggle `Inbox` / `Unread`
 - `s`: toggle repo grouping

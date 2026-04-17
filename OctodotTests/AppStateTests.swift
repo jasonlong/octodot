@@ -568,58 +568,6 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains { $0.id == alertID })
     }
 
-    @Test func undoRestoresDismissedSecurityAlert() async {
-        let session = StubNetworkSession(results: [
-            .success((
-                Self.notificationsPayload(ids: ["1"]),
-                Self.httpResponse(
-                    url: "https://api.github.com/notifications",
-                    statusCode: 200,
-                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
-                )
-            )),
-            .success((
-                Data("[]".utf8),
-                Self.httpResponse(
-                    url: "https://api.github.com/notifications?all=true",
-                    statusCode: 200
-                )
-            )),
-            .success((
-                Self.dependabotAlertsPayload(),
-                Self.httpResponse(
-                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
-                    statusCode: 200
-                )
-            )),
-        ])
-
-        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
-        let state = AppState(
-            notifications: [],
-            authStatus: .signedIn(username: "octodot"),
-            apiClient: client,
-            userDefaults: Self.makeIsolatedUserDefaults()
-        )
-        state.groupByRepo = false
-        state.isPanelVisible = true
-
-        await state.loadNotifications(force: true)
-        let alertID = "dependabot:acme/alpha:7"
-        await Self.waitUntil {
-            await MainActor.run {
-                state.filteredNotifications.contains { $0.id == alertID }
-            }
-        }
-        state.selectNotification(id: alertID)
-        state.done()
-        #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
-
-        state.undo()
-        #expect(state.filteredNotifications.contains { $0.id == alertID })
-        #expect(state.selectedNotification?.id == alertID)
-    }
-
     @Test func openInBrowserMarksSecurityAlertReadLocally() async {
         let session = StubNetworkSession(results: [
             .success((
@@ -1908,53 +1856,6 @@ struct AppStateTests {
         #expect((await session.recordedRequests()).count == 3)
     }
 
-    // MARK: - Undo
-
-    @Test func undoRestoresPendingDoneBeforeItHitsTheAPI() async {
-        let (state, session) = Self.makeAuthedState(
-            results: [
-                .success((
-                    Data(),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications/threads/0",
-                        statusCode: 204
-                    )
-                ))
-            ],
-            actionDispatchDelayNanoseconds: 50_000_000,
-            sleepHandler: Self.realSleep
-        )
-        state.groupByRepo = false
-        state.inboxMode = .unread
-        state.selectedIndex = 0
-        state.done()
-        #expect(state.notifications.count == 2)
-        state.undo()
-        try? await Task.sleep(nanoseconds: 75_000_000)
-        #expect(state.notifications.count == 3)
-        #expect(state.selectedNotification?.id == "0")
-        #expect((await session.recordedRequests()).isEmpty)
-    }
-
-    @Test func multipleUndosCancelMultipleQueuedActions() async {
-        let (state, session) = Self.makeAuthedState(
-            actionDispatchDelayNanoseconds: 50_000_000,
-            sleepHandler: Self.realSleep
-        )
-        state.groupByRepo = false
-        state.selectedIndex = 0
-        state.done()
-        state.selectedIndex = 0
-        state.done()
-        #expect(state.notifications.count == 3)
-        state.undo()
-        #expect(state.notifications.count == 4)
-        state.undo()
-        try? await Task.sleep(nanoseconds: 75_000_000)
-        #expect(state.notifications.count == 5)
-        #expect((await session.recordedRequests()).isEmpty)
-    }
-
     @Test func actionDispatchWindowSlidesAcrossMultipleQueuedActions() async {
         let (state, session) = Self.makeAuthedState(
             results: [
@@ -2037,27 +1938,6 @@ struct AppStateTests {
         #expect(requests.last?.httpMethod == "GET")
     }
 
-    @Test func undoOnEmptyStackIsNoOp() {
-        let state = Self.makeState()
-        let before = state.notifications.count
-        state.undo()
-        #expect(state.notifications.count == before)
-    }
-
-    @Test func staleUndoEntryReturnsStaleEffect() {
-        let notification = Self.makeNotification(id: 42)
-        var store = ThreadActionStore(userDefaults: Self.makeIsolatedUserDefaults())
-        _ = store.start(.done, notification: notification, originalServerIndex: 0, pushesUndo: true)
-        store.invalidatePendingUndoEntryForTesting(threadId: notification.threadId)
-
-        let effect = store.applyUndo()
-        if case .stale = effect {
-            #expect(Bool(true))
-        } else {
-            Issue.record("Expected stale undo effect, got \(String(describing: effect))")
-        }
-    }
-
     // MARK: - Clamp selection
 
     @Test func clampSelectionWhenIndexExceedsList() {
@@ -2123,38 +2003,6 @@ struct AppStateTests {
         #expect(state.notifications.count == 5)
         #expect(state.selectedNotification?.id == "0")
         #expect(state.errorMessage == "Failed to mark thread as done")
-        #expect((await session.recordedRequests()).count == 1)
-    }
-
-    @Test func refreshKeepsPendingHiddenThreadFilteredOut() async {
-        let (state, session) = Self.makeAuthedState(
-            results: [
-                .success((
-                    Self.singleNotificationPayload(id: "0"),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications",
-                        statusCode: 200,
-                        headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
-                    )
-                ))
-            ],
-            count: 1,
-            actionDispatchDelayNanoseconds: 50_000_000,
-            sleepHandler: Self.realSleep
-        )
-
-        state.inboxMode = .unread
-        state.groupByRepo = false
-        state.selectedIndex = 0
-        state.done()
-        #expect(state.filteredNotifications.isEmpty)
-
-        await state.loadNotifications(force: true)
-        #expect(state.filteredNotifications.isEmpty)
-
-        state.undo()
-        try? await Task.sleep(nanoseconds: 75_000_000)
-
         #expect((await session.recordedRequests()).count == 1)
     }
 
@@ -2440,74 +2288,6 @@ struct AppStateTests {
         #expect((await session.recordedRequests()).count == 2)
     }
 
-    @Test func refreshKeepsCommittedUnsubscribeHiddenAfterSuccess() async {
-        let (state, session) = Self.makeAuthedState(
-            results: [
-                .success((
-                    #"{"ignored":true}"#.data(using: .utf8)!,
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications/threads/0/subscription",
-                        statusCode: 200
-                    )
-                )),
-                .success((
-                    Data(),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications/threads/0",
-                        statusCode: 204
-                    )
-                )),
-                .success((
-                    Data(),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications/threads/0",
-                        statusCode: 204
-                    )
-                )),
-                .success((
-                    Self.singleNotificationPayload(id: "0"),
-                    Self.httpResponse(
-                        url: "https://api.github.com/notifications?page=1",
-                        statusCode: 200,
-                        headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
-                    )
-                )),
-            ],
-            count: 1
-        )
-
-        state.inboxMode = .unread
-        state.groupByRepo = false
-        state.selectedIndex = 0
-        state.unsubscribeFromThread()
-        await Self.settleTasks()
-
-        #expect(state.filteredNotifications.isEmpty)
-
-        await state.loadNotifications(force: true)
-        #expect(state.filteredNotifications.isEmpty)
-
-        state.undo()
-        #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
-
-        await Self.waitUntil {
-            await session.recordedRequests().count == 4
-        }
-
-        let requests = await session.recordedRequests()
-        #expect(requests.count == 4)
-        #expect(requests[0].httpMethod == "PUT")
-        if let body = requests[0].httpBody,
-           let bodyObject = try? JSONSerialization.jsonObject(with: body) as? [String: Bool] {
-            #expect(bodyObject["ignored"] == true)
-            #expect(bodyObject["subscribed"] == nil)
-        } else {
-            Issue.record("Expected unsubscribe request body")
-        }
-        #expect(requests.dropFirst().contains { $0.httpMethod == "DELETE" })
-        #expect(requests.dropFirst().contains { $0.httpMethod == "GET" })
-    }
-
     static func notificationPayloadForRepo(
         id: String,
         repo: String,
@@ -2538,7 +2318,7 @@ struct AppStateTests {
         return "[\n\(entries.joined(separator: ",\n"))\n]".data(using: .utf8)!
     }
 
-    @Test func unsubscribeSuccessIsNotUndoableAfterDispatch() async {
+    @Test func unsubscribeSuccessPersistsAfterDispatch() async {
         let (state, session) = Self.makeAuthedState(results: [
             .success((
                 #"{"ignored":true}"#.data(using: .utf8)!,
@@ -2571,9 +2351,6 @@ struct AppStateTests {
         await Self.settleTasks()
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
 
-        state.undo()
-        #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
-
         await Self.waitUntil {
             await session.recordedRequests().count == 3
         }
@@ -2588,7 +2365,7 @@ struct AppStateTests {
         } else {
             Issue.record("Expected unsubscribe request body")
         }
-        #expect(requests.last?.httpMethod == "DELETE")
+        #expect(requests.dropFirst().allSatisfy { $0.httpMethod == "DELETE" })
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
     }
 

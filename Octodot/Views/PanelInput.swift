@@ -9,7 +9,6 @@ enum PanelInput {
         case controlB
         case controlD
         case controlU
-        case commandZ
         case commandDown
         case commandUp
         case downArrow
@@ -32,7 +31,6 @@ enum PanelInput {
         case unsubscribe
         case open
         case copyURL
-        case undo
         case toggleChecked
         case toggleInboxMode
         case toggleGrouping
@@ -108,7 +106,7 @@ enum PanelInput {
 
     static func isSingleFireListCommand(_ command: KeyboardCommand) -> Bool {
         switch command {
-        case .done, .unsubscribe, .open, .copyURL, .undo, .toggleChecked:
+        case .done, .unsubscribe, .open, .copyURL, .toggleChecked:
             return true
         case .moveDown,
              .moveUp,
@@ -130,9 +128,9 @@ enum PanelInput {
 
     static func allowsRepeat(for input: KeyInput) -> Bool {
         switch input {
-        case .character("j"), .character("k"), .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
+        case .character("j"), .character("k"), .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
-        case .character, .space, .commandZ, .commandDown, .commandUp, .escape, .return, .other:
+        case .character, .commandDown, .commandUp, .escape, .return, .other:
             return false
         }
     }
@@ -148,11 +146,10 @@ enum PanelInput {
              .character("s"),
              .character("r"),
              .character("/"),
-             .space,
              .escape,
              .return:
             return true
-        case .character, .commandZ, .commandDown, .commandUp, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
+        case .character, .commandDown, .commandUp, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
@@ -221,9 +218,6 @@ enum PanelInput {
             case 125: return .commandDown
             case 126: return .commandUp
             default: break
-            }
-            if event.charactersIgnoringModifiers == "z" {
-                return .commandZ
             }
         }
 
@@ -301,7 +295,6 @@ enum PanelInput {
         case .controlB: return "ctrl-b"
         case .controlD: return "ctrl-d"
         case .controlU: return "ctrl-u"
-        case .commandZ: return "cmd-z"
         case .commandDown: return "cmd-down"
         case .commandUp: return "cmd-up"
         case .downArrow: return "down"
@@ -326,7 +319,6 @@ enum PanelInput {
         case .unsubscribe: return "unsubscribe"
         case .open: return "open"
         case .copyURL: return "copyURL"
-        case .undo: return "undo"
         case .toggleChecked: return "toggleChecked"
         case .toggleInboxMode: return "toggleInboxMode"
         case .toggleGrouping: return "toggleGrouping"
@@ -367,9 +359,7 @@ enum PanelInput {
             return KeyRouting(command: .moveDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("k"), .upArrow:
             return KeyRouting(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .space:
-            return KeyRouting(command: .toggleChecked, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .controlF:
+        case .space, .controlF:
             return KeyRouting(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .controlB:
             return KeyRouting(command: .pageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
@@ -386,13 +376,13 @@ enum PanelInput {
         case .character("d"):
             return KeyRouting(command: .done, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("x"):
-            return KeyRouting(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true)
+            return KeyRouting(command: .toggleChecked, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("o"), .return:
             return KeyRouting(command: .open, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("y"):
             return KeyRouting(command: .copyURL, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .character("u"), .commandZ:
-            return KeyRouting(command: .undo, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .character("u"):
+            return KeyRouting(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("a"):
             return KeyRouting(command: .toggleInboxMode, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("s"):

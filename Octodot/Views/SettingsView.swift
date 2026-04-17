@@ -241,8 +241,8 @@ private struct ShortcutsSettingsPane: View {
 
     private let bindingRows: [BindingRow] = [
         .init(id: "move", action: "Move selection", vim: "j / k", standard: "Up / Down"),
-        .init(id: "bulk-toggle", action: "Toggle selection for bulk actions", vim: "space", standard: "Space"),
-        .init(id: "page-down", action: "Page down", vim: "ctrl-f", standard: "Page Down"),
+        .init(id: "bulk-toggle", action: "Toggle selection for bulk actions", vim: "x", standard: "—"),
+        .init(id: "page-down", action: "Page down", vim: "ctrl-f / space", standard: "Page Down"),
         .init(id: "page-up", action: "Page up", vim: "ctrl-b", standard: "Page Up"),
         .init(id: "half-down", action: "Half page down", vim: "ctrl-d", standard: "—"),
         .init(id: "half-up", action: "Half page up", vim: "ctrl-u", standard: "—"),
@@ -250,8 +250,7 @@ private struct ShortcutsSettingsPane: View {
         .init(id: "bottom", action: "Jump to bottom", vim: "G", standard: "Cmd-Down / End"),
         .init(id: "open", action: "Open selected", vim: "o", standard: "Return"),
         .init(id: "done", action: "Done", vim: "d", standard: "—"),
-        .init(id: "unsub", action: "Unsubscribe", vim: "x", standard: "—"),
-        .init(id: "undo", action: "Undo pending action", vim: "u", standard: "Cmd-Z"),
+        .init(id: "unsub", action: "Unsubscribe", vim: "u", standard: "—"),
         .init(id: "copy", action: "Copy URL", vim: "y", standard: "—"),
         .init(id: "search", action: "Focus search", vim: "/", standard: "—"),
         .init(id: "search-submit", action: "Apply search and return to list", vim: "return / tab", standard: "Return / Tab"),

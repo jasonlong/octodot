@@ -103,14 +103,15 @@ final class AppState {
     private let apiClientFactory: APIClientFactory
 
     private(set) var notifications: [GitHubNotification] = []
+    private(set) var filteredNotifications: [GitHubNotification] = []
     private(set) var unreadNotificationCount = 0
     private(set) var panelUnreadCount = 0
 
-    var filteredNotifications: [GitHubNotification] {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    private static func applySearchFilter(_ notifications: [GitHubNotification], query rawQuery: String) -> [GitHubNotification] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return notifications }
         return notifications.filter {
-            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+            $0.title.localizedCaseInsensitiveContains(query) || $0.repository.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -421,6 +422,7 @@ final class AppState {
 
     func done() {
         if let batch = checkedNotificationsBatch() {
+            clearChecked()
             for notification in batch {
                 if notification.source == .dependabotAlert {
                     dismissSecurityAlert(notification)
@@ -428,7 +430,6 @@ final class AppState {
                     startThreadAction(.done, target: notification)
                 }
             }
-            clearChecked()
             return
         }
         if dismissSelectedSecurityAlertIfNeeded() {
@@ -443,11 +444,11 @@ final class AppState {
 
     func unsubscribeFromThread() {
         if let batch = checkedNotificationsBatch() {
+            clearChecked()
             for notification in batch where notification.source == .thread {
                 inboxStore.muteThread(notification.threadId)
                 startThreadAction(.unsubscribe, target: notification)
             }
-            clearChecked()
             return
         }
         if let notification = selectedNotification {
@@ -464,6 +465,7 @@ final class AppState {
 
     func openInBrowser() -> Bool {
         if let batch = checkedNotificationsBatch() {
+            clearChecked()
             var anyOpened = false
             for notification in batch {
                 if urlOpener(notification.url) {
@@ -479,7 +481,6 @@ final class AppState {
                     }
                 }
             }
-            clearChecked()
             clampSelection()
             return anyOpened
         }
@@ -571,11 +572,11 @@ final class AppState {
             recentInboxNotifications: projectedRecentInbox,
             securityAlerts: projectedSecurityAlerts
         )
-        let serverModeFiltered = serverNotificationsForCurrentMode()
+        let repoOrderSource = groupByRepo ? sortedByRecency(serverNotificationsForCurrentMode()) : []
         notifications = orderedNotifications(
             modeFiltered,
             preferredRepositoryOrder: repositoryOrderAnchor,
-            repoOrderSource: sortedByRecency(serverModeFiltered)
+            repoOrderSource: repoOrderSource
         )
         #if DEBUG
         let repoOrder = notifications.reduce(into: [String]()) { order, n in
@@ -588,31 +589,27 @@ final class AppState {
                 count += 1
             }
         }
-        // Use projected thread-only count for menubar icon (excludes security alerts and muted threads)
-        let projectedThreadUnread = inboxStore.filterMutedThreads(
-            threadActions.projectedNotifications(from: serverNotifications)
-        ).filter(\.isUnread).count
-        unreadNotificationCount = projectedThreadUnread
+        // Menubar icon count: thread-only, excludes security alerts and muted threads.
+        unreadNotificationCount = inboxStore.filterMutedThreads(projectedUnread).filter(\.isUnread).count
 
-        let filtered = filteredNotifications
+        filteredNotifications = Self.applySearchFilter(notifications, query: searchQuery)
         if !checkedThreadIDs.isEmpty {
-            let visibleIDs = Set(filtered.map(\.id))
+            let visibleIDs = Set(filteredNotifications.map(\.id))
             checkedThreadIDs.formIntersection(visibleIDs)
         }
-        guard !filtered.isEmpty else {
+        guard !filteredNotifications.isEmpty else {
             clearSelection()
             return
         }
 
         if let selectedThreadID,
-           let index = filtered.firstIndex(where: { $0.id == selectedThreadID }) {
+           let index = filteredNotifications.firstIndex(where: { $0.id == selectedThreadID }) {
             selectedIndexStorage = index
         } else {
-            selectedIndexStorage = min(selectedIndexStorage, filtered.count - 1)
+            selectedIndexStorage = min(selectedIndexStorage, filteredNotifications.count - 1)
         }
 
-        let selected = filtered[selectedIndexStorage]
-        selectedThreadID = selected.id
+        selectedThreadID = filteredNotifications[selectedIndexStorage].id
 
         enqueueVisibleSubjectMetadataRefreshIfNeeded(
             forceOpenPRRefresh: shouldRefreshVisibleCIMetadataAfterNextRebuild

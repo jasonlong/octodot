@@ -18,10 +18,10 @@ Always rebuild after code changes so the user can test immediately. Use `killall
 - **AppState** (`App/AppState.swift`): Central `@MainActor @Observable` model. Owns all notification data, selection, search, auth, background refresh. ~1200 lines. All UI state derives from here.
 - **GitHubAPIClient** (`Auth/GitHubAPIClient.swift`): `actor` for thread-safe API calls with caching, pagination, conditional polling (`If-Modified-Since`/304), and rate limit awareness.
 - **InboxStore** (`App/InboxStore.swift`): Manages inbox projection — tracks recent reads, pruning, security alert state. Persists to UserDefaults.
-- **ThreadActionStore** (`App/ThreadActionStore.swift`): Optimistic actions (done, unsubscribe) with undo stack. Reconciles with server on refresh.
+- **ThreadActionStore** (`App/ThreadActionStore.swift`): Optimistic actions (done, unsubscribe) with batched dispatch. Reconciles with server on refresh.
 - **StatusItemController** (`Panel/StatusItemController.swift`): Menu bar icon, panel toggle, global hotkey (Carbon Events), right-click context menu, outside-click dismiss.
 - **NotificationPanel** (`Panel/NotificationPanel.swift`): `NSPanel` hosting SwiftUI via `NSHostingView`. Floating, non-activating, status bar level.
-- **PanelInput** (`Views/PanelInput.swift`): All keyboard routing. Vim-style (`j/k/d/x/u/o/gg/G`) plus standard shortcuts (`Cmd+Z`, `Cmd+Up/Down`, arrows, Page Up/Down).
+- **PanelInput** (`Views/PanelInput.swift`): All keyboard routing. Vim-style (`j/k/d/x/u/o/gg/G`) plus standard shortcuts (`Cmd+Up/Down`, arrows, Page Up/Down).
 
 ## Patterns to Follow
 

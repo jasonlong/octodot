@@ -21,7 +21,6 @@ struct NotificationRowView: View, Equatable {
                 onToggle: onToggleCheck
             )
 
-            // Content
             VStack(alignment: .leading, spacing: 2) {
                 repositoryLabel
                     .font(.system(size: 11))
@@ -39,7 +38,6 @@ struct NotificationRowView: View, Equatable {
 
             Spacer(minLength: 2)
 
-            // Right side: reason + time
             VStack(alignment: .trailing, spacing: 2) {
                 Text(notification.reason.rawValue)
                     .font(.system(size: 10))
@@ -116,17 +114,13 @@ private struct CheckableIconView: View {
                 .frame(maxWidth: .infinity)
 
             iconContent
-                .frame(width: iconRenderSize, height: iconRenderSize)
+                .frame(width: 14, height: 14)
                 .frame(width: 20)
         }
         .frame(width: 40, height: 44)
         .contentShape(Rectangle())
         .background(HoverDetector { isHovering = $0 })
         .onTapGesture { onToggle() }
-    }
-
-    private var iconRenderSize: CGFloat {
-        isChecked ? 16 : 14
     }
 
     @ViewBuilder
@@ -181,6 +175,7 @@ private struct HoverDetector: NSViewRepresentable {
     final class TrackingView: NSView {
         var onHoverChange: ((Bool) -> Void)?
         private var trackingArea: NSTrackingArea?
+        private var lastDeliveredHover: Bool?
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -212,11 +207,11 @@ private struct HoverDetector: NSViewRepresentable {
         }
 
         override func mouseEntered(with event: NSEvent) {
-            onHoverChange?(true)
+            deliverHoverChange(true, async: false)
         }
 
         override func mouseExited(with event: NSEvent) {
-            onHoverChange?(false)
+            deliverHoverChange(false, async: false)
         }
 
         private func syncHoverStateToCursor() {
@@ -232,9 +227,18 @@ private struct HoverDetector: NSViewRepresentable {
             }
         }
 
-        private func deliverHoverChange(_ isHovering: Bool) {
-            DispatchQueue.main.async { [weak self] in
-                self?.onHoverChange?(isHovering)
+        // Writes to SwiftUI @State via onHoverChange must defer off AppKit's
+        // display cycle (updateTrackingAreas) to avoid a setNeedsUpdateConstraints
+        // crash. mouseEntered/Exited are on a safe phase, so they skip the async.
+        private func deliverHoverChange(_ isHovering: Bool, async: Bool = true) {
+            guard lastDeliveredHover != isHovering else { return }
+            lastDeliveredHover = isHovering
+            if async {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onHoverChange?(isHovering)
+                }
+            } else {
+                onHoverChange?(isHovering)
             }
         }
     }

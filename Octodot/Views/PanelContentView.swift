@@ -187,11 +187,12 @@ struct PanelContentView: View {
             }
 
             // Footer
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 shortcutHint(key: "j/k", label: "nav")
                 shortcutHint(key: "d", label: "done")
                 shortcutHint(key: "u", label: "unsub")
                 shortcutHint(key: "o", label: "open")
+                shortcutHint(key: "x", label: "sel")
                 shortcutHint(key: "/", label: "search")
 
                 Spacer()
@@ -429,7 +430,7 @@ struct PanelContentView: View {
     }
 
     private func shortcutHint(key: String, label: String) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 0) {
             Text(key)
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .padding(.horizontal, 4)
@@ -439,7 +440,7 @@ struct PanelContentView: View {
 
             Text(label)
                 .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
         }
     }
 

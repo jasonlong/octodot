@@ -18,6 +18,21 @@ struct PanelContentView: View {
         isSearchFieldFocused ? nil : appState.selectedNotificationID
     }
 
+    private var summaryText: Text {
+        let base = Text(
+            PanelInput.notificationSummary(
+                unreadCount: appState.panelUnreadCount,
+                totalCount: appState.notifications.count,
+                mode: appState.inboxMode
+            )
+        )
+        .foregroundColor(.secondary)
+
+        let selectedCount = appState.checkedThreadIDs.count
+        guard selectedCount > 0 else { return base }
+        return base + Text(" · \(selectedCount) selected").foregroundColor(.accentColor)
+    }
+
     var body: some View {
         Group {
             if appState.isSignedIn {
@@ -77,15 +92,8 @@ struct PanelContentView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text(
-                            PanelInput.notificationSummary(
-                                unreadCount: appState.panelUnreadCount,
-                                totalCount: appState.notifications.count,
-                                mode: appState.inboxMode
-                            )
-                        )
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        summaryText
+                            .font(.system(size: 11))
                     }
 
                     Spacer()

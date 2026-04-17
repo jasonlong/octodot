@@ -45,7 +45,12 @@ final class AppState {
     }
 
     var authStatus: AuthStatus = .signedOut
-    var isPanelVisible: Bool = false
+    var isPanelVisible: Bool = false {
+        didSet {
+            guard isPanelVisible != oldValue, !isPanelVisible else { return }
+            actionToasts.removeAll()
+        }
+    }
     var isSearchActive: Bool = false
     var searchQuery: String = "" {
         didSet {
@@ -106,6 +111,12 @@ final class AppState {
     private(set) var filteredNotifications: [GitHubNotification] = []
     private(set) var unreadNotificationCount = 0
     private(set) var panelUnreadCount = 0
+    private(set) var actionToasts: [ActionToast] = []
+
+    struct ActionToast: Identifiable, Equatable {
+        let id = UUID()
+        let message: String
+    }
 
     private static func applySearchFilter(_ notifications: [GitHubNotification], query rawQuery: String) -> [GitHubNotification] {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -430,12 +441,15 @@ final class AppState {
                     startThreadAction(.done, target: notification)
                 }
             }
+            presentActionToast(verb: .done, items: batch)
             return
         }
         if dismissSelectedSecurityAlertIfNeeded() {
             return
         }
+        guard let target = selectedNotification else { return }
         startThreadAction(.done)
+        presentActionToast(verb: .done, items: [target])
     }
 
     func markRead() {
@@ -445,16 +459,24 @@ final class AppState {
     func unsubscribeFromThread() {
         if let batch = checkedNotificationsBatch() {
             clearChecked()
-            for notification in batch where notification.source == .thread {
+            let threadTargets = batch.filter { $0.source == .thread }
+            for notification in threadTargets {
                 inboxStore.muteThread(notification.threadId)
                 startThreadAction(.unsubscribe, target: notification)
             }
+            if !threadTargets.isEmpty {
+                presentActionToast(verb: .unsub, items: threadTargets)
+            }
             return
         }
-        if let notification = selectedNotification {
+        guard let notification = selectedNotification else { return }
+        if notification.source == .thread {
             inboxStore.muteThread(notification.threadId)
+            startThreadAction(.unsubscribe)
+            presentActionToast(verb: .unsub, items: [notification])
+        } else {
+            startThreadAction(.unsubscribe)
         }
-        startThreadAction(.unsubscribe)
     }
 
     func copyURL() {
@@ -466,10 +488,10 @@ final class AppState {
     func openInBrowser() -> Bool {
         if let batch = checkedNotificationsBatch() {
             clearChecked()
-            var anyOpened = false
+            var opened: [GitHubNotification] = []
             for notification in batch {
                 if urlOpener(notification.url) {
-                    anyOpened = true
+                    opened.append(notification)
                     if notification.source == .thread, notification.isUnread {
                         startThreadAction(
                             .markRead,
@@ -482,7 +504,10 @@ final class AppState {
                 }
             }
             clampSelection()
-            return anyOpened
+            if !opened.isEmpty {
+                presentActionToast(verb: .open, items: opened)
+            }
+            return !opened.isEmpty
         }
         guard let notification = selectedNotification else { return false }
         let didOpen = urlOpener(notification.url)
@@ -493,8 +518,46 @@ final class AppState {
                 inboxStore.markSecurityAlertRead(notification)
                 clampSelection()
             }
+            presentActionToast(verb: .open, items: [notification])
         }
         return didOpen
+    }
+
+    private enum ActionToastVerb {
+        case done, unsub, open
+    }
+
+    private func presentActionToast(verb: ActionToastVerb, items: [GitHubNotification]) {
+        guard !items.isEmpty else { return }
+        let message: String
+        switch verb {
+        case .done:
+            message = items.count == 1
+                ? "Marked \(Self.toastIdentifier(for: items[0])) done"
+                : "Marked \(items.count) items done"
+        case .unsub:
+            message = items.count == 1
+                ? "Unsubscribed from \(Self.toastIdentifier(for: items[0]))"
+                : "Unsubscribed from \(items.count) items"
+        case .open:
+            message = items.count == 1
+                ? "Opened \(Self.toastIdentifier(for: items[0]))"
+                : "Opened \(items.count) items"
+        }
+
+        let toast = ActionToast(message: message)
+        actionToasts.append(toast)
+        let toastID = toast.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.actionToasts.removeAll { $0.id == toastID }
+        }
+    }
+
+    private static func toastIdentifier(for notification: GitHubNotification) -> String {
+        if let reference = notification.displayReferenceNumber {
+            return "\(notification.repository)\(reference)"
+        }
+        return notification.repository
     }
 
     private func checkedNotificationsBatch() -> [GitHubNotification]? {

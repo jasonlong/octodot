@@ -120,28 +120,37 @@ struct PanelContentView: View {
 
             Divider().opacity(0.5)
 
-            // Notification list or empty state
-            if appState.filteredNotifications.isEmpty && !appState.isLoading {
-                Spacer()
-                VStack(spacing: 6) {
-                    Image(systemName: appState.searchQuery.isEmpty ? "bell.slash" : "magnifyingglass")
-                        .font(.system(size: 24))
-                        .foregroundStyle(.tertiary)
-                    Text(appState.searchQuery.isEmpty ? "All caught up" : "No matches")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+            ZStack(alignment: .bottom) {
+                // Notification list or empty state
+                if appState.filteredNotifications.isEmpty && !appState.isLoading {
+                    VStack {
+                        Spacer()
+                        VStack(spacing: 6) {
+                            Image(systemName: appState.searchQuery.isEmpty ? "bell.slash" : "magnifyingglass")
+                                .font(.system(size: 24))
+                                .foregroundStyle(.tertiary)
+                            Text(appState.searchQuery.isEmpty ? "All caught up" : "No matches")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                } else {
+                    NotificationListView(
+                        notifications: appState.filteredNotifications,
+                        selectedNotificationID: displayedSelectedNotificationID,
+                        checkedIDs: appState.checkedThreadIDs,
+                        groupByRepo: appState.groupByRepo,
+                        onSelect: { appState.selectNotification(id: $0) },
+                        onToggleCheck: { appState.toggleChecked(id: $0) },
+                        onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
+                    )
                 }
-                Spacer()
-            } else {
-                NotificationListView(
-                    notifications: appState.filteredNotifications,
-                    selectedNotificationID: displayedSelectedNotificationID,
-                    checkedIDs: appState.checkedThreadIDs,
-                    groupByRepo: appState.groupByRepo,
-                    onSelect: { appState.selectNotification(id: $0) },
-                    onToggleCheck: { appState.toggleChecked(id: $0) },
-                    onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
-                )
+
+                ActionToastStack(toasts: appState.actionToasts)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+                    .allowsHitTesting(false)
             }
 
             Divider().opacity(0.5)
@@ -450,6 +459,52 @@ struct PanelContentView: View {
         case .repeat: return "repeat"
         case .up: return "up"
         }
+    }
+}
+
+private struct ActionToastStack: View {
+    let toasts: [AppState.ActionToast]
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(toasts) { toast in
+                ActionToastView(message: toast.message)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            }
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: toasts)
+    }
+}
+
+private struct ActionToastView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let message: String
+
+    private var background: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    private var foreground: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 11, weight: .regular))
+            .foregroundStyle(foreground)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(background)
+            )
+            .shadow(color: Color.black.opacity(0.18), radius: 3, y: 1)
     }
 }
 

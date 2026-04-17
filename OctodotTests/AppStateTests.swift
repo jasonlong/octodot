@@ -2936,4 +2936,146 @@ struct AppStateTests {
         #expect(inboxStore.isThreadMuted("100") == false)
         #expect(inboxStore.isThreadMuted("200") == true)
     }
+
+    @Test func toggleCheckedAddsAndRemovesSelectedId() {
+        let (state, _) = Self.makeAuthedState(count: 3)
+        state.groupByRepo = false
+        state.selectedIndex = 1
+        let id = state.filteredNotifications[1].id
+
+        state.toggleChecked()
+        #expect(state.checkedThreadIDs == [id])
+
+        state.toggleChecked()
+        #expect(state.checkedThreadIDs.isEmpty)
+    }
+
+    @Test func toggleCheckedByIdTogglesAnyRow() {
+        let (state, _) = Self.makeAuthedState(count: 3)
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        let lastId = state.filteredNotifications[2].id
+
+        state.toggleChecked(id: firstId)
+        state.toggleChecked(id: lastId)
+        #expect(state.checkedThreadIDs == [firstId, lastId])
+
+        state.toggleChecked(id: firstId)
+        #expect(state.checkedThreadIDs == [lastId])
+    }
+
+    @Test func bulkDoneRemovesAllCheckedRowsAndClearsChecks() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0", statusCode: 204))),
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/2", statusCode: 204))),
+            ],
+            count: 3
+        )
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        let lastId = state.filteredNotifications[2].id
+
+        state.toggleChecked(id: firstId)
+        state.toggleChecked(id: lastId)
+        #expect(state.checkedThreadIDs.count == 2)
+
+        state.done()
+
+        #expect(state.checkedThreadIDs.isEmpty)
+        #expect(state.notifications.count == 1)
+        #expect(state.notifications.contains { $0.id == firstId } == false)
+        #expect(state.notifications.contains { $0.id == lastId } == false)
+
+        await Self.waitUntil {
+            let requests = await session.recordedRequests()
+            let paths = requests.compactMap { $0.url?.path }
+            return paths.contains("/notifications/threads/0") && paths.contains("/notifications/threads/2")
+        }
+    }
+
+    @Test func bulkUnsubscribeRunsOnAllCheckedRows() async {
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0/subscription", statusCode: 204))),
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0", statusCode: 204))),
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/1/subscription", statusCode: 204))),
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/1", statusCode: 204))),
+            ],
+            count: 3
+        )
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        let secondId = state.filteredNotifications[1].id
+
+        state.toggleChecked(id: firstId)
+        state.toggleChecked(id: secondId)
+
+        state.unsubscribeFromThread()
+
+        #expect(state.checkedThreadIDs.isEmpty)
+        #expect(state.notifications.contains { $0.id == firstId } == false)
+        #expect(state.notifications.contains { $0.id == secondId } == false)
+
+        await Self.waitUntil {
+            let requests = await session.recordedRequests()
+            let subscriptions = requests.filter { ($0.url?.path ?? "").hasSuffix("/subscription") }
+            return subscriptions.count >= 2
+        }
+    }
+
+    @Test func bulkOpenOpensEveryCheckedUrlAndClearsChecks() {
+        var openedURLs: [URL] = []
+        let defaults = Self.makeIsolatedUserDefaults()
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(
+            3,
+            apiClient: client,
+            userDefaults: defaults,
+            urlOpener: { url in
+                openedURLs.append(url)
+                return true
+            }
+        )
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        let secondId = state.filteredNotifications[1].id
+
+        state.toggleChecked(id: firstId)
+        state.toggleChecked(id: secondId)
+
+        let didOpen = state.openInBrowser()
+
+        #expect(didOpen == true)
+        #expect(openedURLs.count == 2)
+        #expect(state.checkedThreadIDs.isEmpty)
+    }
+
+    @Test func refreshClearsChecks() {
+        let (state, _) = Self.makeAuthedState(count: 3)
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        state.toggleChecked(id: firstId)
+        #expect(state.checkedThreadIDs.contains(firstId))
+
+        state.refresh(force: false)
+
+        #expect(state.checkedThreadIDs.isEmpty)
+    }
+
+    @Test func searchFilteringPrunesChecksForHiddenRows() {
+        let (state, _) = Self.makeAuthedState(count: 3)
+        state.groupByRepo = false
+        let firstId = state.filteredNotifications[0].id
+        let secondId = state.filteredNotifications[1].id
+        state.toggleChecked(id: firstId)
+        state.toggleChecked(id: secondId)
+
+        // Search matches only "Notification 0" (titles are unique per id in test fixtures).
+        state.searchQuery = "Notification 0"
+
+        #expect(state.checkedThreadIDs.contains(firstId) == true)
+        #expect(state.checkedThreadIDs.contains(secondId) == false)
+    }
 }

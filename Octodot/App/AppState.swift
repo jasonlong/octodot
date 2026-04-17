@@ -77,6 +77,7 @@ final class AppState {
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
+    private(set) var checkedThreadIDs: Set<String> = []
     private var shouldSelectTopItemOnNextLoad = false
     private var threadActions: ThreadActionStore
     private var actionTasks: [String: Task<Void, Never>] = [:]
@@ -419,6 +420,17 @@ final class AppState {
     }
 
     func done() {
+        if let batch = checkedNotificationsBatch() {
+            for notification in batch {
+                if notification.source == .dependabotAlert {
+                    dismissSecurityAlert(notification)
+                } else {
+                    startThreadAction(.done, target: notification)
+                }
+            }
+            clearChecked()
+            return
+        }
         if dismissSelectedSecurityAlertIfNeeded() {
             return
         }
@@ -430,6 +442,14 @@ final class AppState {
     }
 
     func unsubscribeFromThread() {
+        if let batch = checkedNotificationsBatch() {
+            for notification in batch where notification.source == .thread {
+                inboxStore.muteThread(notification.threadId)
+                startThreadAction(.unsubscribe, target: notification)
+            }
+            clearChecked()
+            return
+        }
         if let notification = selectedNotification {
             inboxStore.muteThread(notification.threadId)
         }
@@ -443,6 +463,27 @@ final class AppState {
     }
 
     func openInBrowser() -> Bool {
+        if let batch = checkedNotificationsBatch() {
+            var anyOpened = false
+            for notification in batch {
+                if urlOpener(notification.url) {
+                    anyOpened = true
+                    if notification.source == .thread, notification.isUnread {
+                        startThreadAction(
+                            .markRead,
+                            target: notification,
+                            delayNanosecondsOverride: 0,
+                            pushesUndo: false
+                        )
+                    } else if notification.source == .dependabotAlert, notification.isUnread {
+                        inboxStore.markSecurityAlertRead(notification)
+                    }
+                }
+            }
+            clearChecked()
+            clampSelection()
+            return anyOpened
+        }
         guard let notification = selectedNotification else { return false }
         let didOpen = urlOpener(notification.url)
         if didOpen {
@@ -454,6 +495,12 @@ final class AppState {
             }
         }
         return didOpen
+    }
+
+    private func checkedNotificationsBatch() -> [GitHubNotification]? {
+        guard !checkedThreadIDs.isEmpty else { return nil }
+        let ordered = filteredNotifications.filter { checkedThreadIDs.contains($0.id) }
+        return ordered.isEmpty ? nil : ordered
     }
 
     func undo() {
@@ -488,6 +535,7 @@ final class AppState {
     func refresh(force: Bool = false) {
         searchQuery = ""
         isSearchActive = false
+        checkedThreadIDs.removeAll()
         flushPendingActions()
         if apiClient != nil {
             Task { await loadNotifications(force: force) }
@@ -513,6 +561,23 @@ final class AppState {
             return
         }
         applySelection(index: index, in: filteredNotifications)
+    }
+
+    func toggleChecked() {
+        guard let id = selectedNotification?.id else { return }
+        toggleChecked(id: id)
+    }
+
+    func toggleChecked(id: String) {
+        if checkedThreadIDs.contains(id) {
+            checkedThreadIDs.remove(id)
+        } else {
+            checkedThreadIDs.insert(id)
+        }
+    }
+
+    func clearChecked() {
+        checkedThreadIDs.removeAll()
     }
 
     func clampSelection() {
@@ -560,6 +625,10 @@ final class AppState {
         unreadNotificationCount = projectedThreadUnread
 
         let filtered = filteredNotifications
+        if !checkedThreadIDs.isEmpty {
+            let visibleIDs = Set(filtered.map(\.id))
+            checkedThreadIDs.formIntersection(visibleIDs)
+        }
         guard !filtered.isEmpty else {
             clearSelection()
             return
@@ -711,13 +780,12 @@ final class AppState {
 
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
+        target explicitTarget: GitHubNotification? = nil,
         delayNanosecondsOverride: UInt64? = nil,
         pushesUndo: Bool = true
     ) {
-        guard let client = apiClient,
-              let target = selectedNotification else {
-            return
-        }
+        guard let client = apiClient else { return }
+        guard let target = explicitTarget ?? selectedNotification else { return }
         guard target.source == .thread else {
             errorMessage = "Security alerts can only be opened or marked done"
             return
@@ -766,8 +834,15 @@ final class AppState {
               target.source == .dependabotAlert else {
             return false
         }
+        dismissSecurityAlert(target)
+        return true
+    }
 
-        let originalVisibleIndex = selectedIndex
+    private func dismissSecurityAlert(_ target: GitHubNotification) {
+        guard target.source == .dependabotAlert else { return }
+
+        let visibleBeforeMutation = filteredNotifications
+        let originalVisibleIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndex
         threadActions.pushSecurityAlertDismissUndo(
             notification: target,
             originalVisibleIndex: originalVisibleIndex
@@ -775,11 +850,9 @@ final class AppState {
         inboxStore.dismissSecurityAlert(target)
         errorMessage = nil
 
-        let visibleBeforeMutation = filteredNotifications
         selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
         selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
         clampSelection()
-        return true
     }
 
     private func startRestoreSubscriptionUndo(notification: GitHubNotification, originalServerIndex: Int) {

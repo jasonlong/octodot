@@ -128,8 +128,10 @@ struct PanelContentView: View {
                 NotificationListView(
                     notifications: appState.filteredNotifications,
                     selectedNotificationID: displayedSelectedNotificationID,
+                    checkedIDs: appState.checkedThreadIDs,
                     groupByRepo: appState.groupByRepo,
                     onSelect: { appState.selectNotification(id: $0) },
+                    onToggleCheck: { appState.toggleChecked(id: $0) },
                     onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
                 )
             }
@@ -357,6 +359,8 @@ struct PanelContentView: View {
             appState.copyURL()
         case .undo:
             appState.undo()
+        case .toggleChecked:
+            appState.toggleChecked()
         case .toggleInboxMode:
             appState.toggleInboxMode()
         case .toggleGrouping:

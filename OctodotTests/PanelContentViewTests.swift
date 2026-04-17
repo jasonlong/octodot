@@ -8,7 +8,7 @@ struct PanelContentViewTests {
         #expect(PanelInput.routeKey(.character("k"), isSearchActive: false, pendingG: false) ==
             .init(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.space, isSearchActive: false, pendingG: false) ==
-            .init(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true))
+            .init(command: .toggleChecked, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.controlF, isSearchActive: false, pendingG: false) ==
             .init(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.controlB, isSearchActive: false, pendingG: false) ==
@@ -113,7 +113,7 @@ struct PanelContentViewTests {
     @Test func repeatIsAllowedOnlyForNavigation() {
         #expect(PanelInput.allowsRepeat(for: .character("j")) == true)
         #expect(PanelInput.allowsRepeat(for: .character("k")) == true)
-        #expect(PanelInput.allowsRepeat(for: .space) == true)
+        #expect(PanelInput.allowsRepeat(for: .space) == false)
         #expect(PanelInput.allowsRepeat(for: .controlF) == true)
         #expect(PanelInput.allowsRepeat(for: .controlB) == true)
         #expect(PanelInput.allowsRepeat(for: .controlD) == true)
@@ -130,6 +130,7 @@ struct PanelContentViewTests {
         #expect(PanelInput.handlesOnKeyUp(for: .character("x")) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("o")) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("r")) == true)
+        #expect(PanelInput.handlesOnKeyUp(for: .space) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("j")) == false)
         #expect(PanelInput.handlesOnKeyUp(for: .character("k")) == false)
         #expect(PanelInput.handlesOnKeyUp(for: .character("g")) == false)
@@ -140,6 +141,7 @@ struct PanelContentViewTests {
         #expect(PanelInput.isSingleFireListCommand(.unsubscribe) == true)
         #expect(PanelInput.isSingleFireListCommand(.open) == true)
         #expect(PanelInput.isSingleFireListCommand(.undo) == true)
+        #expect(PanelInput.isSingleFireListCommand(.toggleChecked) == true)
         #expect(PanelInput.isSingleFireListCommand(.moveDown) == false)
         #expect(PanelInput.isSingleFireListCommand(.moveUp) == false)
         #expect(PanelInput.isSingleFireListCommand(.forceRefresh) == false)

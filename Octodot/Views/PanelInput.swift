@@ -33,6 +33,7 @@ enum PanelInput {
         case open
         case copyURL
         case undo
+        case toggleChecked
         case toggleInboxMode
         case toggleGrouping
         case forceRefresh
@@ -107,7 +108,7 @@ enum PanelInput {
 
     static func isSingleFireListCommand(_ command: KeyboardCommand) -> Bool {
         switch command {
-        case .done, .unsubscribe, .open, .copyURL, .undo:
+        case .done, .unsubscribe, .open, .copyURL, .undo, .toggleChecked:
             return true
         case .moveDown,
              .moveUp,
@@ -129,9 +130,9 @@ enum PanelInput {
 
     static func allowsRepeat(for input: KeyInput) -> Bool {
         switch input {
-        case .character("j"), .character("k"), .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
+        case .character("j"), .character("k"), .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow:
             return true
-        case .character, .commandZ, .commandDown, .commandUp, .escape, .return, .other:
+        case .character, .space, .commandZ, .commandDown, .commandUp, .escape, .return, .other:
             return false
         }
     }
@@ -147,10 +148,11 @@ enum PanelInput {
              .character("s"),
              .character("r"),
              .character("/"),
+             .space,
              .escape,
              .return:
             return true
-        case .character, .commandZ, .commandDown, .commandUp, .space, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
+        case .character, .commandZ, .commandDown, .commandUp, .controlF, .controlB, .controlD, .controlU, .downArrow, .upArrow, .other:
             return false
         }
     }
@@ -325,6 +327,7 @@ enum PanelInput {
         case .open: return "open"
         case .copyURL: return "copyURL"
         case .undo: return "undo"
+        case .toggleChecked: return "toggleChecked"
         case .toggleInboxMode: return "toggleInboxMode"
         case .toggleGrouping: return "toggleGrouping"
         case .forceRefresh: return "forceRefresh"
@@ -364,7 +367,9 @@ enum PanelInput {
             return KeyRouting(command: .moveDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .character("k"), .upArrow:
             return KeyRouting(command: .moveUp, pendingG: false, focusDirective: .unchanged, isHandled: true)
-        case .space, .controlF:
+        case .space:
+            return KeyRouting(command: .toggleChecked, pendingG: false, focusDirective: .unchanged, isHandled: true)
+        case .controlF:
             return KeyRouting(command: .pageDown, pendingG: false, focusDirective: .unchanged, isHandled: true)
         case .controlB:
             return KeyRouting(command: .pageUp, pendingG: false, focusDirective: .unchanged, isHandled: true)

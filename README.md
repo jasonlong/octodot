@@ -42,7 +42,8 @@ The app is intentionally keyboard-centric.
 
 - `j` / `k`: move selection
 - `Up` / `Down`: move selection
-- `ctrl-f` or `Space`: page down
+- `Space`: toggle the current row's selection for bulk actions (`d`, `x`, `o` apply to every checked row when the set is non-empty)
+- `ctrl-f`: page down
 - `ctrl-b`: page up
 - `ctrl-d` / `ctrl-u`: half-page down / up
 - `gg` / `G`: jump to top / bottom

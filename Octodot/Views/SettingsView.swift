@@ -241,7 +241,8 @@ private struct ShortcutsSettingsPane: View {
 
     private let bindingRows: [BindingRow] = [
         .init(id: "move", action: "Move selection", vim: "j / k", standard: "Up / Down"),
-        .init(id: "page-down", action: "Page down", vim: "ctrl-f / space", standard: "Page Down"),
+        .init(id: "bulk-toggle", action: "Toggle selection for bulk actions", vim: "space", standard: "Space"),
+        .init(id: "page-down", action: "Page down", vim: "ctrl-f", standard: "Page Down"),
         .init(id: "page-up", action: "Page up", vim: "ctrl-b", standard: "Page Up"),
         .init(id: "half-down", action: "Half page down", vim: "ctrl-d", standard: "—"),
         .init(id: "half-up", action: "Half page up", vim: "ctrl-u", standard: "—"),

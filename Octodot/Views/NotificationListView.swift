@@ -3,8 +3,10 @@ import SwiftUI
 struct NotificationListView: View {
     let notifications: [GitHubNotification]
     let selectedNotificationID: String?
+    let checkedIDs: Set<String>
     let groupByRepo: Bool
     let onSelect: (String) -> Void
+    let onToggleCheck: (String) -> Void
     let onNotificationVisible: (String) -> Void
 
     enum ListItem: Equatable, Identifiable {
@@ -76,7 +78,9 @@ struct NotificationListView: View {
         case .notification(let notification, let isSelected):
             NotificationRowView(
                 notification: notification,
-                isSelected: isSelected
+                isSelected: isSelected,
+                isChecked: checkedIDs.contains(notification.id),
+                onToggleCheck: { onToggleCheck(notification.id) }
             )
             .id(notification.id)
             .onTapGesture {

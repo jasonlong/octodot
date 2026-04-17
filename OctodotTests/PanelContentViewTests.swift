@@ -20,9 +20,9 @@ struct PanelContentViewTests {
         #expect(PanelInput.routeKey(.character("d"), isSearchActive: false, pendingG: false) ==
             .init(command: .done, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("x"), isSearchActive: false, pendingG: false) ==
-            .init(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true))
+            .init(command: .toggleChecked, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("u"), isSearchActive: false, pendingG: false) ==
-            .init(command: .undo, pendingG: false, focusDirective: .unchanged, isHandled: true))
+            .init(command: .unsubscribe, pendingG: false, focusDirective: .unchanged, isHandled: true))
         #expect(PanelInput.routeKey(.character("a"), isSearchActive: false, pendingG: false) ==
             .init(command: .toggleInboxMode, pendingG: false, focusDirective: .unchanged, isHandled: true))
     }
@@ -128,8 +128,10 @@ struct PanelContentViewTests {
     @Test func destructiveAndActionKeysExecuteOnKeyUp() {
         #expect(PanelInput.handlesOnKeyUp(for: .character("d")) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("x")) == true)
+        #expect(PanelInput.handlesOnKeyUp(for: .character("u")) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("o")) == true)
         #expect(PanelInput.handlesOnKeyUp(for: .character("r")) == true)
+        #expect(PanelInput.handlesOnKeyUp(for: .space) == false)
         #expect(PanelInput.handlesOnKeyUp(for: .character("j")) == false)
         #expect(PanelInput.handlesOnKeyUp(for: .character("k")) == false)
         #expect(PanelInput.handlesOnKeyUp(for: .character("g")) == false)
@@ -139,7 +141,7 @@ struct PanelContentViewTests {
         #expect(PanelInput.isSingleFireListCommand(.done) == true)
         #expect(PanelInput.isSingleFireListCommand(.unsubscribe) == true)
         #expect(PanelInput.isSingleFireListCommand(.open) == true)
-        #expect(PanelInput.isSingleFireListCommand(.undo) == true)
+        #expect(PanelInput.isSingleFireListCommand(.toggleChecked) == true)
         #expect(PanelInput.isSingleFireListCommand(.moveDown) == false)
         #expect(PanelInput.isSingleFireListCommand(.moveUp) == false)
         #expect(PanelInput.isSingleFireListCommand(.forceRefresh) == false)

@@ -49,8 +49,8 @@ The app is intentionally keyboard-centric.
 - `Home` / `End`: jump to top / bottom
 - `o` or `Return`: open in browser and mark read
 - `d`: mark done
-- `x`: unsubscribe
-- `u`: undo queued action (available for a few seconds)
+- `u`: unsubscribe
+- `x`: toggle the current row's selection for bulk actions (`d`, `u`, `o` apply to every checked row when the set is non-empty)
 - `y`: copy URL
 - `a`: toggle `Inbox` / `Unread`
 - `s`: toggle repo grouping

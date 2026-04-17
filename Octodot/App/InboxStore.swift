@@ -205,13 +205,6 @@ final class InboxStore {
         persistDismissedSecurityAlerts()
     }
 
-    func restoreDismissedSecurityAlert(_ notification: GitHubNotification) {
-        guard dismissedSecurityAlerts.removeValue(forKey: notification.id) != nil else {
-            return
-        }
-        persistDismissedSecurityAlerts()
-    }
-
     func markSecurityAlertRead(_ notification: GitHubNotification) {
         guard notification.source == .dependabotAlert else { return }
         if let existing = readSecurityAlerts[notification.id], existing >= notification.updatedAt {

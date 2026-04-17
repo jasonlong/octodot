@@ -900,24 +900,6 @@ actor GitHubAPIClient {
         return dataObj
     }
 
-    func restoreSubscription(threadId: String, notification _: GitHubNotification) async throws {
-        let traceID = UUID().uuidString
-        let url = baseURL.appendingPathComponent("notifications/threads/\(threadId)/subscription")
-        var req = makeRequest(url: url)
-        req.httpMethod = "PUT"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: false))
-
-        let (data, response) = try await session.data(for: req)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        logActionResponse(traceID: traceID, action: "restore-subscription", step: "restore-thread", threadId: threadId, request: req, response: response, data: data)
-        guard (200...299).contains(status) else {
-            throw APIError.httpError(status)
-        }
-
-        invalidateFeedCaches(FeedScope.allCases)
-    }
-
     // MARK: - Validate token
 
     func validateToken() async throws -> String {

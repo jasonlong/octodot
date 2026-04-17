@@ -45,7 +45,12 @@ final class AppState {
     }
 
     var authStatus: AuthStatus = .signedOut
-    var isPanelVisible: Bool = false
+    var isPanelVisible: Bool = false {
+        didSet {
+            guard isPanelVisible != oldValue, !isPanelVisible else { return }
+            actionToasts.removeAll()
+        }
+    }
     var isSearchActive: Bool = false
     var searchQuery: String = "" {
         didSet {
@@ -77,6 +82,7 @@ final class AppState {
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
+    private(set) var checkedThreadIDs: Set<String> = []
     private var shouldSelectTopItemOnNextLoad = false
     private var threadActions: ThreadActionStore
     private var actionTasks: [String: Task<Void, Never>] = [:]
@@ -102,14 +108,21 @@ final class AppState {
     private let apiClientFactory: APIClientFactory
 
     private(set) var notifications: [GitHubNotification] = []
+    private(set) var filteredNotifications: [GitHubNotification] = []
     private(set) var unreadNotificationCount = 0
     private(set) var panelUnreadCount = 0
+    private(set) var actionToasts: [ActionToast] = []
 
-    var filteredNotifications: [GitHubNotification] {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    struct ActionToast: Identifiable, Equatable {
+        let id = UUID()
+        let message: String
+    }
+
+    private static func applySearchFilter(_ notifications: [GitHubNotification], query rawQuery: String) -> [GitHubNotification] {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return notifications }
         return notifications.filter {
-            $0.title.lowercased().contains(query) || $0.repository.lowercased().contains(query)
+            $0.title.localizedCaseInsensitiveContains(query) || $0.repository.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -419,10 +432,24 @@ final class AppState {
     }
 
     func done() {
+        if let batch = checkedNotificationsBatch() {
+            clearChecked()
+            for notification in batch {
+                if notification.source == .dependabotAlert {
+                    dismissSecurityAlert(notification)
+                } else {
+                    startThreadAction(.done, target: notification)
+                }
+            }
+            presentActionToast(verb: .done, items: batch)
+            return
+        }
         if dismissSelectedSecurityAlertIfNeeded() {
             return
         }
+        guard let target = selectedNotification else { return }
         startThreadAction(.done)
+        presentActionToast(verb: .done, items: [target])
     }
 
     func markRead() {
@@ -430,10 +457,26 @@ final class AppState {
     }
 
     func unsubscribeFromThread() {
-        if let notification = selectedNotification {
-            inboxStore.muteThread(notification.threadId)
+        if let batch = checkedNotificationsBatch() {
+            clearChecked()
+            let threadTargets = batch.filter { $0.source == .thread }
+            for notification in threadTargets {
+                inboxStore.muteThread(notification.threadId)
+                startThreadAction(.unsubscribe, target: notification)
+            }
+            if !threadTargets.isEmpty {
+                presentActionToast(verb: .unsub, items: threadTargets)
+            }
+            return
         }
-        startThreadAction(.unsubscribe)
+        guard let notification = selectedNotification else { return }
+        if notification.source == .thread {
+            inboxStore.muteThread(notification.threadId)
+            startThreadAction(.unsubscribe)
+            presentActionToast(verb: .unsub, items: [notification])
+        } else {
+            startThreadAction(.unsubscribe)
+        }
     }
 
     func copyURL() {
@@ -443,51 +486,90 @@ final class AppState {
     }
 
     func openInBrowser() -> Bool {
+        if let batch = checkedNotificationsBatch() {
+            clearChecked()
+            var opened: [GitHubNotification] = []
+            for notification in batch {
+                if urlOpener(notification.url) {
+                    opened.append(notification)
+                    if notification.source == .thread, notification.isUnread {
+                        startThreadAction(
+                            .markRead,
+                            target: notification,
+                            delayNanosecondsOverride: 0
+                        )
+                    } else if notification.source == .dependabotAlert, notification.isUnread {
+                        inboxStore.markSecurityAlertRead(notification)
+                    }
+                }
+            }
+            clampSelection()
+            if !opened.isEmpty {
+                presentActionToast(verb: .open, items: opened)
+            }
+            return !opened.isEmpty
+        }
         guard let notification = selectedNotification else { return false }
         let didOpen = urlOpener(notification.url)
         if didOpen {
             if notification.source == .thread, notification.isUnread {
-                startThreadAction(.markRead, delayNanosecondsOverride: 0, pushesUndo: false)
+                startThreadAction(.markRead, delayNanosecondsOverride: 0)
             } else if notification.source == .dependabotAlert, notification.isUnread {
                 inboxStore.markSecurityAlertRead(notification)
                 clampSelection()
             }
+            presentActionToast(verb: .open, items: [notification])
         }
         return didOpen
     }
 
-    func undo() {
-        switch threadActions.applyUndo() {
-        case .none:
-            clampSelection()
-        case .stale:
-            warningMessage = "The last action can no longer be undone"
-            clampSelection()
-        case .cancelQueued(let pending):
-            actionTasks.removeValue(forKey: pending.notification.threadId)?.cancel()
-            errorMessage = nil
-            warningMessage = nil
-            if pending.kind.hidesNotification || pending.kind == .restoreSubscription {
-                selectedThreadID = pending.notification.id
-                selectedIndexStorage = pending.originalServerIndex
-            }
-            clampSelection()
-        case .restoreSubscription(let notification, let originalServerIndex):
-            warningMessage = nil
-            startRestoreSubscriptionUndo(notification: notification, originalServerIndex: originalServerIndex)
-        case .restoreSecurityAlert(let notification, let originalVisibleIndex):
-            inboxStore.restoreDismissedSecurityAlert(notification)
-            errorMessage = nil
-            warningMessage = nil
-            selectedThreadID = notification.id
-            selectedIndexStorage = originalVisibleIndex
-            clampSelection()
+    private enum ActionToastVerb {
+        case done, unsub, open
+    }
+
+    private func presentActionToast(verb: ActionToastVerb, items: [GitHubNotification]) {
+        guard !items.isEmpty else { return }
+        let message: String
+        switch verb {
+        case .done:
+            message = items.count == 1
+                ? "Marked \(Self.toastIdentifier(for: items[0])) done"
+                : "Marked \(items.count) items done"
+        case .unsub:
+            message = items.count == 1
+                ? "Unsubscribed from \(Self.toastIdentifier(for: items[0]))"
+                : "Unsubscribed from \(items.count) items"
+        case .open:
+            message = items.count == 1
+                ? "Opened \(Self.toastIdentifier(for: items[0]))"
+                : "Opened \(items.count) items"
         }
+
+        let toast = ActionToast(message: message)
+        actionToasts.append(toast)
+        let toastID = toast.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.actionToasts.removeAll { $0.id == toastID }
+        }
+    }
+
+    private static func toastIdentifier(for notification: GitHubNotification) -> String {
+        if let reference = notification.displayReferenceNumber {
+            return "\(notification.repository)\(reference)"
+        }
+        return notification.repository
+    }
+
+    private func checkedNotificationsBatch() -> [GitHubNotification]? {
+        guard !checkedThreadIDs.isEmpty else { return nil }
+        let ordered = filteredNotifications.filter { checkedThreadIDs.contains($0.id) }
+        return ordered.isEmpty ? nil : ordered
     }
 
     func refresh(force: Bool = false) {
         searchQuery = ""
         isSearchActive = false
+        checkedThreadIDs.removeAll()
         flushPendingActions()
         if apiClient != nil {
             Task { await loadNotifications(force: force) }
@@ -515,6 +597,23 @@ final class AppState {
         applySelection(index: index, in: filteredNotifications)
     }
 
+    func toggleChecked() {
+        guard let id = selectedNotification?.id else { return }
+        toggleChecked(id: id)
+    }
+
+    func toggleChecked(id: String) {
+        if checkedThreadIDs.contains(id) {
+            checkedThreadIDs.remove(id)
+        } else {
+            checkedThreadIDs.insert(id)
+        }
+    }
+
+    func clearChecked() {
+        checkedThreadIDs.removeAll()
+    }
+
     func clampSelection() {
         rebuildDerivedState()
     }
@@ -536,11 +635,11 @@ final class AppState {
             recentInboxNotifications: projectedRecentInbox,
             securityAlerts: projectedSecurityAlerts
         )
-        let serverModeFiltered = serverNotificationsForCurrentMode()
+        let repoOrderSource = groupByRepo ? sortedByRecency(serverNotificationsForCurrentMode()) : []
         notifications = orderedNotifications(
             modeFiltered,
             preferredRepositoryOrder: repositoryOrderAnchor,
-            repoOrderSource: sortedByRecency(serverModeFiltered)
+            repoOrderSource: repoOrderSource
         )
         #if DEBUG
         let repoOrder = notifications.reduce(into: [String]()) { order, n in
@@ -553,27 +652,27 @@ final class AppState {
                 count += 1
             }
         }
-        // Use projected thread-only count for menubar icon (excludes security alerts and muted threads)
-        let projectedThreadUnread = inboxStore.filterMutedThreads(
-            threadActions.projectedNotifications(from: serverNotifications)
-        ).filter(\.isUnread).count
-        unreadNotificationCount = projectedThreadUnread
+        // Menubar icon count: thread-only, excludes security alerts and muted threads.
+        unreadNotificationCount = inboxStore.filterMutedThreads(projectedUnread).filter(\.isUnread).count
 
-        let filtered = filteredNotifications
-        guard !filtered.isEmpty else {
+        filteredNotifications = Self.applySearchFilter(notifications, query: searchQuery)
+        if !checkedThreadIDs.isEmpty {
+            let visibleIDs = Set(filteredNotifications.map(\.id))
+            checkedThreadIDs.formIntersection(visibleIDs)
+        }
+        guard !filteredNotifications.isEmpty else {
             clearSelection()
             return
         }
 
         if let selectedThreadID,
-           let index = filtered.firstIndex(where: { $0.id == selectedThreadID }) {
+           let index = filteredNotifications.firstIndex(where: { $0.id == selectedThreadID }) {
             selectedIndexStorage = index
         } else {
-            selectedIndexStorage = min(selectedIndexStorage, filtered.count - 1)
+            selectedIndexStorage = min(selectedIndexStorage, filteredNotifications.count - 1)
         }
 
-        let selected = filtered[selectedIndexStorage]
-        selectedThreadID = selected.id
+        selectedThreadID = filteredNotifications[selectedIndexStorage].id
 
         enqueueVisibleSubjectMetadataRefreshIfNeeded(
             forceOpenPRRefresh: shouldRefreshVisibleCIMetadataAfterNextRebuild
@@ -711,13 +810,11 @@ final class AppState {
 
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
-        delayNanosecondsOverride: UInt64? = nil,
-        pushesUndo: Bool = true
+        target explicitTarget: GitHubNotification? = nil,
+        delayNanosecondsOverride: UInt64? = nil
     ) {
-        guard let client = apiClient,
-              let target = selectedNotification else {
-            return
-        }
+        guard let client = apiClient else { return }
+        guard let target = explicitTarget ?? selectedNotification else { return }
         guard target.source == .thread else {
             errorMessage = "Security alerts can only be opened or marked done"
             return
@@ -736,8 +833,7 @@ final class AppState {
         let pending = threadActions.start(
             kind,
             notification: target,
-            originalServerIndex: originalServerIndex,
-            pushesUndo: pushesUndo
+            originalServerIndex: originalServerIndex
         )
 
         let visibleBeforeMutation = filteredNotifications
@@ -766,38 +862,20 @@ final class AppState {
               target.source == .dependabotAlert else {
             return false
         }
-
-        let originalVisibleIndex = selectedIndex
-        threadActions.pushSecurityAlertDismissUndo(
-            notification: target,
-            originalVisibleIndex: originalVisibleIndex
-        )
-        inboxStore.dismissSecurityAlert(target)
-        errorMessage = nil
-
-        let visibleBeforeMutation = filteredNotifications
-        selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
-        selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
-        clampSelection()
+        dismissSecurityAlert(target)
         return true
     }
 
-    private func startRestoreSubscriptionUndo(notification: GitHubNotification, originalServerIndex: Int) {
-        guard let client = apiClient else { return }
+    private func dismissSecurityAlert(_ target: GitHubNotification) {
+        guard target.source == .dependabotAlert else { return }
 
-        let pending = threadActions.start(
-            .restoreSubscription,
-            notification: notification,
-            originalServerIndex: originalServerIndex,
-            pushesUndo: false
-        )
-
-        selectedThreadID = notification.id
-        selectedIndexStorage = originalServerIndex
+        let visibleBeforeMutation = filteredNotifications
+        inboxStore.dismissSecurityAlert(target)
         errorMessage = nil
-        clampSelection()
 
-        dispatchPendingActionImmediately(client: client, pending: pending)
+        selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
+        selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
+        clampSelection()
     }
 
     private func scheduleBatchDispatch(client: GitHubAPIClient, delayNanoseconds: UInt64) {
@@ -854,11 +932,6 @@ final class AppState {
             case .unsubscribe:
                 try await client.unsubscribe(notification: pending.notification)
                 try await client.markAsDone(notification: pending.notification)
-            case .restoreSubscription:
-                try await client.restoreSubscription(
-                    threadId: pending.notification.threadId,
-                    notification: pending.notification
-                )
             }
 
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
@@ -882,7 +955,7 @@ final class AppState {
 
     private func handlePendingActionSuccess(_ pending: ThreadActionStore.PendingAction) {
         actionTasks[pending.notification.threadId] = nil
-        let successEffect = threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
+        threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
         switch pending.kind {
         case .markRead:
             var readNotification = pending.notification
@@ -894,19 +967,11 @@ final class AppState {
             )
         case .done, .unsubscribe:
             inboxStore.removeRecentReadNotification(threadId: pending.notification.threadId)
-        case .restoreSubscription:
-            break
         }
         DebugTrace.log(
             "success kind=\(pending.kind.rawValue) target.id=\(pending.notification.id) " +
             "target.thread=\(pending.notification.threadId) server=\(serverNotifications.map(\.id).joined(separator: ","))"
         )
-        if case .restoreSubscription(let notification, let originalServerIndex) = successEffect {
-            startRestoreSubscriptionUndo(
-                notification: notification,
-                originalServerIndex: originalServerIndex
-            )
-        }
 
         errorMessage = nil
         rebuildDerivedState()
@@ -1120,8 +1185,6 @@ final class AppState {
 
     private func actionDelay(for kind: ThreadActionStore.ActionKind) -> UInt64 {
         switch kind {
-        case .restoreSubscription:
-            return 0
         case .markRead, .done, .unsubscribe:
             return actionDispatchDelayNanoseconds
         }

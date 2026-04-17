@@ -1316,46 +1316,6 @@ struct GitHubAPIClientTests {
         #expect(requests[3].value(forHTTPHeaderField: "If-Modified-Since") == nil)
     }
 
-    @Test func restoreSubscriptionClearsIgnoredThreadSubscription() async throws {
-        let notification = GitHubNotification(
-            id: "1",
-            threadId: "thread-1",
-            title: "Notification 1",
-            repository: "acme/alpha",
-            reason: .reviewRequested,
-            type: .pullRequest,
-            updatedAt: Date(),
-            isUnread: true,
-            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
-            subjectURL: nil,
-            subjectState: .open
-        )
-        let session = StubNetworkSession(results: [
-            .success((
-                #"{"subscribed":true,"ignored":false}"#.data(using: .utf8)!,
-                HTTPURLResponse(
-                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
-                    statusCode: 200,
-                    httpVersion: nil,
-                    headerFields: [:]
-                )!
-            ))
-        ])
-
-        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
-        try await client.restoreSubscription(threadId: "thread-1", notification: notification)
-        let requests = await session.recordedRequests()
-        let request = try #require(requests.first)
-        let body = try #require(request.httpBody)
-        let bodyObject = try #require(JSONSerialization.jsonObject(with: body) as? [String: Bool])
-
-        #expect(request.httpMethod == "PUT")
-        #expect(request.url?.path == "/notifications/threads/thread-1/subscription")
-        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
-        #expect(bodyObject["ignored"] == false)
-        #expect(bodyObject["subscribed"] == nil)
-    }
-
     private static func notificationsPayload(
         id: String,
         updatedAt: String = "2026-04-01T12:00:00Z",

@@ -459,24 +459,24 @@ final class AppState {
     func unsubscribeFromThread() {
         if let batch = checkedNotificationsBatch() {
             clearChecked()
-            let threadTargets = batch.filter { $0.source == .thread }
-            for notification in threadTargets {
-                inboxStore.muteThread(notification.threadId)
-                startThreadAction(.unsubscribe, target: notification)
+            for notification in batch {
+                if notification.source == .dependabotAlert {
+                    dismissSecurityAlert(notification)
+                } else {
+                    inboxStore.muteThread(notification.threadId)
+                    startThreadAction(.unsubscribe, target: notification)
+                }
             }
-            if !threadTargets.isEmpty {
-                presentActionToast(verb: .unsub, items: threadTargets)
-            }
+            presentActionToast(verb: .unsub, items: batch)
+            return
+        }
+        if dismissSelectedSecurityAlertIfNeeded() {
             return
         }
         guard let notification = selectedNotification else { return }
-        if notification.source == .thread {
-            inboxStore.muteThread(notification.threadId)
-            startThreadAction(.unsubscribe)
-            presentActionToast(verb: .unsub, items: [notification])
-        } else {
-            startThreadAction(.unsubscribe)
-        }
+        inboxStore.muteThread(notification.threadId)
+        startThreadAction(.unsubscribe)
+        presentActionToast(verb: .unsub, items: [notification])
     }
 
     func copyURL() {

@@ -31,7 +31,9 @@ settings_commits=()
 remaining_subjects=()
 
 for subject in "${commit_subjects[@]}"; do
-  if [[ "$subject" == *signing* || "$subject" == *notariz* || "$subject" == *stapler* || "$subject" == *"archive export"* || "$subject" == *entitlements* || "$subject" == *"notarized releases"* || "$subject" == *"for CI"* ]]; then
+  if [[ "$subject" == "Bump version to "* || "$subject" == "Bump to "* ]]; then
+    continue
+  elif [[ "$subject" == *signing* || "$subject" == *notariz* || "$subject" == *stapler* || "$subject" == *"archive export"* || "$subject" == *entitlements* || "$subject" == *"notarized releases"* || "$subject" == *"for CI"* ]]; then
     release_engineering_commits+=("$subject")
   elif [[ "$subject" == *"first run"* || "$subject" == *first-run* || "$subject" == *"panel automatically"* || "$subject" == *"QA mode"* ]]; then
     onboarding_commits+=("$subject")

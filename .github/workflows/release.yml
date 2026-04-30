@@ -255,6 +255,7 @@ jobs:
             desc "GitHub notifications in the macOS menu bar"
             homepage "https://github.com/jasonlong/octodot"
 
+            auto_updates true
             depends_on macos: ">= :ventura"
 
             preflight do

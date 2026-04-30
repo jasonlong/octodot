@@ -553,6 +553,29 @@ final class AppState {
         }
     }
 
+    #if DEBUG
+    private static let debugToastSamples: [String] = [
+        "Marked acme/backend#1042 done",
+        "Unsubscribed from acme/web#891",
+        "Marked acme/api-gateway#234 done",
+        "Unsubscribed from acme/storage#203",
+        "Marked 4 items done",
+        "Opened acme/auth#156"
+    ]
+    private var debugToastCounter = 0
+
+    func presentDebugToast() {
+        let message = Self.debugToastSamples[debugToastCounter % Self.debugToastSamples.count]
+        debugToastCounter += 1
+        let toast = ActionToast(message: message)
+        actionToasts.append(toast)
+        let toastID = toast.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.actionToasts.removeAll { $0.id == toastID }
+        }
+    }
+    #endif
+
     private static func toastIdentifier(for notification: GitHubNotification) -> String {
         if let reference = notification.displayReferenceNumber {
             return "\(notification.repository)\(reference)"

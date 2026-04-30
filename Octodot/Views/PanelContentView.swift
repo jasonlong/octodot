@@ -251,6 +251,15 @@ struct PanelContentView: View {
     }
 
     private func handleAppKitKeyEvent(_ event: NSEvent, phase: PanelKeyEventPhase) -> Bool {
+        #if DEBUG
+        if phase == .down,
+           event.modifierFlags.contains(.command),
+           event.modifierFlags.contains(.shift),
+           event.charactersIgnoringModifiers?.lowercased() == "t" {
+            appState.presentDebugToast()
+            return true
+        }
+        #endif
         let input = PanelInput.keyInput(for: event)
         if phase == .up, suppressedKeyUpInput == input {
             suppressedKeyUpInput = nil
@@ -465,17 +474,38 @@ struct PanelContentView: View {
 private struct ActionToastStack: View {
     let toasts: [AppState.ActionToast]
 
+    private static let maxVisible = 3
+    private static let stackOffset: CGFloat = 7
+    private static let stackScale: CGFloat = 0.06
+
+    private var visibleToasts: [AppState.ActionToast] {
+        Array(toasts.suffix(Self.maxVisible))
+    }
+
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(toasts) { toast in
+        ZStack(alignment: .bottom) {
+            ForEach(Array(visibleToasts.enumerated()), id: \.element.id) { index, toast in
+                let depth = visibleToasts.count - 1 - index
                 ActionToastView(message: toast.message)
+                    .scaleEffect(1 - CGFloat(depth) * Self.stackScale, anchor: .bottom)
+                    .offset(y: -CGFloat(depth) * Self.stackOffset)
+                    .opacity(opacity(forDepth: depth))
+                    .zIndex(Double(index))
                     .transition(.asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity),
                         removal: .opacity
                     ))
             }
         }
-        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: toasts)
+        .animation(.spring(response: 0.32, dampingFraction: 0.85), value: toasts)
+    }
+
+    private func opacity(forDepth depth: Int) -> Double {
+        switch depth {
+        case 0: return 1.0
+        case 1: return 0.85
+        default: return 0.6
+        }
     }
 }
 

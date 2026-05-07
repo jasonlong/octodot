@@ -2087,6 +2087,57 @@ struct AppStateTests {
         #expect(requests.last?.url?.query?.contains("all=true") == true)
     }
 
+    @Test func inboxRetainsLocallyReadThreadWhenOtherUnreadsRemain() async {
+        // Open an unread PR (markRead sent), merge it on github.com which
+        // drops it from both the unread feed and the recent-inbox feed, then
+        // refresh. The PR should still appear in the inbox as read, not
+        // vanish entirely. Requires another unread to be present so the
+        // prune step has a non-empty server thread set.
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 205
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: ["1"]),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Self.notificationsPayload(ids: []),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications?page=1&all=true",
+                        statusCode: 200
+                    )
+                )),
+            ],
+            count: 2
+        )
+
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        state.selectedIndex = 0
+        state.markRead()
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+
+        await state.loadNotifications(force: true)
+
+        let ids = state.filteredNotifications.map(\.id)
+        #expect(ids.contains("0"))
+        #expect(ids.contains("1"))
+        #expect(state.filteredNotifications.first(where: { $0.id == "0" })?.isUnread == false)
+        #expect(state.filteredNotifications.first(where: { $0.id == "1" })?.isUnread == true)
+    }
+
     @Test func inboxReadHistoryDoesNotReviveCommittedDoneThread() async {
         let (state, session) = Self.makeAuthedState(
             results: [

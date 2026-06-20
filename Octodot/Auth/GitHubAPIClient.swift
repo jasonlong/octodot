@@ -644,7 +644,7 @@ actor GitHubAPIClient {
 
     private static func parsePullRequestMetadata(_ pr: [String: Any]) -> GitHubNotification.SubjectMetadata {
         let stateString = pr["state"] as? String ?? ""
-        let isDraft = pr["draft"] as? Bool ?? false
+        let isDraft = (pr["isDraft"] as? Bool) ?? (pr["draft"] as? Bool) ?? false
         let mergedAt = pr["mergedAt"] as? String
 
         let state: GitHubNotification.SubjectState

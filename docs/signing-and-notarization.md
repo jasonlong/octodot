@@ -121,3 +121,5 @@ codesign --verify --deep --strict --verbose=2 Octodot.app
 ```
 
 You should see a valid Developer ID signature and notarization acceptance.
+
+In-app updates also require the downloaded app to match the currently installed app's bundle identifier and Developer ID team, and to pass Gatekeeper assessment before replacement.

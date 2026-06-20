@@ -28,6 +28,8 @@ Current behavior includes:
 brew install jasonlong/tap/octodot
 ```
 
+Requires macOS 14 Sonoma or newer.
+
 Then launch Octodot and sign in with a [classic GitHub PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic) with `notifications` and `repo` scopes.
 
 ## Authentication

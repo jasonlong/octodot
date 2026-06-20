@@ -1256,7 +1256,7 @@ struct GitHubAPIClientTests {
         #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
     }
 
-    @Test func unsubscribeIgnoresFutureUpdatesAndRemovesThreadFromInbox() async throws {
+    @Test func unsubscribeIgnoresFutureUpdatesWithoutRemovingThreadFromInbox() async throws {
         let notification = GitHubNotification(
             id: "1",
             threadId: "thread-1",
@@ -1279,15 +1279,6 @@ struct GitHubAPIClientTests {
                     httpVersion: nil,
                     headerFields: [:]
                 )!
-            )),
-            .success((
-                Data(),
-                HTTPURLResponse(
-                    url: URL(string: "https://api.github.com/notifications/threads/thread-1")!,
-                    statusCode: 204,
-                    httpVersion: nil,
-                    headerFields: [:]
-                )!
             ))
         ])
 
@@ -1298,14 +1289,109 @@ struct GitHubAPIClientTests {
         let body = try #require(request.httpBody)
         let bodyObject = try #require(JSONSerialization.jsonObject(with: body) as? [String: Bool])
 
-        #expect(requests.count == 2)
+        #expect(requests.count == 1)
         #expect(request.httpMethod == "PUT")
         #expect(request.url?.path == "/notifications/threads/thread-1/subscription")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         #expect(bodyObject["ignored"] == true)
         #expect(bodyObject["subscribed"] == nil)
-        #expect(requests[1].httpMethod == "DELETE")
-        #expect(requests[1].url?.path == "/notifications/threads/thread-1")
+    }
+
+    @Test func unsubscribeFallsBackToRESTWhenGraphQLReturnsErrors() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open,
+            graphQLNodeID: "PR_node_1"
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"data":{"updateSubscription":null},"errors":[{"message":"failed"}]}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                #"{"subscribed":true,"ignored":true}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        try await client.unsubscribe(notification: notification)
+        let requests = await session.recordedRequests()
+
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.path == "/graphql")
+        #expect(requests[1].httpMethod == "PUT")
+        #expect(requests[1].url?.path == "/notifications/threads/thread-1/subscription")
+    }
+
+    @Test func unsubscribeThrowsWhenGraphQLErrorsAndRESTFallbackFails() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open,
+            graphQLNodeID: "PR_node_1"
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"data":{"updateSubscription":null},"errors":[{"message":"failed"}]}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 500,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        do {
+            try await client.unsubscribe(notification: notification)
+            Issue.record("Expected unsubscribe to throw when GraphQL and REST fallback both fail")
+        } catch GitHubAPIClient.APIError.httpError(let status) {
+            #expect(status == 500)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
     }
 
     @Test func doneInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {
@@ -1371,7 +1457,7 @@ struct GitHubAPIClientTests {
         #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
     }
 
-    @Test func unsubscribeInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {
+    @Test func unsubscribeThenDoneInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {
         let notification = GitHubNotification(
             id: "1",
             threadId: "thread-1",
@@ -1433,6 +1519,7 @@ struct GitHubAPIClientTests {
         let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let initial = try await client.fetchNotifications(all: false, force: true)
         try await client.unsubscribe(notification: notification)
+        try await client.markAsDone(notification: notification)
         let refreshed = try await client.fetchNotifications(all: false, force: false)
         let requests = await session.recordedRequests()
 

@@ -1580,13 +1580,6 @@ struct AppStateTests {
                     url: "https://api.github.com/notifications/threads/top",
                     statusCode: 204
                 )
-            )),
-            .success((
-                Data(),
-                Self.httpResponse(
-                    url: "https://api.github.com/notifications/threads/top",
-                    statusCode: 204
-                )
             ))
         ])
         let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
@@ -1606,9 +1599,9 @@ struct AppStateTests {
         #expect(state.selectedNotification?.id == "second")
 
         await Self.waitUntil {
-            await session.recordedRequests().count == 3
+            await session.recordedRequests().count == 2
         }
-        #expect((await session.recordedRequests()).count == 3)
+        #expect((await session.recordedRequests()).count == 2)
     }
 
     @Test func groupedUnsubscribeDoesNotReorderOtherRepositoryBlocksDuringLocalHide() {
@@ -1825,13 +1818,6 @@ struct AppStateTests {
                     url: "https://api.github.com/notifications/threads/shared-thread",
                     statusCode: 204
                 )
-            )),
-            .success((
-                Data(),
-                Self.httpResponse(
-                    url: "https://api.github.com/notifications/threads/shared-thread",
-                    statusCode: 204
-                )
             ))
         ])
         let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
@@ -1851,9 +1837,9 @@ struct AppStateTests {
         #expect(state.filteredNotifications.isEmpty)
 
         await Self.waitUntil {
-            await session.recordedRequests().count == 3
+            await session.recordedRequests().count == 2
         }
-        #expect((await session.recordedRequests()).count == 3)
+        #expect((await session.recordedRequests()).count == 2)
     }
 
     @Test func actionDispatchWindowSlidesAcrossMultipleQueuedActions() async {
@@ -2385,13 +2371,6 @@ struct AppStateTests {
                     statusCode: 204
                 )
             )),
-            .success((
-                Data(),
-                Self.httpResponse(
-                    url: "https://api.github.com/notifications/threads/0",
-                    statusCode: 204
-                )
-            )),
         ])
 
         state.groupByRepo = false
@@ -2403,11 +2382,11 @@ struct AppStateTests {
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
 
         await Self.waitUntil {
-            await session.recordedRequests().count == 3
+            await session.recordedRequests().count == 2
         }
 
         let requests = await session.recordedRequests()
-        #expect(requests.count == 3)
+        #expect(requests.count == 2)
         #expect(requests.first?.httpMethod == "PUT")
         if let body = requests.first?.httpBody,
            let bodyObject = try? JSONSerialization.jsonObject(with: body) as? [String: Bool] {
@@ -2417,6 +2396,7 @@ struct AppStateTests {
             Issue.record("Expected unsubscribe request body")
         }
         #expect(requests.dropFirst().allSatisfy { $0.httpMethod == "DELETE" })
+        #expect(state.errorMessage == nil)
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
     }
 

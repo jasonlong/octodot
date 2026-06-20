@@ -87,17 +87,29 @@ final class UpdateChecker {
         Task { await performCheck(showUpToDate: true) }
     }
 
+    var canInstallUpdate: Bool {
+        availableVersion != nil && downloadURL != nil
+    }
+
     func dismissUpdate() {
         guard let availableVersion else { return }
         userDefaults.set(availableVersion, forKey: Self.dismissedVersionKey)
-        self.availableVersion = nil
-        self.releaseURL = nil
-        self.downloadURL = nil
+        clearAvailableUpdate()
+        installState = .idle
     }
 
     func installUpdate() {
-        guard let downloadURL else { return }
+        guard canInstallUpdate, let downloadURL else {
+            installState = .failed("Update download is unavailable")
+            return
+        }
         Task { await performInstall(downloadURL: downloadURL) }
+    }
+
+    func clearInstallFailure() {
+        if case .failed = installState {
+            installState = .idle
+        }
     }
 
     // MARK: - Check
@@ -149,27 +161,50 @@ final class UpdateChecker {
         }
 
         guard remoteVersion > currentVersion else {
-            availableVersion = nil
-            releaseURL = nil
-            downloadURL = nil
+            clearAvailableUpdate()
+            clearInstallFailure()
             return
         }
 
         let dismissedTag = userDefaults.string(forKey: Self.dismissedVersionKey)
         if let dismissedTag, let dismissed = SemanticVersion(dismissedTag), remoteVersion <= dismissed {
+            clearAvailableUpdate()
+            clearInstallFailure()
+            return
+        }
+
+        guard let assetURL = Self.macOSAssetURL(from: release) else {
+            clearAvailableUpdate()
+            clearInstallFailure()
             return
         }
 
         availableVersion = remoteVersion.description
         releaseURL = URL(string: release.htmlURL)
-        downloadURL = release.assets.first { $0.name.hasSuffix("-macos.zip") }
+        downloadURL = assetURL
+        clearInstallFailure()
+    }
+
+    private static func macOSAssetURL(from release: GitHubRelease) -> URL? {
+        release.assets.first { $0.name.hasSuffix("-macos.zip") }
             .flatMap { URL(string: $0.browserDownloadURL) }
+    }
+
+    private func clearAvailableUpdate() {
+        availableVersion = nil
+        releaseURL = nil
+        downloadURL = nil
     }
 
     // MARK: - Install
 
     private func performInstall(downloadURL: URL) async {
-        guard case .idle = installState else { return }
+        switch installState {
+        case .idle, .failed:
+            break
+        case .downloading, .installing:
+            return
+        }
         installState = .downloading(progress: 0)
 
         do {

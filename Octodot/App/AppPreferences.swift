@@ -62,7 +62,7 @@ final class AppPreferences {
         }
 
         var isValid: Bool {
-            !modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+            !modifierFlags.intersection([.command, .option, .control]).isEmpty
         }
 
         static let commandQuote = GlobalShortcut(keyCode: 39, modifierFlags: [.command])

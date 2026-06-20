@@ -61,6 +61,27 @@ struct SettingsTests {
         #expect(preferences.globalShortcut == .controlOptionN)
     }
 
+    @Test func shortcutValidityRequiresNonShiftModifier() {
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.command]).isValid)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.control, .option]).isValid)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.command, .shift]).isValid)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.shift]).isValid == false)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: []).isValid == false)
+    }
+
+    @Test func preferencesRejectStoredShiftOnlyShortcut() {
+        let suiteName = "SettingsTests.defaults.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+
+        let shortcut = AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.shift])
+        userDefaults.set(shortcut.storageValue, forKey: "AppPreferences.globalShortcut.v2")
+
+        let preferences = AppPreferences(userDefaults: userDefaults)
+
+        #expect(preferences.globalShortcut == .commandQuote)
+    }
+
     @Test func shortcutDisplayTextUsesSymbols() {
         let shortcut = AppPreferences.GlobalShortcut(keyCode: 17, modifierFlags: [.command, .shift])
 

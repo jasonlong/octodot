@@ -124,6 +124,24 @@ struct AppShellTests {
         #expect(configuration.shouldShowPanelOnLaunch)
     }
 
+    @Test func appDelegateLaunchConfigurationUnderXCTestSkipsTokenLoader() {
+        var didLoadToken = false
+
+        let configuration = AppDelegate.launchConfiguration(
+            arguments: ["Octodot"],
+            environment: ["XCTestConfigurationFilePath": "/tmp/test.xctest"],
+            tokenLoader: {
+                didLoadToken = true
+                return "should-not-load"
+            }
+        )
+
+        #expect(didLoadToken == false)
+        #expect(configuration.bootstrapToken == nil)
+        #expect(configuration.shouldShowPanelOnLaunch == false)
+        #expect(configuration.userDefaults != .standard)
+    }
+
     @Test func appDelegateNormalLaunchConfigurationUsesSavedToken() {
         let configuration = AppDelegate.launchConfiguration(
             arguments: ["Octodot"],

@@ -142,6 +142,7 @@ struct PanelContentView: View {
                         checkedIDs: appState.checkedThreadIDs,
                         groupByRepo: appState.groupByRepo,
                         onSelect: { appState.selectNotification(id: $0) },
+                        onOpen: { _ in openSelectedNotificationAndCloseIfNeeded() },
                         onToggleCheck: { appState.toggleChecked(id: $0) },
                         onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
                     )
@@ -378,10 +379,7 @@ struct PanelContentView: View {
         case .unsubscribe:
             appState.unsubscribeFromThread()
         case .open:
-            if appState.openInBrowser() {
-                appState.flushPendingActions()
-                closePanel()
-            }
+            openSelectedNotificationAndCloseIfNeeded()
         case .copyURL:
             appState.copyURL()
         case .toggleChecked:
@@ -400,6 +398,13 @@ struct PanelContentView: View {
             isSearchFieldFocused = false
             focusListSoon()
         case .closePanel:
+            appState.flushPendingActions()
+            closePanel()
+        }
+    }
+
+    private func openSelectedNotificationAndCloseIfNeeded() {
+        if appState.openInBrowser() {
             appState.flushPendingActions()
             closePanel()
         }

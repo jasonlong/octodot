@@ -163,6 +163,18 @@ struct AppShellTests {
         #expect(shouldShow == false)
     }
 
+    @Test func notificationListRowTapSelectsBeforeOpening() {
+        var operations: [String] = []
+
+        NotificationListView.handleRowTap(
+            id: "42",
+            onSelect: { operations.append("select:\($0)") },
+            onOpen: { operations.append("open:\($0)") }
+        )
+
+        #expect(operations == ["select:42", "open:42"])
+    }
+
     @Test func notificationListScrollRequestRequiresVisibleSelection() {
         let notifications = AppStateTests.makeNotifications(3)
 

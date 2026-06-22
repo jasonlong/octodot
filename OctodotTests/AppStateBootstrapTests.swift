@@ -136,6 +136,42 @@ struct AppStateBootstrapTests {
         #expect((await session.recordedRequests()).count == 1)
     }
 
+    @Test func submitTokenWithInsufficientScopesDoesNotSaveOrSignIn() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(#"{"login":"jasonlong"}"#.utf8),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/user",
+                    statusCode: 200,
+                    headers: ["X-OAuth-Scopes": "notifications"]
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_bad", session: session, useGraphQLForSubjectMetadata: false)
+        var savedToken: String?
+
+        let state = AppState(
+            notifications: [],
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            tokenSaver: { savedToken = $0 },
+            apiClientFactory: { _ in client }
+        )
+
+        do {
+            try await state.submitToken("ghp_bad")
+            Issue.record("Expected submitToken to throw for insufficient token scopes")
+        } catch GitHubAPIClient.APIError.insufficientScopes(let missing) {
+            #expect(missing == ["repo"])
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(savedToken == nil)
+        #expect(state.isSignedIn == false)
+        #expect(state.errorMessage == nil)
+        #expect((await session.recordedRequests()).count == 1)
+    }
+
     @Test func startupUnauthorizedDeletesSavedTokenAndSignsOut() async {
         let session = StubNetworkSession(results: [
             .success((

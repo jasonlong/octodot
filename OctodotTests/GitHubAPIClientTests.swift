@@ -165,6 +165,75 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer ghp_secret")
     }
 
+    @Test func validateTokenAcceptsRequiredClassicScopes() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"login":"octodot"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-OAuth-Scopes": "notifications, repo"]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let username = try await client.validateToken()
+
+        #expect(username == "octodot")
+    }
+
+    @Test func validateTokenRejectsMissingRepoScope() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"login":"octodot"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-OAuth-Scopes": "notifications"]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected validateToken to reject a token missing repo scope")
+        } catch GitHubAPIClient.APIError.insufficientScopes(let missing) {
+            #expect(missing == ["repo"])
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func validateTokenRejectsMissingNotificationsScope() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"login":"octodot"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-OAuth-Scopes": "repo"]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected validateToken to reject a token missing notifications scope")
+        } catch GitHubAPIClient.APIError.insufficientScopes(let missing) {
+            #expect(missing == ["notifications"])
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func fetchNotificationsUsesConditionalPollingHeaders() async throws {
         let session = StubNetworkSession(results: [
             .success((

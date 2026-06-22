@@ -85,6 +85,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment: [String: String],
         tokenLoader: () -> String? = { KeychainHelper.loadToken() }
     ) -> LaunchConfiguration {
+        if !shouldLaunchUI(environment: environment) {
+            let suiteName = "com.octodot.app.tests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+            defaults.removePersistentDomain(forName: suiteName)
+            return LaunchConfiguration(
+                userDefaults: defaults,
+                bootstrapToken: nil,
+                shouldShowPanelOnLaunch: false
+            )
+        }
+
         let useFirstRunExperience = shouldUseFirstRunExperience(
             arguments: arguments,
             environment: environment

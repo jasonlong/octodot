@@ -6,6 +6,7 @@ struct NotificationListView: View {
     let checkedIDs: Set<String>
     let groupByRepo: Bool
     let onSelect: (String) -> Void
+    let onOpen: (String) -> Void
     let onToggleCheck: (String) -> Void
     let onNotificationVisible: (String) -> Void
 
@@ -84,11 +85,23 @@ struct NotificationListView: View {
             )
             .id(notification.id)
             .onTapGesture {
-                onSelect(notification.id)
-                NSWorkspace.shared.open(notification.url)
+                Self.handleRowTap(
+                    id: notification.id,
+                    onSelect: onSelect,
+                    onOpen: onOpen
+                )
             }
             .onAppear { onNotificationVisible(notification.id) }
         }
+    }
+
+    static func handleRowTap(
+        id: String,
+        onSelect: (String) -> Void,
+        onOpen: (String) -> Void
+    ) {
+        onSelect(id)
+        onOpen(id)
     }
 
     static func scrollRequest(

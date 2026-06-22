@@ -808,18 +808,6 @@ actor GitHubAPIClient {
             try await ignoreViaREST(threadId: notification.threadId, traceID: traceID)
         }
 
-        // Mark as done to remove from inbox
-        let doneURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
-        var doneRequest = makeRequest(url: doneURL)
-        doneRequest.httpMethod = "DELETE"
-        let (doneData, doneResponse) = try await session.data(for: doneRequest)
-        let doneStatus = (doneResponse as? HTTPURLResponse)?.statusCode ?? 0
-        logActionResponse(traceID: traceID, action: "unsubscribe", step: "remove-from-inbox", threadId: notification.threadId, request: doneRequest, response: doneResponse, data: doneData)
-        guard (200...299).contains(doneStatus) || doneStatus == 304 else {
-            throw APIError.httpError(doneStatus)
-        }
-
-        invalidateFeedCaches(FeedScope.allCases)
     }
 
     private func ignoreViaGraphQL(ref: SubjectRef, traceID: String) async throws {
@@ -896,6 +884,10 @@ actor GitHubAPIClient {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any] else {
             throw APIError.graphQLParseError
+        }
+
+        if let errors = json["errors"] as? [Any], !errors.isEmpty {
+            throw APIError.graphQLError
         }
 
         return dataObj
@@ -1165,6 +1157,7 @@ actor GitHubAPIClient {
         case markReadFailed(Int)
         case graphQLNodeIDNotFound
         case graphQLParseError
+        case graphQLError
         case insufficientScopes(missing: [String])
 
         var errorDescription: String? {
@@ -1176,6 +1169,7 @@ actor GitHubAPIClient {
             case .markReadFailed(let code): "Failed to mark as read (\(code))"
             case .graphQLNodeIDNotFound: "Could not resolve subject for subscription update"
             case .graphQLParseError: "GraphQL response could not be parsed"
+            case .graphQLError: "GitHub GraphQL request failed"
             case .insufficientScopes(let missing): "Token is missing required scopes: \(missing.joined(separator: ", "))"
             }
         }

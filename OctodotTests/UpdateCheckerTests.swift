@@ -4,24 +4,37 @@ import Foundation
 
 @MainActor
 struct UpdateCheckerTests {
-    private func makeRelease(tag: String, url: String = "https://github.com/jasonlong/octodot/releases/tag/v1.0.0", draft: Bool = false, prerelease: Bool = false) -> Data {
+    private func makeRelease(
+        tag: String,
+        url: String = "https://github.com/jasonlong/octodot/releases/tag/v1.0.0",
+        draft: Bool = false,
+        prerelease: Bool = false,
+        assets: [[String: Any]]? = nil
+    ) -> Data {
+        let releaseAssets = assets ?? [
+            [
+                "name": "Octodot-\(tag)-macos.zip",
+                "browser_download_url": "https://github.com/jasonlong/octodot/releases/download/\(tag)/Octodot-\(tag)-macos.zip",
+            ]
+        ]
         let json: [String: Any] = [
             "tag_name": tag,
             "html_url": url,
             "draft": draft,
             "prerelease": prerelease,
-            "assets": [
-                [
-                    "name": "Octodot-\(tag)-macos.zip",
-                    "browser_download_url": "https://github.com/jasonlong/octodot/releases/download/\(tag)/Octodot-\(tag)-macos.zip",
-                ]
-            ] as [[String: Any]],
+            "assets": releaseAssets,
         ]
         return try! JSONSerialization.data(withJSONObject: json)
     }
 
-    private func stubSession(tag: String, url: String = "https://github.com/jasonlong/octodot/releases/tag/v1.0.0", draft: Bool = false, prerelease: Bool = false) -> StubNetworkSession {
-        let data = makeRelease(tag: tag, url: url, draft: draft, prerelease: prerelease)
+    private func stubSession(
+        tag: String,
+        url: String = "https://github.com/jasonlong/octodot/releases/tag/v1.0.0",
+        draft: Bool = false,
+        prerelease: Bool = false,
+        assets: [[String: Any]]? = nil
+    ) -> StubNetworkSession {
+        let data = makeRelease(tag: tag, url: url, draft: draft, prerelease: prerelease, assets: assets)
         let response = HTTPURLResponse(url: URL(string: "https://api.github.com")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
         return StubNetworkSession(results: [.success((data, response))])
     }
@@ -38,6 +51,20 @@ struct UpdateCheckerTests {
         }
         for _ in 0..<50 {
             if !checker.isChecking { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    private func waitForInstallFailure(_ checker: UpdateChecker) async {
+        for _ in 0..<100 {
+            if case .failed = checker.installState { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    private func waitUntilRequests(_ session: StubNetworkSession, count: Int) async {
+        for _ in 0..<100 {
+            if await session.recordedRequests().count == count { return }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
@@ -88,6 +115,26 @@ struct UpdateCheckerTests {
 
         #expect(checker.availableVersion == "1.0.0")
         #expect(checker.releaseURL?.absoluteString == "https://github.com/jasonlong/octodot/releases/tag/v1.0.0")
+        #expect(checker.canInstallUpdate)
+    }
+
+    @Test func newerVersionWithoutMacOSAssetIsNotInstallable() async {
+        let session = stubSession(
+            tag: "v1.0.0",
+            assets: [[
+                "name": "Octodot-v1.0.0-source.zip",
+                "browser_download_url": "https://github.com/jasonlong/octodot/releases/download/v1.0.0/source.zip",
+            ]]
+        )
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
+
+        checker.checkForUpdatesNow()
+        await waitForCheckToComplete(checker)
+
+        #expect(checker.availableVersion == nil)
+        #expect(checker.releaseURL == nil)
+        #expect(checker.canInstallUpdate == false)
     }
 
     @Test func noUpdateWhenCurrent() async {
@@ -173,6 +220,61 @@ struct UpdateCheckerTests {
         await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == "1.0.0")
+    }
+
+    @Test func installUpdateWithoutDownloadURLFailsActionably() {
+        let checker = UpdateChecker(session: errorSession(), userDefaults: UserDefaults(suiteName: UUID().uuidString)!, bundleVersion: "0.3.0")
+
+        checker.installUpdate()
+
+        #expect(checker.installState == .failed("Update download is unavailable"))
+    }
+
+    @Test func clearInstallFailureResetsFailedState() {
+        let checker = UpdateChecker(session: errorSession(), userDefaults: UserDefaults(suiteName: UUID().uuidString)!, bundleVersion: "0.3.0")
+
+        checker.installUpdate()
+        checker.clearInstallFailure()
+
+        #expect(checker.installState == .idle)
+    }
+
+    @Test func installFailureCanBeRetried() async {
+        let releaseData = makeRelease(tag: "v1.0.0")
+        let releaseResponse = HTTPURLResponse(url: URL(string: "https://api.github.com")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        let downloadResponse = HTTPURLResponse(
+            url: URL(string: "https://github.com/jasonlong/octodot/releases/download/v1.0.0/Octodot-v1.0.0-macos.zip")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        let session = StubNetworkSession(results: [
+            .success((releaseData, releaseResponse)),
+            .failure(URLError(.notConnectedToInternet)),
+            .success((Data("fake zip".utf8), downloadResponse)),
+        ])
+        let checker = UpdateChecker(
+            session: session,
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!,
+            bundleVersion: "0.3.0",
+            processRunner: { _, _ in UpdateChecker.ProcessResult(status: 1, output: "ditto failed") }
+        )
+
+        checker.checkForUpdatesNow()
+        await waitForCheckToComplete(checker)
+        #expect(checker.canInstallUpdate)
+
+        checker.installUpdate()
+        await waitForInstallFailure(checker)
+
+        checker.installUpdate()
+        await waitUntilRequests(session, count: 3)
+        await waitForInstallFailure(checker)
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 3)
+        #expect(requests[1].url?.absoluteString.contains("Octodot-v1.0.0-macos.zip") == true)
+        #expect(requests[2].url?.absoluteString.contains("Octodot-v1.0.0-macos.zip") == true)
     }
 
     @Test func verificationSucceedsForMatchingIdentityAndGatekeeperAssessment() throws {

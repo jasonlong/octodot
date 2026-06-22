@@ -572,12 +572,14 @@ private struct UpdateBanner: View {
                             .font(.system(size: 11))
                             .lineLimit(1)
                     }
-                    Button("Update") {
-                        updateChecker.installUpdate()
+                    if updateChecker.canInstallUpdate {
+                        Button("Update") {
+                            updateChecker.installUpdate()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .underline()
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .medium))
-                    .underline()
                     Button {
                         updateChecker.dismissUpdate()
                     } label: {
@@ -608,6 +610,22 @@ private struct UpdateBanner: View {
                     Text(message)
                         .font(.system(size: 11))
                         .lineLimit(1)
+                    if updateChecker.canInstallUpdate {
+                        Button("Retry") {
+                            updateChecker.installUpdate()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .underline()
+                    }
+                    Button {
+                        updateChecker.clearInstallFailure()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(0.6)
                 }
             }
             .foregroundStyle(bannerColor)

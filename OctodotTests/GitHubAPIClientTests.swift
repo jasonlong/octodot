@@ -862,6 +862,64 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .draft)
     }
 
+    @Test func resolveSubjectMetadataTreatsGraphQLDraftPullRequestAsDraft() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "1",
+                unread: false,
+                subjectType: "PullRequest",
+                subjectURL: "https://api.github.com/repos/acme/test/pulls/1"
+            )
+        ]).data(using: .utf8)!
+
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "pullRequest": {
+                "id": "PR_node_1",
+                "state": "OPEN",
+                "isDraft": true,
+                "mergedAt": null,
+                "commits": { "nodes": [] }
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: notifications)
+        let requests = await session.recordedRequests()
+
+        #expect(resolvedMetadata["1"]?.state == .draft)
+        #expect(resolvedMetadata["1"]?.nodeID == "PR_node_1")
+        #expect(requests.count == 2)
+        #expect(requests[1].url?.path == "/graphql")
+    }
+
     @Test func resolveSubjectMetadataRecordsNonFatalWarningWhenSubjectFetchFails() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(

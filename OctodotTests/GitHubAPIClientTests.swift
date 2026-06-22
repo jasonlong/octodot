@@ -444,6 +444,40 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.cachePolicy == .reloadIgnoringLocalCacheData)
     }
 
+    @Test func fetchNotificationsRejectsExternalLinkHeaderPaginationURL() async throws {
+        let firstPage = Self.notificationsPayload(ids: ["1"]).data(using: .utf8)!
+
+        let session = StubNetworkSession(results: [
+            .success((
+                firstPage,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?page=1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Link": #"<https://example.com/notifications?all=false&per_page=100&page=2>; rel="next""#,
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                    ]
+                )!
+            )),
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.fetchNotifications(force: true)
+            Issue.record("Expected fetchNotifications to reject an external pagination URL")
+        } catch GitHubAPIClient.APIError.untrustedGitHubAPIURL {
+            // Expected.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 1)
+        #expect(requests.first?.url?.host == "api.github.com")
+    }
+
     @Test func fetchNotificationsReusesSubjectStateForUnchangedItems() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -1020,6 +1054,30 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .unknown)
         #expect(warning == GitHubAPIClient.subjectMetadataWarningMessage)
         #expect(await client.takeNonFatalWarningMessage() == nil)
+    }
+
+    @Test func resolveSubjectMetadataDoesNotFetchExternalSubjectURL() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "1",
+            title: "External subject",
+            repository: "acme/test",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/1")!,
+            subjectURL: "https://example.com/repos/acme/test/pulls/1",
+            subjectState: .unknown
+        )
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: [notification])
+        let requests = await session.recordedRequests()
+
+        #expect(resolvedMetadata["1"]?.state == .unknown)
+        #expect(requests.isEmpty)
     }
 
     @Test func resolveSubjectMetadataMapsOpenPullRequestCheckRunsToCIStatus() async throws {

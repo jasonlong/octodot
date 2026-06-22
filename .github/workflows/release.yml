@@ -29,9 +29,34 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+
+      - name: Verify release ref is main
+        run: |
+          default_branch="${{ github.event.repository.default_branch }}"
+          git fetch --force origin "$default_branch:refs/remotes/origin/$default_branch"
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "::error::Release pushes must be tag refs"
+              exit 1
+            fi
+
+            tag_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+            main_commit="$(git rev-parse "origin/$default_branch")"
+
+            if [ "$tag_commit" != "$main_commit" ]; then
+              echo "::error::Release tag $GITHUB_REF_NAME points at $tag_commit, not origin/$default_branch $main_commit"
+              exit 1
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF_NAME" != "$default_branch" ]; then
+              echo "::error::Manual releases must be dispatched from $default_branch"
+              exit 1
+            fi
+          fi
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -219,7 +244,7 @@ jobs:
           scripts/generate_release_notes.sh "${TAG_NAME}" RELEASE_NOTES.md
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: ${{ env.FINAL_ARCHIVE_PATH }}
           body_path: RELEASE_NOTES.md

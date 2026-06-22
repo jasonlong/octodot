@@ -18,6 +18,7 @@ actor GitHubAPIClient {
     private let maxConcurrentSubjectRequests: Int
     private let maxConcurrentSecurityRequests: Int
     private let maxSubjectResolutionBatchSize = 40
+    private static let requiredClassicTokenScopes: Set<String> = ["notifications", "repo"]
     private let session: any NetworkSession
     private var token: String
 
@@ -644,7 +645,7 @@ actor GitHubAPIClient {
 
     private static func parsePullRequestMetadata(_ pr: [String: Any]) -> GitHubNotification.SubjectMetadata {
         let stateString = pr["state"] as? String ?? ""
-        let isDraft = pr["draft"] as? Bool ?? false
+        let isDraft = (pr["isDraft"] as? Bool) ?? (pr["draft"] as? Bool) ?? false
         let mergedAt = pr["mergedAt"] as? String
 
         let state: GitHubNotification.SubjectState
@@ -807,18 +808,6 @@ actor GitHubAPIClient {
             try await ignoreViaREST(threadId: notification.threadId, traceID: traceID)
         }
 
-        // Mark as done to remove from inbox
-        let doneURL = baseURL.appendingPathComponent("notifications/threads/\(notification.threadId)")
-        var doneRequest = makeRequest(url: doneURL)
-        doneRequest.httpMethod = "DELETE"
-        let (doneData, doneResponse) = try await session.data(for: doneRequest)
-        let doneStatus = (doneResponse as? HTTPURLResponse)?.statusCode ?? 0
-        logActionResponse(traceID: traceID, action: "unsubscribe", step: "remove-from-inbox", threadId: notification.threadId, request: doneRequest, response: doneResponse, data: doneData)
-        guard (200...299).contains(doneStatus) || doneStatus == 304 else {
-            throw APIError.httpError(doneStatus)
-        }
-
-        invalidateFeedCaches(FeedScope.allCases)
     }
 
     private func ignoreViaGraphQL(ref: SubjectRef, traceID: String) async throws {
@@ -897,6 +886,10 @@ actor GitHubAPIClient {
             throw APIError.graphQLParseError
         }
 
+        if let errors = json["errors"] as? [Any], !errors.isEmpty {
+            throw APIError.graphQLError
+        }
+
         return dataObj
     }
 
@@ -904,9 +897,43 @@ actor GitHubAPIClient {
 
     func validateToken() async throws -> String {
         let url = baseURL.appendingPathComponent("user")
-        let data = try await request(url: url)
-        let user = try JSONDecoder.github.decode(APIUser.self, from: data)
-        return user.login
+        let request = makeRequest(url: url)
+        let (data, response) = try await session.data(for: request)
+        let httpResponse = response as? HTTPURLResponse
+        let status = httpResponse?.statusCode ?? 0
+
+        switch status {
+        case 200...299:
+            try validateRequiredScopes(from: httpResponse)
+            let user = try JSONDecoder.github.decode(APIUser.self, from: data)
+            return user.login
+        case 401:
+            throw APIError.unauthorized
+        case 403:
+            throw APIError.forbidden
+        case 429:
+            throw APIError.rateLimited
+        default:
+            throw APIError.httpError(status)
+        }
+    }
+
+    private func validateRequiredScopes(from response: HTTPURLResponse?) throws {
+        guard let rawScopes = response?.value(forHTTPHeaderField: "X-OAuth-Scopes") else { return }
+        let scopes = Self.parseOAuthScopes(rawScopes)
+        guard !scopes.isEmpty else { return }
+
+        let missing = Self.requiredClassicTokenScopes.subtracting(scopes).sorted()
+        guard missing.isEmpty else {
+            throw APIError.insufficientScopes(missing: missing)
+        }
+    }
+
+    private static func parseOAuthScopes(_ rawScopes: String) -> Set<String> {
+        Set(rawScopes
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty })
     }
 
     func suggestedRefreshDelayNanoseconds() -> UInt64 {
@@ -1130,6 +1157,8 @@ actor GitHubAPIClient {
         case markReadFailed(Int)
         case graphQLNodeIDNotFound
         case graphQLParseError
+        case graphQLError
+        case insufficientScopes(missing: [String])
 
         var errorDescription: String? {
             switch self {
@@ -1140,6 +1169,8 @@ actor GitHubAPIClient {
             case .markReadFailed(let code): "Failed to mark as read (\(code))"
             case .graphQLNodeIDNotFound: "Could not resolve subject for subscription update"
             case .graphQLParseError: "GraphQL response could not be parsed"
+            case .graphQLError: "GitHub GraphQL request failed"
+            case .insufficientScopes(let missing): "Token is missing required scopes: \(missing.joined(separator: ", "))"
             }
         }
     }

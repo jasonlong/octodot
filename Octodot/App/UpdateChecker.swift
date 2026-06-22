@@ -10,6 +10,18 @@ final class UpdateChecker {
     private static let checkIntervalSeconds: TimeInterval = 24 * 60 * 60
     private static let releasesURL = URL(string: "https://api.github.com/repos/jasonlong/octodot/releases/latest")!
 
+    struct ProcessResult: Sendable {
+        let status: Int32
+        let output: String
+    }
+
+    typealias ProcessRunner = @Sendable (_ executablePath: String, _ arguments: [String]) throws -> ProcessResult
+
+    private struct CodeSignatureIdentity: Equatable {
+        let bundleIdentifier: String
+        let teamIdentifier: String
+    }
+
     enum InstallState: Equatable {
         case idle
         case downloading(progress: Double)
@@ -28,15 +40,40 @@ final class UpdateChecker {
     private let session: any NetworkSession
     private let userDefaults: UserDefaults
     private let bundleVersion: String?
+    private let processRunner: ProcessRunner
+    private let currentAppPath: String
 
     init(
         session: any NetworkSession = URLSession.shared,
         userDefaults: UserDefaults = .standard,
-        bundleVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        bundleVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+        processRunner: @escaping ProcessRunner = UpdateChecker.defaultProcessRunner,
+        currentAppPath: String = Bundle.main.bundlePath
     ) {
         self.session = session
         self.userDefaults = userDefaults
         self.bundleVersion = bundleVersion
+        self.processRunner = processRunner
+        self.currentAppPath = currentAppPath
+    }
+
+    private static func defaultProcessRunner(_ executablePath: String, _ arguments: [String]) throws -> ProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let errorOutput = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        return ProcessResult(status: process.terminationStatus, output: output + errorOutput)
     }
 
     func checkForUpdatesIfNeeded() {
@@ -139,7 +176,7 @@ final class UpdateChecker {
             let zipPath = try await downloadZip(from: downloadURL)
             installState = .installing
             let extractedAppPath = try extractApp(from: zipPath)
-            try verifyCodeSignature(at: extractedAppPath)
+            try verifyUpdateCandidate(at: extractedAppPath)
             try replaceAndRelaunch(with: extractedAppPath)
         } catch {
             installState = .failed(error.localizedDescription)
@@ -171,13 +208,9 @@ final class UpdateChecker {
         try? FileManager.default.removeItem(at: extractDir)
         try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", zipPath.path, extractDir.path]
-        try process.run()
-        process.waitUntilExit()
+        let result = try processRunner("/usr/bin/ditto", ["-x", "-k", zipPath.path, extractDir.path])
 
-        guard process.terminationStatus == 0 else {
+        guard result.status == 0 else {
             throw UpdateError.extractionFailed
         }
 
@@ -188,16 +221,60 @@ final class UpdateChecker {
         return appPath
     }
 
-    private func verifyCodeSignature(at appPath: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["--verify", "--deep", "--strict", appPath.path]
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
+    func verifyUpdateCandidate(at appPath: URL) throws {
+        let verifyResult = try processRunner("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath.path])
+        guard verifyResult.status == 0 else {
             throw UpdateError.invalidSignature
         }
+
+        let candidateDisplay = try processRunner("/usr/bin/codesign", ["--display", "--verbose=4", appPath.path])
+        guard candidateDisplay.status == 0,
+              let candidateIdentity = Self.codeSignatureIdentity(from: candidateDisplay.output),
+              Self.isValidTeamIdentifier(candidateIdentity.teamIdentifier) else {
+            throw UpdateError.invalidSignature
+        }
+
+        let currentDisplay = try processRunner("/usr/bin/codesign", ["--display", "--verbose=4", currentAppPath])
+        guard currentDisplay.status == 0,
+              let currentIdentity = Self.codeSignatureIdentity(from: currentDisplay.output),
+              Self.isValidTeamIdentifier(currentIdentity.teamIdentifier) else {
+            throw UpdateError.unverifiableCurrentSignature
+        }
+
+        guard candidateIdentity == currentIdentity else {
+            throw UpdateError.signatureIdentityMismatch
+        }
+
+        let assessment = try processRunner("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", appPath.path])
+        guard assessment.status == 0 else {
+            throw UpdateError.notarizationCheckFailed
+        }
+    }
+
+    private static func codeSignatureIdentity(from output: String) -> CodeSignatureIdentity? {
+        var identifier: String?
+        var teamIdentifier: String?
+
+        for line in output.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("Identifier=") {
+                identifier = String(trimmed.dropFirst("Identifier=".count))
+            } else if trimmed.hasPrefix("TeamIdentifier=") {
+                teamIdentifier = String(trimmed.dropFirst("TeamIdentifier=".count))
+            }
+        }
+
+        guard let identifier, !identifier.isEmpty,
+              let teamIdentifier else {
+            return nil
+        }
+
+        return CodeSignatureIdentity(bundleIdentifier: identifier, teamIdentifier: teamIdentifier)
+    }
+
+    private static func isValidTeamIdentifier(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.lowercased() != "not set"
     }
 
     private func replaceAndRelaunch(with newAppPath: URL) throws {
@@ -240,6 +317,9 @@ final class UpdateChecker {
         case extractionFailed
         case appBundleNotFound
         case invalidSignature
+        case signatureIdentityMismatch
+        case unverifiableCurrentSignature
+        case notarizationCheckFailed
         case replacementFailed
 
         var errorDescription: String? {
@@ -248,6 +328,9 @@ final class UpdateChecker {
             case .extractionFailed: "Failed to extract update"
             case .appBundleNotFound: "Update archive is missing the app"
             case .invalidSignature: "Update has an invalid code signature"
+            case .signatureIdentityMismatch: "Update signature does not match Octodot"
+            case .unverifiableCurrentSignature: "Current app signature could not be verified"
+            case .notarizationCheckFailed: "Update was not accepted by Gatekeeper"
             case .replacementFailed: "Failed to replace the app"
             }
         }

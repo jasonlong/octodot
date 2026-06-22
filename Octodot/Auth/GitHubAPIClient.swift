@@ -499,7 +499,14 @@ actor GitHubAPIClient {
     }
 
     private static func shouldResolveSubjectMetadata(_ notification: GitHubNotification) -> Bool {
-        notification.needsSubjectMetadataResolution
+        guard notification.subjectURL != nil else { return false }
+
+        switch notification.type {
+        case .pullRequest, .issue:
+            return true
+        case .release, .discussion, .commit, .securityAlert:
+            return false
+        }
     }
 
     // MARK: - GraphQL batch subject metadata

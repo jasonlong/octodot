@@ -927,6 +927,43 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .merged)
     }
 
+    @Test func resolveSubjectMetadataRefreshesOpenPullRequestWithExistingCIStatus() async throws {
+        let notification = GitHubNotification(
+            id: "426",
+            threadId: "426",
+            title: "Bump undici from 7.25.0 to 7.28.0",
+            repository: "jasonlong/isometric-contributions",
+            reason: .subscribed,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: false,
+            url: URL(string: "https://github.com/jasonlong/isometric-contributions/pull/426")!,
+            subjectURL: "https://api.github.com/repos/jasonlong/isometric-contributions/pulls/426",
+            subjectState: .open,
+            ciStatus: .success
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"state":"closed","merged":true}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/jasonlong/isometric-contributions/pulls/426")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let resolvedMetadata = await client.resolveSubjectMetadata(for: [notification])
+        let requests = await session.recordedRequests()
+
+        #expect(resolvedMetadata["426"]?.state == .merged)
+        #expect(resolvedMetadata["426"]?.ciStatus == nil)
+        #expect(requests.count == 1)
+        #expect(requests.first?.url?.absoluteString == "https://api.github.com/repos/jasonlong/isometric-contributions/pulls/426")
+    }
+
     @Test func resolveSubjectMetadataTreatsDraftPullRequestAsDraft() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(

@@ -174,6 +174,10 @@ actor GitHubAPIClient {
         var currentURL: URL? = notificationsURL(all: all, page: page, since: since)
 
         while let requestURL = currentURL {
+            guard Self.isTrustedGitHubAPIURL(requestURL) else {
+                throw APIError.untrustedGitHubAPIURL
+            }
+
             var request = makeNotificationsRequest(url: requestURL)
             if page == 1,
                shouldUseConditionalRequest,
@@ -220,7 +224,7 @@ actor GitHubAPIClient {
                 )
                 apiItems.append(contentsOf: pageItems)
 
-                if let nextPageURL = nextPageURL(from: httpResponse),
+                if let nextPageURL = try nextPageURL(from: httpResponse),
                    maximumPages.map({ page < $0 }) ?? true {
                     currentURL = nextPageURL
                     page += 1
@@ -409,7 +413,8 @@ actor GitHubAPIClient {
         apiURL: String,
         context: SubjectRequestContext
     ) async -> SubjectMetadataRequestResult {
-        guard let url = URL(string: apiURL) else {
+        guard let url = trustedGitHubAPIURL(from: apiURL) else {
+            DebugTrace.log("subject metadata rejected untrusted url=\(apiURL)")
             return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
         }
         do {
@@ -511,7 +516,7 @@ actor GitHubAPIClient {
         from notification: GitHubNotification
     ) -> SubjectRef? {
         guard let urlString = notification.subjectURL,
-              let url = URL(string: urlString) else { return nil }
+              let url = trustedGitHubAPIURL(from: urlString) else { return nil }
         let parts = url.pathComponents
         // ["", "repos", owner, repo, "pulls"|"issues", number]
         guard parts.count >= 6,
@@ -962,6 +967,17 @@ actor GitHubAPIClient {
         try await Self.request(url: url, token: token, session: session)
     }
 
+    private static func trustedGitHubAPIURL(from string: String) -> URL? {
+        guard let url = URL(string: string), isTrustedGitHubAPIURL(url) else {
+            return nil
+        }
+        return url
+    }
+
+    private static func isTrustedGitHubAPIURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https" && url.host?.lowercased() == "api.github.com"
+    }
+
     private static func makeRequest(url: URL, token: String) -> URLRequest {
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -975,6 +991,10 @@ actor GitHubAPIClient {
         token: String,
         session: any NetworkSession
     ) async throws -> Data {
+        guard isTrustedGitHubAPIURL(url) else {
+            throw APIError.untrustedGitHubAPIURL
+        }
+
         let req = makeRequest(url: url, token: token)
         let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -1098,7 +1118,7 @@ actor GitHubAPIClient {
         return components.url!
     }
 
-    private func nextPageURL(from response: HTTPURLResponse?) -> URL? {
+    private func nextPageURL(from response: HTTPURLResponse?) throws -> URL? {
         guard let linkHeader = response?.value(forHTTPHeaderField: "Link") else {
             return nil
         }
@@ -1113,7 +1133,11 @@ actor GitHubAPIClient {
             }
 
             let urlString = String(trimmed[trimmed.index(after: start)..<end])
-            return URL(string: urlString)
+            guard let url = Self.trustedGitHubAPIURL(from: urlString) else {
+                DebugTrace.log("fetch rejected untrusted next page url=\(urlString)")
+                throw APIError.untrustedGitHubAPIURL
+            }
+            return url
         }
 
         return nil
@@ -1159,6 +1183,7 @@ actor GitHubAPIClient {
         case graphQLParseError
         case graphQLError
         case insufficientScopes(missing: [String])
+        case untrustedGitHubAPIURL
 
         var errorDescription: String? {
             switch self {
@@ -1171,6 +1196,7 @@ actor GitHubAPIClient {
             case .graphQLParseError: "GraphQL response could not be parsed"
             case .graphQLError: "GitHub GraphQL request failed"
             case .insufficientScopes(let missing): "Token is missing required scopes: \(missing.joined(separator: ", "))"
+            case .untrustedGitHubAPIURL: "GitHub API response referenced an unexpected URL"
             }
         }
     }

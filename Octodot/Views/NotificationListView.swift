@@ -24,8 +24,14 @@ struct NotificationListView: View {
         }
     }
 
+    enum ScrollPlacement: Equatable {
+        case minimal
+        case top
+    }
+
     struct ScrollRequest: Equatable {
         let targetID: String
+        let placement: ScrollPlacement
         let visibleIDs: [String]
     }
 
@@ -60,7 +66,12 @@ struct NotificationListView: View {
                 }
 
                 await Task.yield()
-                proxy.scrollTo(scrollRequest.targetID)
+                switch scrollRequest.placement {
+                case .minimal:
+                    proxy.scrollTo(scrollRequest.targetID)
+                case .top:
+                    proxy.scrollTo(scrollRequest.targetID, anchor: .top)
+                }
             }
         }
     }
@@ -115,15 +126,19 @@ struct NotificationListView: View {
         }
 
         let targetID: String
+        let placement: ScrollPlacement
         if groupByRepo,
            selectedIndex == 0 || notifications[selectedIndex - 1].repository != notifications[selectedIndex].repository {
             targetID = "repo:\(notifications[selectedIndex].repository)"
+            placement = .top
         } else {
             targetID = selectedNotificationID
+            placement = .minimal
         }
 
         return ScrollRequest(
             targetID: targetID,
+            placement: placement,
             visibleIDs: notifications.map(\.id)
         )
     }

@@ -637,6 +637,58 @@ struct AppStateTests {
         #expect(state.filteredNotifications.contains { $0.id == alertID })
     }
 
+    @Test func unsubscribeCommandMarksSecurityAlertDone() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(ids: ["1"]),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications",
+                    statusCode: 200,
+                    headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?all=true",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.dependabotAlertsPayload(),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        let alertID = "dependabot:acme/alpha:7"
+        await Self.waitUntil {
+            await MainActor.run {
+                state.filteredNotifications.contains { $0.id == alertID }
+            }
+        }
+        state.selectNotification(id: alertID)
+
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
+        #expect(state.actionToasts.last?.message == "Marked acme/alpha done")
+        #expect(state.errorMessage == nil)
+        #expect((await session.recordedRequests()).count == 3)
+    }
+
     @Test func openInBrowserMarksSecurityAlertReadLocally() async {
         let session = StubNetworkSession(results: [
             .success((
@@ -3511,7 +3563,7 @@ struct AppStateTests {
         #expect(relaunched.filteredNotifications.isEmpty)
     }
 
-    @Test func bulkUnsubscribeSkipsSecurityAlertsAndReportsOnlyAcceptedThreads() async {
+    @Test func bulkUnsubscribeMarksSecurityAlertsDoneAndReportsBothOutcomes() async {
         let thread = Self.makeNotification(id: 0)
         let alert = Self.makeSecurityAlert()
         let (state, session) = Self.makeAuthedState(
@@ -3528,14 +3580,16 @@ struct AppStateTests {
 
         state.unsubscribeFromThread()
 
-        #expect(state.filteredNotifications.map(\.id) == [alert.id])
-        #expect(state.actionToasts.last?.message == "Unsubscribed from acme/alpha#0")
-        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+        #expect(state.actionToasts.map(\.message) == [
+            "Unsubscribed from acme/alpha#0",
+            "Marked acme/alpha done",
+        ])
+        #expect(state.errorMessage == nil)
         await Self.waitUntil { await session.recordedRequests().count == 2 }
-        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+        #expect(state.errorMessage == nil)
     }
 
-    @Test func singleSecurityAlertUnsubscribeIsRejectedWithoutSuccessFeedback() {
+    @Test func singleSecurityAlertUnsubscribeUsesDoneFallback() {
         let alert = Self.makeSecurityAlert()
         let (state, _) = Self.makeAuthedState(notifications: [alert])
         state.inboxMode = .inbox
@@ -3544,9 +3598,8 @@ struct AppStateTests {
 
         state.unsubscribeFromThread()
 
-        #expect(state.filteredNotifications.map(\.id) == [alert.id])
-        #expect(state.actionToasts.isEmpty)
-        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+        #expect(state.actionToasts.last?.message == "Marked acme/alpha done")
+        #expect(state.errorMessage == nil)
     }
 
     @Test func securityAlertDoneProducesAccurateSingleAndMixedFeedback() {

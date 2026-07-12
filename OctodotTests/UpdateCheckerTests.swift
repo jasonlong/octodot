@@ -146,6 +146,8 @@ struct UpdateCheckerTests {
         await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
+        #expect(checker.showingUpToDate)
+        #expect(defaults.object(forKey: "UpdateChecker.lastCheckDate.v1") != nil)
     }
 
     @Test func skipsDraftRelease() async {
@@ -179,7 +181,31 @@ struct UpdateCheckerTests {
         await waitForCheckToComplete(checker)
 
         #expect(checker.availableVersion == nil)
+        #expect(checker.showingUpToDate == false)
         #expect(checker.isChecking == false)
+        #expect(defaults.object(forKey: "UpdateChecker.lastCheckDate.v1") == nil)
+    }
+
+    @Test func httpFailureWithValidReleaseIsSilentAndInconclusive() async {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://api.github.com/repos/jasonlong/octodot/releases/latest")!,
+            statusCode: 500,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        let session = StubNetworkSession(results: [
+            .success((makeRelease(tag: "v1.0.0"), response))
+        ])
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let checker = UpdateChecker(session: session, userDefaults: defaults, bundleVersion: "0.3.0")
+
+        checker.checkForUpdatesNow()
+        await waitForCheckToComplete(checker)
+
+        #expect(checker.availableVersion == nil)
+        #expect(checker.showingUpToDate == false)
+        #expect(checker.isChecking == false)
+        #expect(defaults.object(forKey: "UpdateChecker.lastCheckDate.v1") == nil)
     }
 
     @Test func dismissPersistsVersion() async {

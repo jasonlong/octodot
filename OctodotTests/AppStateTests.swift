@@ -70,6 +70,25 @@ struct AppStateTests {
     }
 
     fileprivate static func makeAuthedState(
+        notifications: [GitHubNotification],
+        results: [Result<(Data, HTTPURLResponse), Error>] = []
+    ) -> (AppState, StubNetworkSession) {
+        let defaults = makeIsolatedUserDefaults()
+        let session = StubNetworkSession(results: results)
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            backgroundRefreshEnabled: false,
+            sleepHandler: { _ in },
+            userDefaults: defaults
+        )
+        return (state, session)
+    }
+
+    fileprivate static func makeAuthedState(
         results: [Result<(Data, HTTPURLResponse), Error>] = [],
         count: Int = 5,
         actionDispatchDelayNanoseconds: UInt64 = 0,
@@ -3205,6 +3224,116 @@ struct AppStateTests {
             let paths = requests.compactMap { $0.url?.path }
             return paths.contains("/notifications/threads/0") && paths.contains("/notifications/threads/2")
         }
+    }
+
+    @Test func bulkDonePreservesASelectedRowThatSurvives() {
+        let notifications = (0..<4).map { Self.makeNotification(id: $0) }
+        let responses = (0..<2).map { id in
+            Result<(Data, HTTPURLResponse), Error>.success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)", statusCode: 204)
+            ))
+        }
+        let (state, _) = Self.makeAuthedState(notifications: notifications, results: responses)
+        state.groupByRepo = false
+        state.selectNotification(id: "3")
+        state.toggleChecked(id: "0")
+        state.toggleChecked(id: "1")
+
+        state.done()
+
+        #expect(state.selectedNotificationID == "3")
+        #expect(state.selectedIndex == 1)
+    }
+
+    @Test func bulkDoneAdvancesPastAllRemovedRows() {
+        let notifications = (0..<5).map { Self.makeNotification(id: $0) }
+        let responses = [1, 2].map { id in
+            Result<(Data, HTTPURLResponse), Error>.success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)", statusCode: 204)
+            ))
+        }
+        let (state, _) = Self.makeAuthedState(notifications: notifications, results: responses)
+        state.groupByRepo = false
+        state.selectNotification(id: "1")
+        state.toggleChecked(id: "1")
+        state.toggleChecked(id: "2")
+
+        state.done()
+
+        #expect(state.selectedNotificationID == "3")
+    }
+
+    @Test func bulkDoneFallsBackToNearestPrecedingSurvivorAtEnd() {
+        let notifications = (0..<4).map { Self.makeNotification(id: $0) }
+        let responses = [1, 3].map { id in
+            Result<(Data, HTTPURLResponse), Error>.success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)", statusCode: 204)
+            ))
+        }
+        let (state, _) = Self.makeAuthedState(notifications: notifications, results: responses)
+        state.groupByRepo = false
+        state.selectNotification(id: "3")
+        state.toggleChecked(id: "1")
+        state.toggleChecked(id: "3")
+
+        state.done()
+
+        #expect(state.selectedNotificationID == "2")
+    }
+
+    @Test func bulkDoneClearsSelectionWhenAllRowsAreRemoved() {
+        let notifications = (0..<3).map { Self.makeNotification(id: $0) }
+        let responses = (0..<3).map { id in
+            Result<(Data, HTTPURLResponse), Error>.success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)", statusCode: 204)
+            ))
+        }
+        let (state, _) = Self.makeAuthedState(notifications: notifications, results: responses)
+        state.groupByRepo = false
+        state.selectNotification(id: "1")
+        for notification in notifications {
+            state.toggleChecked(id: notification.id)
+        }
+
+        state.done()
+
+        #expect(state.selectedNotificationID == nil)
+        #expect(state.selectedIndex == 0)
+    }
+
+    @Test func groupedBulkUnsubscribeAdvancesAcrossRepositoryBoundary() {
+        let notifications = [
+            Self.makeNotification(id: 0, repo: "acme/alpha"),
+            Self.makeNotification(id: 1, repo: "acme/beta"),
+            Self.makeNotification(id: 2, repo: "acme/alpha"),
+            Self.makeNotification(id: 3, repo: "acme/beta"),
+        ]
+        let responses = [2, 3].flatMap { id in
+            [
+                Result<(Data, HTTPURLResponse), Error>.success((
+                    Data(),
+                    Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)/subscription", statusCode: 204)
+                )),
+                Result<(Data, HTTPURLResponse), Error>.success((
+                    Data(),
+                    Self.httpResponse(url: "https://api.github.com/notifications/threads/\(id)", statusCode: 204)
+                )),
+            ]
+        }
+        let (state, _) = Self.makeAuthedState(notifications: notifications, results: responses)
+        state.groupByRepo = true
+        state.selectNotification(id: "2")
+        state.toggleChecked(id: "2")
+        state.toggleChecked(id: "3")
+
+        state.unsubscribeFromThread()
+
+        #expect(state.selectedNotificationID == "1")
+        #expect(state.selectedNotification?.repository == "acme/beta")
     }
 
     @Test func bulkUnsubscribeRunsOnAllCheckedRows() async {

@@ -203,6 +203,7 @@ struct AppShellTests {
         )
 
         #expect(request?.targetID == "1")
+        #expect(request?.placement == .minimal)
         #expect(request?.visibleIDs == ["0", "1", "2"])
         #expect(NotificationListView.scrollRequest(
             selectedNotificationID: "999",
@@ -252,8 +253,11 @@ struct AppShellTests {
         )
 
         #expect(firstInFirstGroup?.targetID == "repo:acme/alpha")
+        #expect(firstInFirstGroup?.placement == .top)
         #expect(secondInSameGroup?.targetID == "2")
+        #expect(secondInSameGroup?.placement == .minimal)
         #expect(firstInSecondGroup?.targetID == "repo:acme/beta")
+        #expect(firstInSecondGroup?.placement == .top)
     }
 
     @Test func notificationListBuildsRepositoryHeadersOnlyAtBoundaries() {

@@ -801,6 +801,183 @@ struct AppStateTests {
         #expect(requests.last?.url?.query?.contains("since=") == true)
     }
 
+    @Test func panelPresentationInInboxUsesCachedUnreadAndRefreshesRecentInbox() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "0", isUnread: true),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "1", isUnread: false),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/repos/acme/alpha/dependabot/alerts",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "2", isUnread: false),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await session.recordedRequests().count == 3
+        }
+
+        state.refreshForPanelPresentation()
+        await Self.waitUntil {
+            let requests = await session.recordedRequests()
+            let finishedLoading = await MainActor.run { !state.isLoading }
+            return requests.count >= 4 && finishedLoading
+        }
+
+        let requests = await session.recordedRequests()
+        let notificationRequests = requests.filter { $0.url?.path == "/notifications" }
+        let unreadRequests = notificationRequests.filter { $0.url?.query?.contains("all=false") == true }
+        let recentInboxRequests = notificationRequests.filter { $0.url?.query?.contains("all=true") == true }
+        let securityRequests = requests.filter { $0.url?.path.contains("/dependabot/alerts") == true }
+
+        #expect(unreadRequests.count == 1)
+        #expect(recentInboxRequests.count == 2)
+        #expect(securityRequests.count == 1)
+    }
+
+    @Test func panelPresentationInUnreadModeSkipsRecentInbox() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "0", isUnread: true),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.inboxMode = .unread
+
+        await state.loadNotifications(force: true)
+        state.refreshForPanelPresentation()
+        await Self.settleTasks()
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 1)
+        #expect(requests.allSatisfy { $0.url?.query?.contains("all=false") == true })
+    }
+
+    @Test func explicitForceRefreshBypassesUnreadAndRecentInboxCaches() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "0", isUnread: true),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "1", isUnread: false),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "0", isUnread: true),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "2", isUnread: false),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200,
+                    headers: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [],
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+        state.inboxMode = .inbox
+
+        await state.loadNotifications(force: true)
+        state.refresh(force: true)
+        await Self.waitUntil {
+            await session.recordedRequests().count == 4
+        }
+
+        let requests = await session.recordedRequests()
+        let notificationRequests = requests.filter { $0.url?.path == "/notifications" }
+        #expect(notificationRequests.filter { $0.url?.query?.contains("all=false") == true }.count == 2)
+        #expect(notificationRequests.filter { $0.url?.query?.contains("all=true") == true }.count == 2)
+    }
+
     @Test func inboxModeLoadsRecentReadItemsFromRecentInboxFeed() async {
         let (state, _) = Self.makeAuthedState(
             results: [

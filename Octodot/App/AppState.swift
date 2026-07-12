@@ -862,8 +862,9 @@ final class AppState {
         let visibleBeforeMutation = filteredNotifications
 
         if kind.hidesNotification {
+            let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
             selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
-            selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
+            selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
         }
         clampSelection()
         DebugTrace.log(
@@ -896,8 +897,9 @@ final class AppState {
         inboxStore.dismissSecurityAlert(target)
         errorMessage = nil
 
+        let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
         selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
-        selectedIndexStorage = min(selectedIndexStorage, max(0, visibleBeforeMutation.count - 2))
+        selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
         clampSelection()
     }
 
@@ -1008,12 +1010,17 @@ final class AppState {
     private func handlePendingActionFailure(_ pending: ThreadActionStore.PendingAction, error _: Error) {
         actionTasks[pending.notification.threadId] = nil
 
-        if pending.kind.hidesNotification {
-            selectedThreadID = pending.notification.id
-            selectedIndexStorage = pending.originalServerIndex
+        if pending.kind == .unsubscribe {
+            inboxStore.unmuteThread(pending.notification.threadId)
         }
 
         errorMessage = threadActions.handleFailure(pending)
+
+        if pending.kind.hidesNotification,
+           selectedThreadID == pending.notification.id {
+            selectedThreadID = pending.notification.id
+        }
+
         rebuildDerivedState()
         DebugTrace.log(
             "failure kind=\(pending.kind.rawValue) target.id=\(pending.notification.id) " +
@@ -1202,8 +1209,10 @@ final class AppState {
         }
         guard list.count > 1 else { return nil }
 
-        let nextIndex = min(removeIndex, list.count - 2)
-        return list[nextIndex].id
+        if removeIndex < list.count - 1 {
+            return list[removeIndex + 1].id
+        }
+        return list[removeIndex - 1].id
     }
 
     private func actionDelay(for kind: ThreadActionStore.ActionKind) -> UInt64 {

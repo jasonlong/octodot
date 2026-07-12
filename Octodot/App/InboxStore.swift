@@ -546,6 +546,11 @@ final class InboxStore {
         persistMutedThreads()
     }
 
+    func unmuteThread(_ threadId: String) {
+        guard mutedThreads.removeValue(forKey: threadId) != nil else { return }
+        persistMutedThreads()
+    }
+
     func isThreadMuted(_ threadId: String) -> Bool {
         mutedThreads[threadId] != nil
     }

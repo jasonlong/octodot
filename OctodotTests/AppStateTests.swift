@@ -1987,7 +1987,8 @@ struct AppStateTests {
         }
 
         #expect(state.notifications.count == 5)
-        #expect(state.selectedNotification?.id == "0")
+        #expect(state.notifications.contains(where: { $0.id == "0" }))
+        #expect(state.selectedNotification?.id == "1")
         #expect(state.errorMessage == "Failed to mark thread as done")
         #expect((await session.recordedRequests()).count == 1)
     }
@@ -2398,6 +2399,179 @@ struct AppStateTests {
         #expect(requests.dropFirst().allSatisfy { $0.httpMethod == "DELETE" })
         #expect(state.errorMessage == nil)
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
+    }
+
+    @Test func unsubscribeFailureKeepsSelectionInSameRepoWhenGrouped() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "go-1",
+                threadId: "go-1",
+                title: "Go notification 1",
+                repository: "planetscale/planetscale-go",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-120),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/planetscale-go/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "go-2",
+                threadId: "go-2",
+                title: "Go notification 2",
+                repository: "planetscale/planetscale-go",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-180),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/planetscale-go/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "bb-1",
+                threadId: "bb-1",
+                title: "Top api-bb notification",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "bb-2",
+                threadId: "bb-2",
+                title: "Second api-bb notification",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = StubNetworkSession(results: [
+            .failure(GitHubAPIClient.APIError.forbidden),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.inboxMode = .inbox
+        state.groupByRepo = true
+        state.selectNotification(id: "bb-1")
+        state.unsubscribeFromThread()
+
+        #expect(state.selectedNotification?.id == "bb-2")
+        #expect(state.selectedNotification?.repository == "planetscale/api-bb")
+
+        await Self.settleTasks()
+
+        #expect(state.selectedNotification?.id == "bb-2")
+        #expect(state.selectedNotification?.repository == "planetscale/api-bb")
+        #expect(state.filteredNotifications.contains(where: { $0.id == "bb-1" }))
+        #expect(state.errorMessage == "Failed to unsubscribe from thread")
+    }
+
+    @Test func unsubscribeFailureDoesNotOverwriteSelectionAfterMovingOn() async {
+        let now = Date()
+        let notifications = [
+            GitHubNotification(
+                id: "go-1",
+                threadId: "go-1",
+                title: "Go notification",
+                repository: "planetscale/planetscale-go",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-120),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/planetscale-go/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "bb-1",
+                threadId: "bb-1",
+                title: "First api-bb notification",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "bb-2",
+                threadId: "bb-2",
+                title: "Second api-bb notification",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/2")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "bb-3",
+                threadId: "bb-3",
+                title: "Third api-bb notification",
+                repository: "planetscale/api-bb",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-90),
+                isUnread: true,
+                url: URL(string: "https://github.com/planetscale/api-bb/pull/3")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+        let session = DelayedStubNetworkSession(results: [
+            .failure(
+                error: GitHubAPIClient.APIError.forbidden,
+                delayNanoseconds: 50_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            sleepHandler: { _ in },
+            userDefaults: Self.makeIsolatedUserDefaults()
+        )
+
+        state.inboxMode = .inbox
+        state.groupByRepo = true
+        state.selectNotification(id: "bb-1")
+        state.unsubscribeFromThread()
+        state.selectNotification(id: "bb-3")
+
+        await Self.waitUntil(timeoutNanoseconds: 250_000_000) {
+            await MainActor.run {
+                state.errorMessage == "Failed to unsubscribe from thread"
+            }
+        }
+
+        #expect(state.selectedNotification?.id == "bb-3")
+        #expect(state.selectedNotification?.repository == "planetscale/api-bb")
+        #expect(state.filteredNotifications.contains(where: { $0.id == "bb-1" }))
     }
 
     // MARK: - Regression: repo order stability

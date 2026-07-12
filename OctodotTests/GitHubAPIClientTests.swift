@@ -272,6 +272,54 @@ struct GitHubAPIClientTests {
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
     }
 
+    @Test func olderConcurrentFetchDoesNotOverwriteNewerUnreadCache() async throws {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.notificationsPayload(id: "older").data(using: .utf8)!,
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!,
+                delayNanoseconds: 80_000_000
+            ),
+            .success(
+                payload: Self.notificationsPayload(id: "newer").data(using: .utf8)!,
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!,
+                delayNanoseconds: 0
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let olderTask = Task {
+            try await client.fetchNotifications(all: false, force: true)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+        let newerTask = Task {
+            try await client.fetchNotifications(all: false, force: true)
+        }
+
+        let older = try await olderTask.value
+        let newer = try await newerTask.value
+        let cached = try await client.fetchNotifications(all: false, force: false)
+
+        #expect(older.map(\.id) == ["older"])
+        #expect(newer.map(\.id) == ["newer"])
+        #expect(cached.map(\.id) == ["newer"])
+    }
+
     @Test func conditional200TriggersFullSnapshotRefetch() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -1349,6 +1397,59 @@ struct GitHubAPIClientTests {
         #expect(requests[2].httpMethod == "GET")
         #expect(requests[2].url?.query?.contains("all=false") == true)
         #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
+    @Test func cacheInvalidationPreventsInFlightFetchFromRepopulatingUnreadCache() async throws {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.notificationsPayload(id: "stale").data(using: .utf8)!,
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!,
+                delayNanoseconds: 80_000_000
+            ),
+            .success(
+                payload: Data(),
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/stale")!,
+                    statusCode: 205,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!,
+                delayNanoseconds: 0
+            ),
+            .success(
+                payload: Self.notificationsPayload(id: "fresh").data(using: .utf8)!,
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications?all=false")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:05:00 GMT",
+                        "X-Poll-Interval": "60",
+                    ]
+                )!,
+                delayNanoseconds: 0
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let staleFetch = Task {
+            try await client.fetchNotifications(all: false, force: true)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+        try await client.markAsRead(threadId: "stale")
+        let stale = try await staleFetch.value
+        let refreshed = try await client.fetchNotifications(all: false, force: false)
+
+        #expect(stale.map(\.id) == ["stale"])
+        #expect(refreshed.map(\.id) == ["fresh"])
     }
 
     @Test func unsubscribeIgnoresFutureUpdatesWithoutRemovingThreadFromInbox() async throws {

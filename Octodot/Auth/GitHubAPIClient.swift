@@ -45,6 +45,7 @@ actor GitHubAPIClient {
     }
 
     private var cachedFeeds: [FeedScope: FeedCache] = [:]
+    private var latestFeedRequestIDs: [FeedScope: UUID] = [:]
     private var cachedDependabotAlerts = SecurityAlertsCache()
     private var nonFatalWarningMessage: String?
 
@@ -72,6 +73,7 @@ actor GitHubAPIClient {
     func updateToken(_ token: String) {
         self.token = token
         cachedFeeds.removeAll()
+        invalidateFeedRequests(FeedScope.allCases)
         cachedDependabotAlerts = SecurityAlertsCache()
         nonFatalWarningMessage = nil
     }
@@ -167,6 +169,7 @@ actor GitHubAPIClient {
             return cachedFeed.notifications
         }
 
+        let requestID = beginFeedRequest(for: scope)
         var apiItems: [APINotification] = []
         var lastModifiedFromResponse: String?
         var page = 1
@@ -194,7 +197,7 @@ actor GitHubAPIClient {
             )
 
             if page == 1 {
-                updatePollingHeaders(from: httpResponse, scope: scope)
+                updatePollingHeaders(from: httpResponse, scope: scope, requestID: requestID)
             }
 
             switch status {
@@ -238,7 +241,7 @@ actor GitHubAPIClient {
                     continue
                 }
 
-                updateFeedCache(scope) { cache in
+                updateFeedCache(scope, for: requestID) { cache in
                     cache.lastModifiedValue = lastModifiedFromResponse
                 }
                 currentURL = nil
@@ -274,7 +277,7 @@ actor GitHubAPIClient {
             }
         }
 
-        updateFeedCache(scope) { cache in
+        updateFeedCache(scope, for: requestID) { cache in
             cache.notifications = notifications
             cache.lastModifiedValue = lastModifiedFromResponse
         }
@@ -1020,16 +1023,36 @@ actor GitHubAPIClient {
         }
     }
 
-    private func updatePollingHeaders(from response: HTTPURLResponse?, scope: FeedScope) {
+    private func updatePollingHeaders(
+        from response: HTTPURLResponse?,
+        scope: FeedScope,
+        requestID: UUID
+    ) {
         guard let response else { return }
 
-        updateFeedCache(scope) { cache in
+        updateFeedCache(scope, for: requestID) { cache in
             if let pollInterval = response.value(forHTTPHeaderField: "X-Poll-Interval"),
                let seconds = TimeInterval(pollInterval) {
                 cache.nextNotificationsRefreshAt = Date().addingTimeInterval(seconds)
             } else {
                 cache.nextNotificationsRefreshAt = Date()
             }
+        }
+    }
+
+    private func beginFeedRequest(for scope: FeedScope) -> UUID {
+        let requestID = UUID()
+        latestFeedRequestIDs[scope] = requestID
+        return requestID
+    }
+
+    private func isLatestFeedRequest(_ requestID: UUID, for scope: FeedScope) -> Bool {
+        latestFeedRequestIDs[scope] == requestID
+    }
+
+    private func invalidateFeedRequests(_ scopes: some Sequence<FeedScope>) {
+        for scope in scopes {
+            latestFeedRequestIDs[scope] = UUID()
         }
     }
 
@@ -1043,8 +1066,18 @@ actor GitHubAPIClient {
         cachedFeeds[scope] = cache
     }
 
+    private func updateFeedCache(
+        _ scope: FeedScope,
+        for requestID: UUID,
+        mutate: (inout FeedCache) -> Void
+    ) {
+        guard isLatestFeedRequest(requestID, for: scope) else { return }
+        updateFeedCache(scope, mutate: mutate)
+    }
+
     private func invalidateFeedCaches(_ scopes: some Sequence<FeedScope>) {
         for scope in scopes {
+            latestFeedRequestIDs[scope] = UUID()
             updateFeedCache(scope) { cache in
                 cache.notifications = []
                 cache.nextNotificationsRefreshAt = .distantPast

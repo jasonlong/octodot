@@ -77,6 +77,58 @@ struct AppShellTests {
         #expect(message.contains("Another app may already be using it."))
     }
 
+    @Test func closingNotificationPanelFlushesQueuedActions() async {
+        let defaults = AppStateTests.makeIsolatedUserDefaults()
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                AppStateTests.httpResponse(
+                    url: "https://api.github.com/notifications/threads/0",
+                    statusCode: 204
+                )
+            ))
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            useGraphQLForSubjectMetadata: false
+        )
+        let state = AppStateTests.makeState(
+            1,
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 5_000_000_000,
+            sleepHandler: AppStateTests.realSleep,
+            userDefaults: defaults
+        )
+        let panel = NotificationPanel(
+            appState: state,
+            preferences: AppPreferences(userDefaults: defaults),
+            updateChecker: UpdateChecker(
+                session: StubNetworkSession(results: []),
+                userDefaults: defaults
+            ),
+            showSettings: {}
+        )
+        state.isPanelVisible = true
+
+        state.done()
+        let requestsBeforeClose = await session.recordedRequests()
+        #expect(requestsBeforeClose.contains { $0.httpMethod == "DELETE" } == false)
+
+        panel.close()
+
+        await AppStateTests.waitUntil {
+            await session.recordedRequests().filter { $0.httpMethod == "DELETE" }.count == 1
+        }
+        let requestsAfterClose = await session.recordedRequests()
+        #expect(requestsAfterClose.filter { $0.httpMethod == "DELETE" }.count == 1)
+        #expect(state.isPanelVisible == false)
+
+        panel.close()
+        let requestsAfterRepeatedClose = await session.recordedRequests()
+        #expect(requestsAfterRepeatedClose.filter { $0.httpMethod == "DELETE" }.count == 1)
+    }
+
     @Test func outsideClickClosesPanelButStatusItemClickDoesNot() {
         let panelFrame = CGRect(x: 100, y: 100, width: 380, height: 500)
         let statusItemFrame = CGRect(x: 220, y: 620, width: 20, height: 24)

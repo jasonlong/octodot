@@ -59,6 +59,7 @@ final class NotificationPanel: NSPanel {
     }
 
     override func close() {
+        appState.flushPendingActions()
         super.close()
         appState.isPanelVisible = false
     }

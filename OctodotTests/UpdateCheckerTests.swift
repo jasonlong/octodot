@@ -105,6 +105,18 @@ struct UpdateCheckerTests {
         }
     }
 
+    private func makeReplacementFixture() throws -> (root: URL, current: URL, replacement: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("octodot-relaunch-test-\(UUID().uuidString)", isDirectory: true)
+        let current = root.appendingPathComponent("Applications/Octodot.app", isDirectory: true)
+        let replacement = root.appendingPathComponent("download/extract/Octodot.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: current.appendingPathComponent("version"))
+        try Data("new".utf8).write(to: replacement.appendingPathComponent("version"))
+        return (root, current, replacement)
+    }
+
     @Test func detectsNewerVersion() async {
         let session = stubSession(tag: "v1.0.0", url: "https://github.com/jasonlong/octodot/releases/tag/v1.0.0")
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
@@ -399,5 +411,102 @@ struct UpdateCheckerTests {
 
         checker.checkForUpdatesIfNeeded()
         #expect(checker.isChecking == false)
+    }
+
+    @Test func relaunchFailureRestoresPreviousAppAndKeepsProcessAlive() async throws {
+        let fixture = try makeReplacementFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var didTerminate = false
+        let checker = UpdateChecker(
+            session: errorSession(),
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!,
+            bundleVersion: "0.3.0",
+            currentAppPath: fixture.current.path,
+            appRelauncher: { _ in
+                throw NSError(domain: "UpdateCheckerTests", code: 1)
+            },
+            appTerminator: {
+                didTerminate = true
+            }
+        )
+
+        do {
+            try await checker.replaceAndRelaunch(with: fixture.replacement)
+            Issue.record("Expected relaunch failure")
+        } catch let error as UpdateChecker.UpdateError {
+            #expect(error == .relaunchFailed)
+            #expect(error.errorDescription == "Failed to relaunch the update; the previous version was restored")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        let restoredVersion = try String(
+            contentsOf: fixture.current.appendingPathComponent("version"),
+            encoding: .utf8
+        )
+        #expect(restoredVersion == "old")
+        #expect(!FileManager.default.fileExists(atPath: fixture.current.path + ".old"))
+        #expect(!didTerminate)
+    }
+
+    @Test func rollbackFailureIsActionableAndKeepsProcessAlive() async throws {
+        let fixture = try makeReplacementFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let backupURL = URL(fileURLWithPath: fixture.current.path + ".old")
+        var didTerminate = false
+        let checker = UpdateChecker(
+            session: errorSession(),
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!,
+            bundleVersion: "0.3.0",
+            currentAppPath: fixture.current.path,
+            appRelauncher: { _ in
+                try FileManager.default.removeItem(at: backupURL)
+                throw NSError(domain: "UpdateCheckerTests", code: 2)
+            },
+            appTerminator: {
+                didTerminate = true
+            }
+        )
+
+        do {
+            try await checker.replaceAndRelaunch(with: fixture.replacement)
+            Issue.record("Expected rollback failure")
+        } catch let error as UpdateChecker.UpdateError {
+            #expect(error == .rollbackFailed)
+            #expect(error.errorDescription == "Failed to restore the previous version after update installation failed")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(!didTerminate)
+    }
+
+    @Test func acceptedRelaunchTerminatesOnlyAfterLaunchSucceeds() async throws {
+        let fixture = try makeReplacementFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var events: [String] = []
+        let checker = UpdateChecker(
+            session: errorSession(),
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!,
+            bundleVersion: "0.3.0",
+            currentAppPath: fixture.current.path,
+            appRelauncher: { appURL in
+                #expect(appURL == fixture.current)
+                events.append("relaunched")
+            },
+            appTerminator: {
+                events.append("terminated")
+            }
+        )
+
+        try await checker.replaceAndRelaunch(with: fixture.replacement)
+
+        let installedVersion = try String(
+            contentsOf: fixture.current.appendingPathComponent("version"),
+            encoding: .utf8
+        )
+        #expect(installedVersion == "new")
+        #expect(events == ["relaunched", "terminated"])
+        #expect(!FileManager.default.fileExists(atPath: fixture.current.path + ".old"))
     }
 }

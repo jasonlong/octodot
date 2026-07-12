@@ -16,6 +16,8 @@ final class UpdateChecker {
     }
 
     typealias ProcessRunner = @Sendable (_ executablePath: String, _ arguments: [String]) throws -> ProcessResult
+    typealias AppRelauncher = @MainActor (URL) async throws -> Void
+    typealias AppTerminator = @MainActor () -> Void
 
     private struct CodeSignatureIdentity: Equatable {
         let bundleIdentifier: String
@@ -46,19 +48,46 @@ final class UpdateChecker {
     private let bundleVersion: String?
     private let processRunner: ProcessRunner
     private let currentAppPath: String
+    private let appRelauncher: AppRelauncher
+    private let appTerminator: AppTerminator
 
     init(
         session: any NetworkSession = URLSession.shared,
         userDefaults: UserDefaults = .standard,
         bundleVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
         processRunner: @escaping ProcessRunner = UpdateChecker.defaultProcessRunner,
-        currentAppPath: String = Bundle.main.bundlePath
+        currentAppPath: String = Bundle.main.bundlePath,
+        appRelauncher: @escaping AppRelauncher = UpdateChecker.defaultAppRelauncher,
+        appTerminator: @escaping AppTerminator = UpdateChecker.defaultAppTerminator
     ) {
         self.session = session
         self.userDefaults = userDefaults
         self.bundleVersion = bundleVersion
         self.processRunner = processRunner
         self.currentAppPath = currentAppPath
+        self.appRelauncher = appRelauncher
+        self.appTerminator = appTerminator
+    }
+
+    private static func defaultAppRelauncher(_ appURL: URL) async throws {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { application, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if application == nil {
+                    continuation.resume(throwing: UpdateError.relaunchFailed)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private static func defaultAppTerminator() {
+        NSApplication.shared.terminate(nil)
     }
 
     private static func defaultProcessRunner(_ executablePath: String, _ arguments: [String]) throws -> ProcessResult {
@@ -219,7 +248,7 @@ final class UpdateChecker {
             installState = .installing
             let extractedAppPath = try extractApp(from: zipPath)
             try verifyUpdateCandidate(at: extractedAppPath)
-            try replaceAndRelaunch(with: extractedAppPath)
+            try await replaceAndRelaunch(with: extractedAppPath)
         } catch {
             installState = .failed(error.localizedDescription)
         }
@@ -319,42 +348,46 @@ final class UpdateChecker {
         return !trimmed.isEmpty && trimmed.lowercased() != "not set"
     }
 
-    private func replaceAndRelaunch(with newAppPath: URL) throws {
-        let currentAppPath = Bundle.main.bundlePath
+    func replaceAndRelaunch(with newAppPath: URL) async throws {
         let currentAppURL = URL(fileURLWithPath: currentAppPath)
         let backupPath = currentAppPath + ".old"
+        let backupURL = URL(fileURLWithPath: backupPath)
         let fm = FileManager.default
 
-        // Remove any leftover backup
-        try? fm.removeItem(atPath: backupPath)
-
-        // Move current app to backup
-        try fm.moveItem(atPath: currentAppPath, toPath: backupPath)
+        try? fm.removeItem(at: backupURL)
+        try fm.moveItem(at: currentAppURL, to: backupURL)
 
         do {
-            // Move new app into place
             try fm.moveItem(at: newAppPath, to: currentAppURL)
         } catch {
-            // Restore from backup on failure
-            try? fm.moveItem(atPath: backupPath, toPath: currentAppPath)
+            do {
+                try fm.moveItem(at: backupURL, to: currentAppURL)
+            } catch {
+                throw UpdateError.rollbackFailed
+            }
             throw UpdateError.replacementFailed
         }
 
-        // Clean up backup and temp files
-        try? fm.removeItem(atPath: backupPath)
-        try? fm.removeItem(at: newAppPath.deletingLastPathComponent().deletingLastPathComponent())
-
-        // Relaunch the new version
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: currentAppURL, configuration: config) { _, _ in
-            DispatchQueue.main.async {
-                NSApplication.shared.terminate(nil)
+        do {
+            try await appRelauncher(currentAppURL)
+        } catch {
+            do {
+                if fm.fileExists(atPath: currentAppPath) {
+                    try fm.removeItem(at: currentAppURL)
+                }
+                try fm.moveItem(at: backupURL, to: currentAppURL)
+            } catch {
+                throw UpdateError.rollbackFailed
             }
+            throw UpdateError.relaunchFailed
         }
+
+        try? fm.removeItem(at: backupURL)
+        try? fm.removeItem(at: newAppPath.deletingLastPathComponent().deletingLastPathComponent())
+        appTerminator()
     }
 
-    enum UpdateError: LocalizedError {
+    enum UpdateError: LocalizedError, Equatable {
         case downloadFailed
         case extractionFailed
         case appBundleNotFound
@@ -363,6 +396,8 @@ final class UpdateChecker {
         case unverifiableCurrentSignature
         case notarizationCheckFailed
         case replacementFailed
+        case relaunchFailed
+        case rollbackFailed
 
         var errorDescription: String? {
             switch self {
@@ -374,6 +409,8 @@ final class UpdateChecker {
             case .unverifiableCurrentSignature: "Current app signature could not be verified"
             case .notarizationCheckFailed: "Update was not accepted by Gatekeeper"
             case .replacementFailed: "Failed to replace the app"
+            case .relaunchFailed: "Failed to relaunch the update; the previous version was restored"
+            case .rollbackFailed: "Failed to restore the previous version after update installation failed"
             }
         }
     }

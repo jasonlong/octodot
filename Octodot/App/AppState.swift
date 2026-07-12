@@ -28,6 +28,26 @@ final class AppState {
         case signedIn(username: String)
     }
 
+    private struct RefreshPolicy {
+        let forceUnread: Bool
+        let forceRecentInbox: Bool
+        let forceSecurityAlerts: Bool
+
+        static func uniform(force: Bool) -> RefreshPolicy {
+            RefreshPolicy(
+                forceUnread: force,
+                forceRecentInbox: force,
+                forceSecurityAlerts: force
+            )
+        }
+
+        static let panelPresentation = RefreshPolicy(
+            forceUnread: false,
+            forceRecentInbox: true,
+            forceSecurityAlerts: false
+        )
+    }
+
     enum InboxMode: String, Equatable {
         case inbox
         case unread
@@ -333,6 +353,10 @@ final class AppState {
     }
 
     func loadNotifications(force: Bool = false) async {
+        await loadNotifications(policy: .uniform(force: force))
+    }
+
+    private func loadNotifications(policy: RefreshPolicy) async {
         guard let client = apiClient else { return }
         let requestID = UUID()
         activeLoadRequestID = requestID
@@ -341,14 +365,14 @@ final class AppState {
         isLoading = true
         warningMessage = nil
         do {
-            async let unreadFetch = client.fetchNotifications(all: false, force: force)
+            async let unreadFetch = client.fetchNotifications(all: false, force: policy.forceUnread)
             let fetched = try await unreadFetch
             let fetchedRecentInbox: [GitHubNotification]
             let shouldFetchRecentInbox = inboxMode == .inbox
             if shouldFetchRecentInbox {
                 fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
                     since: inboxStore.recentInboxSinceDate(relativeTo: fetched),
-                    force: force,
+                    force: policy.forceRecentInbox,
                     maxPages: InboxStore.inboxRecentReadMaxPages
                 )
             } else {
@@ -370,7 +394,7 @@ final class AppState {
                 client: client,
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox.isEmpty ? serverRecentInboxNotifications : fetchedRecentInbox,
-                force: force
+                force: policy.forceSecurityAlerts
             )
             DebugTrace.log(
                 "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
@@ -590,12 +614,20 @@ final class AppState {
     }
 
     func refresh(force: Bool = false) {
+        refresh(using: .uniform(force: force))
+    }
+
+    func refreshForPanelPresentation() {
+        refresh(using: .panelPresentation)
+    }
+
+    private func refresh(using policy: RefreshPolicy) {
         searchQuery = ""
         isSearchActive = false
         checkedThreadIDs.removeAll()
         flushPendingActions()
         if apiClient != nil {
-            Task { await loadNotifications(force: force) }
+            Task { await loadNotifications(policy: policy) }
         } else {
             serverNotifications = MockData.generateNotifications()
             selectedIndexStorage = 0

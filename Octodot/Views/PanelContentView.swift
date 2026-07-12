@@ -433,7 +433,7 @@ struct PanelContentView: View {
             await Task.yield()
             windowFocusBridge.focusHostingView()
             isSearchFieldFocused = false
-            appState.refresh(force: appState.inboxMode.includesReadNotifications)
+            appState.refreshForPanelPresentation()
         }
     }
 

@@ -457,14 +457,20 @@ final class AppState {
 
     func done() {
         if let batch = checkedNotificationsBatch() {
+            let originalVisibleOrder = filteredNotifications
+            let originalSelectionID = selectedNotificationID
             clearChecked()
             for notification in batch {
                 if notification.source == .dependabotAlert {
-                    dismissSecurityAlert(notification)
+                    dismissSecurityAlert(notification, updatesSelection: false)
                 } else {
-                    startThreadAction(.done, target: notification)
+                    startThreadAction(.done, target: notification, updatesSelection: false)
                 }
             }
+            restoreSelectionAfterBulkMutation(
+                originalSelectionID: originalSelectionID,
+                originalVisibleOrder: originalVisibleOrder
+            )
             presentActionToast(verb: .done, items: batch)
             return
         }
@@ -482,15 +488,21 @@ final class AppState {
 
     func unsubscribeFromThread() {
         if let batch = checkedNotificationsBatch() {
+            let originalVisibleOrder = filteredNotifications
+            let originalSelectionID = selectedNotificationID
             clearChecked()
             for notification in batch {
                 if notification.source == .dependabotAlert {
-                    dismissSecurityAlert(notification)
+                    dismissSecurityAlert(notification, updatesSelection: false)
                 } else {
                     inboxStore.muteThread(notification.threadId)
-                    startThreadAction(.unsubscribe, target: notification)
+                    startThreadAction(.unsubscribe, target: notification, updatesSelection: false)
                 }
             }
+            restoreSelectionAfterBulkMutation(
+                originalSelectionID: originalSelectionID,
+                originalVisibleOrder: originalVisibleOrder
+            )
             presentActionToast(verb: .unsub, items: batch)
             return
         }
@@ -866,7 +878,8 @@ final class AppState {
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
         target explicitTarget: GitHubNotification? = nil,
-        delayNanosecondsOverride: UInt64? = nil
+        delayNanosecondsOverride: UInt64? = nil,
+        updatesSelection: Bool = true
     ) {
         guard let client = apiClient else { return }
         guard let target = explicitTarget ?? selectedNotification else { return }
@@ -893,7 +906,7 @@ final class AppState {
 
         let visibleBeforeMutation = filteredNotifications
 
-        if kind.hidesNotification {
+        if updatesSelection, kind.hidesNotification {
             let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
             selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
             selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
@@ -922,16 +935,21 @@ final class AppState {
         return true
     }
 
-    private func dismissSecurityAlert(_ target: GitHubNotification) {
+    private func dismissSecurityAlert(
+        _ target: GitHubNotification,
+        updatesSelection: Bool = true
+    ) {
         guard target.source == .dependabotAlert else { return }
 
         let visibleBeforeMutation = filteredNotifications
         inboxStore.dismissSecurityAlert(target)
         errorMessage = nil
 
-        let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
-        selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
-        selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
+        if updatesSelection {
+            let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
+            selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
+            selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
+        }
         clampSelection()
     }
 
@@ -1262,6 +1280,43 @@ final class AppState {
             return list[removeIndex + 1].id
         }
         return list[removeIndex - 1].id
+    }
+
+    private func restoreSelectionAfterBulkMutation(
+        originalSelectionID: String?,
+        originalVisibleOrder: [GitHubNotification]
+    ) {
+        guard let originalSelectionID,
+              let originalIndex = originalVisibleOrder.firstIndex(where: { $0.id == originalSelectionID }) else {
+            clampSelection()
+            return
+        }
+
+        let currentNotifications = filteredNotifications
+        let currentIndexByID = Dictionary(
+            uniqueKeysWithValues: currentNotifications.enumerated().map { ($1.id, $0) }
+        )
+
+        if let currentIndex = currentIndexByID[originalSelectionID] {
+            applySelection(index: currentIndex, in: currentNotifications)
+            return
+        }
+
+        for notification in originalVisibleOrder.dropFirst(originalIndex + 1) {
+            if let currentIndex = currentIndexByID[notification.id] {
+                applySelection(index: currentIndex, in: currentNotifications)
+                return
+            }
+        }
+
+        for notification in originalVisibleOrder[..<originalIndex].reversed() {
+            if let currentIndex = currentIndexByID[notification.id] {
+                applySelection(index: currentIndex, in: currentNotifications)
+                return
+            }
+        }
+
+        clearSelection()
     }
 
     private func actionDelay(for kind: ThreadActionStore.ActionKind) -> UInt64 {

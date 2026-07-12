@@ -22,6 +22,10 @@ final class UpdateChecker {
         let teamIdentifier: String
     }
 
+    private enum CheckError: Error {
+        case invalidResponse
+    }
+
     enum InstallState: Equatable {
         case idle
         case downloading(progress: Double)
@@ -117,20 +121,17 @@ final class UpdateChecker {
     private func performCheck(showUpToDate: Bool = false) async {
         guard !isChecking else { return }
         isChecking = true
-        defer {
-            isChecking = false
-            userDefaults.set(Date().timeIntervalSince1970, forKey: Self.lastCheckDateKey)
-        }
+        defer { isChecking = false }
 
         do {
             let release = try await fetchLatestRelease()
-            applyRelease(release)
+            guard applyRelease(release) else { return }
+            userDefaults.set(Date().timeIntervalSince1970, forKey: Self.lastCheckDateKey)
+            if showUpToDate, availableVersion == nil {
+                flashUpToDate()
+            }
         } catch {
             // Silent failure — don't disrupt the user for update-check errors
-        }
-
-        if showUpToDate, availableVersion == nil {
-            flashUpToDate()
         }
     }
 
@@ -148,41 +149,47 @@ final class UpdateChecker {
         var request = URLRequest(url: Self.releasesURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw CheckError.invalidResponse
+        }
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
 
-    private func applyRelease(_ release: GitHubRelease) {
-        guard !release.draft, !release.prerelease else { return }
+    @discardableResult
+    private func applyRelease(_ release: GitHubRelease) -> Bool {
+        guard !release.draft, !release.prerelease else { return true }
 
         guard let remoteVersion = SemanticVersion(release.tagName),
               let currentVersion = bundleVersion.flatMap(SemanticVersion.init) else {
-            return
+            return false
         }
 
         guard remoteVersion > currentVersion else {
             clearAvailableUpdate()
             clearInstallFailure()
-            return
+            return true
         }
 
         let dismissedTag = userDefaults.string(forKey: Self.dismissedVersionKey)
         if let dismissedTag, let dismissed = SemanticVersion(dismissedTag), remoteVersion <= dismissed {
             clearAvailableUpdate()
             clearInstallFailure()
-            return
+            return true
         }
 
         guard let assetURL = Self.macOSAssetURL(from: release) else {
             clearAvailableUpdate()
             clearInstallFailure()
-            return
+            return true
         }
 
         availableVersion = remoteVersion.description
         releaseURL = URL(string: release.htmlURL)
         downloadURL = assetURL
         clearInstallFailure()
+        return true
     }
 
     private static func macOSAssetURL(from release: GitHubRelease) -> URL? {

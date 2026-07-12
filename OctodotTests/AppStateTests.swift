@@ -40,6 +40,55 @@ struct AppStateTests {
         }
     }
 
+    static func makeSharedThreadNotifications() -> [GitHubNotification] {
+        let now = Date()
+        return [
+            GitHubNotification(
+                id: "shared-new",
+                threadId: "shared-thread",
+                title: "New shared activity",
+                repository: "acme/alpha",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now,
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+            GitHubNotification(
+                id: "shared-old",
+                threadId: "shared-thread",
+                title: "Older shared activity",
+                repository: "acme/alpha",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(-60),
+                isUnread: true,
+                url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            ),
+        ]
+    }
+
+    static func makeSecurityAlert(id: String = "security-alert") -> GitHubNotification {
+        GitHubNotification(
+            id: id,
+            threadId: id,
+            title: "Upgrade a vulnerable dependency",
+            repository: "acme/alpha",
+            reason: .securityAlert,
+            type: .securityAlert,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/security/dependabot/1")!,
+            subjectURL: nil,
+            subjectState: .open,
+            source: .dependabotAlert
+        )
+    }
+
     static func makeIsolatedUserDefaults() -> UserDefaults {
         let suiteName = "OctodotTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -568,6 +617,7 @@ struct AppStateTests {
         state.selectNotification(id: alertID)
         state.done()
         #expect(state.filteredNotifications.contains { $0.id == alertID } == false)
+        #expect(state.actionToasts.last?.message == "Marked acme/alpha done")
 
         await state.loadNotifications(force: true)
         await Self.waitUntil {
@@ -3334,6 +3384,194 @@ struct AppStateTests {
 
         #expect(state.selectedNotificationID == "1")
         #expect(state.selectedNotification?.repository == "acme/beta")
+    }
+
+    @Test func legacySingleActivityCommittedActionStillDecodes() throws {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notification = Self.makeNotification(id: 0)
+        let formatter = ISO8601DateFormatter()
+        let payload: [[String: Any]] = [[
+            "kind": "done",
+            "threadId": notification.threadId,
+            "updatedAt": formatter.string(from: notification.updatedAt),
+            "activityIdentity": notification.activityIdentity,
+        ]]
+        defaults.set(try JSONSerialization.data(withJSONObject: payload), forKey: ThreadActionStore.committedThreadActionsStorageKey)
+
+        let state = AppState(
+            notifications: [notification],
+            authStatus: .signedOut,
+            userDefaults: defaults
+        )
+        state.groupByRepo = false
+
+        #expect(state.filteredNotifications.isEmpty)
+    }
+
+    @Test func bulkDoneGroupsSharedThreadActivitiesAndPersistsEveryIdentity() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notifications = Self.makeSharedThreadNotifications()
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/shared-thread", statusCode: 204)
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: defaults
+        )
+        state.groupByRepo = false
+        for notification in notifications {
+            state.toggleChecked(id: notification.id)
+        }
+
+        state.done()
+
+        #expect(state.filteredNotifications.isEmpty)
+        #expect(state.actionToasts.last?.message == "Marked 2 items done")
+        await Self.waitUntil { await session.recordedRequests().count == 1 }
+        #expect((await session.recordedRequests()).count == 1)
+
+        let relaunched = AppState(
+            notifications: notifications,
+            authStatus: .signedOut,
+            userDefaults: defaults
+        )
+        relaunched.groupByRepo = false
+        #expect(relaunched.filteredNotifications.isEmpty)
+    }
+
+    @Test func failedGroupedBulkDoneRestoresEveryActivityWithoutMovingSelection() async {
+        let shared = Self.makeSharedThreadNotifications()
+        let survivor = Self.makeNotification(id: 99)
+        let (state, _) = Self.makeAuthedState(
+            notifications: shared + [survivor],
+            results: [.failure(URLError(.badServerResponse))]
+        )
+        state.groupByRepo = false
+        state.selectNotification(id: shared[0].id)
+        for notification in shared {
+            state.toggleChecked(id: notification.id)
+        }
+
+        state.done()
+        #expect(state.selectedNotificationID == survivor.id)
+
+        await Self.waitUntil {
+            await MainActor.run { state.filteredNotifications.count == 3 }
+        }
+        #expect(Set(state.filteredNotifications.map(\.id)) == Set((shared + [survivor]).map(\.id)))
+        #expect(state.selectedNotificationID == survivor.id)
+    }
+
+    @Test func bulkUnsubscribeGroupsSharedThreadActivitiesAndPersistsThem() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notifications = Self.makeSharedThreadNotifications()
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/shared-thread/subscription", statusCode: 204)
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications/threads/shared-thread", statusCode: 204)
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: notifications,
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            actionDispatchDelayNanoseconds: 0,
+            userDefaults: defaults
+        )
+        state.groupByRepo = false
+        for notification in notifications {
+            state.toggleChecked(id: notification.id)
+        }
+
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.isEmpty)
+        #expect(state.actionToasts.last?.message == "Unsubscribed from 2 items")
+        await Self.waitUntil { await session.recordedRequests().count == 2 }
+        #expect((await session.recordedRequests()).count == 2)
+
+        let relaunched = AppState(
+            notifications: notifications,
+            authStatus: .signedOut,
+            userDefaults: defaults
+        )
+        relaunched.groupByRepo = false
+        #expect(relaunched.filteredNotifications.isEmpty)
+    }
+
+    @Test func bulkUnsubscribeSkipsSecurityAlertsAndReportsOnlyAcceptedThreads() async {
+        let thread = Self.makeNotification(id: 0)
+        let alert = Self.makeSecurityAlert()
+        let (state, session) = Self.makeAuthedState(
+            notifications: [thread, alert],
+            results: [
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0/subscription", statusCode: 204))),
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0", statusCode: 204))),
+            ]
+        )
+        state.inboxMode = .inbox
+        state.groupByRepo = false
+        state.toggleChecked(id: thread.id)
+        state.toggleChecked(id: alert.id)
+
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.map(\.id) == [alert.id])
+        #expect(state.actionToasts.last?.message == "Unsubscribed from acme/alpha#0")
+        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+        await Self.waitUntil { await session.recordedRequests().count == 2 }
+        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+    }
+
+    @Test func singleSecurityAlertUnsubscribeIsRejectedWithoutSuccessFeedback() {
+        let alert = Self.makeSecurityAlert()
+        let (state, _) = Self.makeAuthedState(notifications: [alert])
+        state.inboxMode = .inbox
+        state.groupByRepo = false
+        state.selectNotification(id: alert.id)
+
+        state.unsubscribeFromThread()
+
+        #expect(state.filteredNotifications.map(\.id) == [alert.id])
+        #expect(state.actionToasts.isEmpty)
+        #expect(state.errorMessage == "Security alerts can only be opened or marked done")
+    }
+
+    @Test func securityAlertDoneProducesAccurateSingleAndMixedFeedback() {
+        let firstAlert = Self.makeSecurityAlert(id: "security-one")
+        let secondAlert = Self.makeSecurityAlert(id: "security-two")
+        let thread = Self.makeNotification(id: 0)
+        let (singleState, _) = Self.makeAuthedState(notifications: [firstAlert])
+        singleState.inboxMode = .inbox
+        singleState.groupByRepo = false
+        singleState.done()
+        #expect(singleState.actionToasts.last?.message == "Marked acme/alpha done")
+
+        let (mixedState, _) = Self.makeAuthedState(
+            notifications: [thread, secondAlert],
+            results: [
+                .success((Data(), Self.httpResponse(url: "https://api.github.com/notifications/threads/0", statusCode: 204)))
+            ]
+        )
+        mixedState.inboxMode = .inbox
+        mixedState.groupByRepo = false
+        mixedState.toggleChecked(id: thread.id)
+        mixedState.toggleChecked(id: secondAlert.id)
+        mixedState.done()
+
+        #expect(mixedState.actionToasts.last?.message == "Marked 2 items done")
     }
 
     @Test func bulkUnsubscribeRunsOnAllCheckedRows() async {

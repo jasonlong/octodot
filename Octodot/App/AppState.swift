@@ -20,6 +20,8 @@ final class AppState {
     private static let inboxModeStorageKey = "AppState.inboxMode.v1"
     private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
     private static let visibleSubjectStateBatchSize = 20
+    private static let unsupportedSecurityAlertActionMessage =
+        "Security alerts can only be opened or marked done"
     static let pageJumpCount = 8
     static let halfPageJumpCount = 4
 
@@ -459,27 +461,39 @@ final class AppState {
         if let batch = checkedNotificationsBatch() {
             let originalVisibleOrder = filteredNotifications
             let originalSelectionID = selectedNotificationID
+            var acceptedItems: [GitHubNotification] = []
             clearChecked()
-            for notification in batch {
-                if notification.source == .dependabotAlert {
-                    dismissSecurityAlert(notification, updatesSelection: false)
-                } else {
-                    startThreadAction(.done, target: notification, updatesSelection: false)
+
+            for notification in batch where notification.source == .dependabotAlert {
+                dismissSecurityAlert(notification, updatesSelection: false)
+                acceptedItems.append(notification)
+            }
+            for group in groupedThreadNotifications(from: batch) {
+                guard let representative = group.first else { continue }
+                if startThreadAction(
+                    .done,
+                    target: representative,
+                    activityIdentities: group.map(\.activityIdentity),
+                    updatesSelection: false
+                ) {
+                    acceptedItems.append(contentsOf: group)
                 }
             }
+
             restoreSelectionAfterBulkMutation(
                 originalSelectionID: originalSelectionID,
                 originalVisibleOrder: originalVisibleOrder
             )
-            presentActionToast(verb: .done, items: batch)
-            return
-        }
-        if dismissSelectedSecurityAlertIfNeeded() {
+            presentActionToast(verb: .done, items: acceptedItems)
             return
         }
         guard let target = selectedNotification else { return }
-        startThreadAction(.done)
-        presentActionToast(verb: .done, items: [target])
+        if target.source == .dependabotAlert {
+            dismissSecurityAlert(target)
+            presentActionToast(verb: .done, items: [target])
+        } else if startThreadAction(.done) {
+            presentActionToast(verb: .done, items: [target])
+        }
     }
 
     func markRead() {
@@ -490,29 +504,44 @@ final class AppState {
         if let batch = checkedNotificationsBatch() {
             let originalVisibleOrder = filteredNotifications
             let originalSelectionID = selectedNotificationID
+            let hasUnsupportedAlerts = batch.contains { $0.source == .dependabotAlert }
+            var acceptedItems: [GitHubNotification] = []
             clearChecked()
-            for notification in batch {
-                if notification.source == .dependabotAlert {
-                    dismissSecurityAlert(notification, updatesSelection: false)
-                } else {
-                    inboxStore.muteThread(notification.threadId)
-                    startThreadAction(.unsubscribe, target: notification, updatesSelection: false)
+
+            for group in groupedThreadNotifications(from: batch) {
+                guard let representative = group.first else { continue }
+                if startThreadAction(
+                    .unsubscribe,
+                    target: representative,
+                    activityIdentities: group.map(\.activityIdentity),
+                    updatesSelection: false
+                ) {
+                    inboxStore.muteThread(representative.threadId)
+                    clampSelection()
+                    acceptedItems.append(contentsOf: group)
                 }
             }
+
             restoreSelectionAfterBulkMutation(
                 originalSelectionID: originalSelectionID,
                 originalVisibleOrder: originalVisibleOrder
             )
-            presentActionToast(verb: .unsub, items: batch)
-            return
-        }
-        if dismissSelectedSecurityAlertIfNeeded() {
+            presentActionToast(verb: .unsub, items: acceptedItems)
+            if hasUnsupportedAlerts {
+                errorMessage = Self.unsupportedSecurityAlertActionMessage
+            }
             return
         }
         guard let notification = selectedNotification else { return }
-        inboxStore.muteThread(notification.threadId)
-        startThreadAction(.unsubscribe)
-        presentActionToast(verb: .unsub, items: [notification])
+        guard notification.source == .thread else {
+            errorMessage = Self.unsupportedSecurityAlertActionMessage
+            return
+        }
+        if startThreadAction(.unsubscribe) {
+            inboxStore.muteThread(notification.threadId)
+            clampSelection()
+            presentActionToast(verb: .unsub, items: [notification])
+        }
     }
 
     func copyURL() {
@@ -623,6 +652,24 @@ final class AppState {
         guard !checkedThreadIDs.isEmpty else { return nil }
         let ordered = filteredNotifications.filter { checkedThreadIDs.contains($0.id) }
         return ordered.isEmpty ? nil : ordered
+    }
+
+    private func groupedThreadNotifications(
+        from notifications: [GitHubNotification]
+    ) -> [[GitHubNotification]] {
+        var groups: [[GitHubNotification]] = []
+        var groupIndexByThreadID: [String: Int] = [:]
+
+        for notification in notifications where notification.source == .thread {
+            if let groupIndex = groupIndexByThreadID[notification.threadId] {
+                groups[groupIndex].append(notification)
+            } else {
+                groupIndexByThreadID[notification.threadId] = groups.count
+                groups.append([notification])
+            }
+        }
+
+        return groups
     }
 
     func refresh(force: Bool = false) {
@@ -875,20 +922,22 @@ final class AppState {
         selectedThreadID = nil
     }
 
+    @discardableResult
     private func startThreadAction(
         _ kind: ThreadActionStore.ActionKind,
         target explicitTarget: GitHubNotification? = nil,
+        activityIdentities: [String]? = nil,
         delayNanosecondsOverride: UInt64? = nil,
         updatesSelection: Bool = true
-    ) {
-        guard let client = apiClient else { return }
-        guard let target = explicitTarget ?? selectedNotification else { return }
+    ) -> Bool {
+        guard let client = apiClient else { return false }
+        guard let target = explicitTarget ?? selectedNotification else { return false }
         guard target.source == .thread else {
-            errorMessage = "Security alerts can only be opened or marked done"
-            return
+            errorMessage = Self.unsupportedSecurityAlertActionMessage
+            return false
         }
-        guard !threadActions.hasPendingAction(for: target.threadId) else { return }
-        if kind == .markRead && !target.isUnread { return }
+        guard !threadActions.hasPendingAction(for: target.threadId) else { return false }
+        if kind == .markRead && !target.isUnread { return false }
 
         DebugTrace.log(
             "start action kind=\(kind.rawValue) target.id=\(target.id) target.thread=\(target.threadId) " +
@@ -901,6 +950,7 @@ final class AppState {
         let pending = threadActions.start(
             kind,
             notification: target,
+            activityIdentities: activityIdentities,
             originalServerIndex: originalServerIndex
         )
 
@@ -923,15 +973,6 @@ final class AppState {
         } else {
             scheduleBatchDispatch(client: client, delayNanoseconds: delayNanoseconds)
         }
-    }
-
-    @discardableResult
-    private func dismissSelectedSecurityAlertIfNeeded() -> Bool {
-        guard let target = selectedNotification,
-              target.source == .dependabotAlert else {
-            return false
-        }
-        dismissSecurityAlert(target)
         return true
     }
 
@@ -1060,7 +1101,9 @@ final class AppState {
             "target.thread=\(pending.notification.threadId) server=\(serverNotifications.map(\.id).joined(separator: ","))"
         )
 
-        errorMessage = nil
+        if errorMessage != Self.unsupportedSecurityAlertActionMessage {
+            errorMessage = nil
+        }
         rebuildDerivedState()
         DebugTrace.log(
             "after rebuild success kind=\(pending.kind.rawValue) selected=\(selectedNotificationID ?? "nil") " +

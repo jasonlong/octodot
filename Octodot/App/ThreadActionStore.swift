@@ -38,6 +38,7 @@ struct ThreadActionStore {
         let requestID: UUID
         let kind: ActionKind
         let notification: GitHubNotification
+        let activityIdentities: [String]
         let originalServerIndex: Int
         var phase: PendingActionPhase
     }
@@ -46,7 +47,7 @@ struct ThreadActionStore {
         let kind: ActionKind
         let threadId: String
         let updatedAt: Date
-        let activityIdentity: String?
+        let activityIdentities: [String]
     }
 
     private struct PersistedCommittedAction: Codable {
@@ -54,6 +55,7 @@ struct ThreadActionStore {
         let threadId: String
         let updatedAt: Date
         let activityIdentity: String?
+        let activityIdentities: [String]?
     }
 
     private let userDefaults: UserDefaults
@@ -89,12 +91,14 @@ struct ThreadActionStore {
     mutating func start(
         _ kind: ActionKind,
         notification: GitHubNotification,
+        activityIdentities: [String]? = nil,
         originalServerIndex: Int
     ) -> PendingAction {
         let pending = PendingAction(
             requestID: UUID(),
             kind: kind,
             notification: notification,
+            activityIdentities: activityIdentities ?? [notification.activityIdentity],
             originalServerIndex: originalServerIndex,
             phase: .queued
         )
@@ -122,27 +126,27 @@ struct ThreadActionStore {
                 kind: .markRead,
                 threadId: pending.notification.threadId,
                 updatedAt: pending.notification.updatedAt,
-                activityIdentity: pending.notification.activityIdentity
+                activityIdentities: pending.activityIdentities
             )
             persistCommittedActions()
 
         case .done:
-            serverNotifications.removeAll { $0.matchesActivity(as: pending.notification) }
+            removeActivities(pending.activityIdentities, from: &serverNotifications)
             committedActions[pending.notification.threadId] = CommittedAction(
                 kind: .done,
                 threadId: pending.notification.threadId,
                 updatedAt: pending.notification.updatedAt,
-                activityIdentity: pending.notification.activityIdentity
+                activityIdentities: pending.activityIdentities
             )
             persistCommittedActions()
 
         case .unsubscribe:
-            serverNotifications.removeAll { $0.matchesActivity(as: pending.notification) }
+            removeActivities(pending.activityIdentities, from: &serverNotifications)
             committedActions[pending.notification.threadId] = CommittedAction(
                 kind: .unsubscribe,
                 threadId: pending.notification.threadId,
                 updatedAt: pending.notification.updatedAt,
-                activityIdentity: pending.notification.activityIdentity
+                activityIdentities: pending.activityIdentities
             )
             persistCommittedActions()
         }
@@ -164,11 +168,11 @@ struct ThreadActionStore {
                     projected[index].isUnread = false
                 }
             case .done, .unsubscribe:
-                hideDismissedActivity(
-                    activityIdentity: committed.activityIdentity,
+                hideDismissedActivities(
+                    activityIdentities: committed.activityIdentities,
                     threadId: committed.threadId,
                     updatedAt: committed.updatedAt,
-                    useLegacyThreadFallback: committed.activityIdentity == nil,
+                    useLegacyThreadFallback: committed.activityIdentities.isEmpty,
                     in: &projected
                 )
             }
@@ -182,8 +186,8 @@ struct ThreadActionStore {
                 }
 
             case .done, .unsubscribe:
-                hideDismissedActivity(
-                    activityIdentity: pending.notification.activityIdentity,
+                hideDismissedActivities(
+                    activityIdentities: pending.activityIdentities,
                     threadId: pending.notification.threadId,
                     updatedAt: pending.notification.updatedAt,
                     useLegacyThreadFallback: false,
@@ -212,8 +216,9 @@ struct ThreadActionStore {
                 guard !fetchedSnapshots.isEmpty else {
                     return true
                 }
-                if let activityIdentity = committed.activityIdentity {
-                    if fetchedSnapshots.contains(where: { $0.activityIdentity == activityIdentity }) {
+                if !committed.activityIdentities.isEmpty {
+                    let representedIdentities = Set(committed.activityIdentities)
+                    if fetchedSnapshots.contains(where: { representedIdentities.contains($0.activityIdentity) }) {
                         return true
                     }
                     if fetchedSnapshots.count == 1,
@@ -237,38 +242,40 @@ struct ThreadActionStore {
         pendingActions.removeAll()
     }
 
-    private func hideDismissedActivity(
-        activityIdentity: String?,
+    private func hideDismissedActivities(
+        activityIdentities: [String],
         threadId: String,
         updatedAt: Date,
         useLegacyThreadFallback: Bool,
         in notifications: inout [GitHubNotification]
     ) {
-        if let activityIdentity,
-           let exactIndex = notifications.firstIndex(where: { $0.activityIdentity == activityIdentity }) {
-            notifications.remove(at: exactIndex)
-            return
-        }
+        if !activityIdentities.isEmpty {
+            let representedIdentities = Set(activityIdentities)
+            let originalCount = notifications.count
+            notifications.removeAll { representedIdentities.contains($0.activityIdentity) }
+            if notifications.count < originalCount {
+                return
+            }
 
-        let threadSnapshotIndices = notifications.indices.filter {
-            notifications[$0].threadId == threadId
-        }
-
-        guard threadSnapshotIndices.count == 1 else {
-            if useLegacyThreadFallback {
-                notifications.removeAll {
-                    $0.threadId == threadId && $0.updatedAt <= updatedAt
-                }
+            let threadSnapshots = notifications.filter { $0.threadId == threadId }
+            if threadSnapshots.count == 1, threadSnapshots[0].updatedAt <= updatedAt {
+                notifications.removeAll { $0.id == threadSnapshots[0].id }
             }
             return
         }
 
-        let snapshotIndex = threadSnapshotIndices[0]
-        guard notifications[snapshotIndex].updatedAt <= updatedAt else {
-            return
+        guard useLegacyThreadFallback else { return }
+        notifications.removeAll {
+            $0.threadId == threadId && $0.updatedAt <= updatedAt
         }
+    }
 
-        notifications.remove(at: snapshotIndex)
+    private func removeActivities(
+        _ activityIdentities: [String],
+        from notifications: inout [GitHubNotification]
+    ) {
+        let representedIdentities = Set(activityIdentities)
+        notifications.removeAll { representedIdentities.contains($0.activityIdentity) }
     }
 
     private static func loadCommittedActions(from userDefaults: UserDefaults) -> [String: CommittedAction] {
@@ -291,7 +298,7 @@ struct ThreadActionStore {
                         kind: $0.kind,
                         threadId: $0.threadId,
                         updatedAt: $0.updatedAt,
-                        activityIdentity: $0.activityIdentity
+                        activityIdentities: $0.activityIdentities ?? $0.activityIdentity.map { [$0] } ?? []
                     )
                 )
             }
@@ -309,7 +316,8 @@ struct ThreadActionStore {
                 kind: $0.kind,
                 threadId: $0.threadId,
                 updatedAt: $0.updatedAt,
-                activityIdentity: $0.activityIdentity
+                activityIdentity: $0.activityIdentities.first,
+                activityIdentities: $0.activityIdentities
             )
         }
 

@@ -956,7 +956,19 @@ final class AppState {
                 try await client.markAsDone(notification: pending.notification)
             case .unsubscribe:
                 try await client.unsubscribe(notification: pending.notification)
-                try await client.markAsDone(notification: pending.notification)
+                do {
+                    try await client.markAsDone(notification: pending.notification)
+                } catch {
+                    if Task.isCancelled || error is CancellationError { return }
+                    guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
+                          latest.requestID == pending.requestID else {
+                        actionTasks[pending.notification.threadId] = nil
+                        return
+                    }
+
+                    handlePendingUnsubscribePartialSuccess(latest)
+                    return
+                }
             }
 
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
@@ -967,7 +979,7 @@ final class AppState {
 
             handlePendingActionSuccess(latest)
         } catch {
-            if Task.isCancelled { return }
+            if Task.isCancelled || error is CancellationError { return }
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                   latest.requestID == pending.requestID else {
                 actionTasks[pending.notification.threadId] = nil
@@ -1005,6 +1017,11 @@ final class AppState {
             "visible=\(filteredNotifications.map(\.id).joined(separator: ","))"
         )
         logLastActionSnapshot(context: "after-action-success")
+    }
+
+    private func handlePendingUnsubscribePartialSuccess(_ pending: ThreadActionStore.PendingAction) {
+        handlePendingActionSuccess(pending)
+        errorMessage = "Unsubscribed, but failed to mark thread as done"
     }
 
     private func handlePendingActionFailure(_ pending: ThreadActionStore.PendingAction, error _: Error) {

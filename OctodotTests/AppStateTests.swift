@@ -2401,6 +2401,60 @@ struct AppStateTests {
         #expect(state.notifications.contains(where: { $0.id == "0" }) == false)
     }
 
+    @Test func unsubscribeSuccessPersistsWhenMarkDoneFails() async throws {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let (state, session) = Self.makeAuthedState(
+            results: [
+                .success((
+                    #"{"ignored":true}"#.data(using: .utf8)!,
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0/subscription",
+                        statusCode: 200
+                    )
+                )),
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/0",
+                        statusCode: 500
+                    )
+                )),
+            ],
+            count: 1,
+            userDefaults: defaults
+        )
+        let originalNotification = try #require(state.notifications.first)
+
+        state.groupByRepo = false
+        state.selectedIndex = 0
+        state.unsubscribeFromThread()
+
+        await Self.waitUntil {
+            await MainActor.run {
+                state.errorMessage == "Unsubscribed, but failed to mark thread as done"
+            }
+        }
+
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests[0].httpMethod == "PUT")
+        #expect(requests[1].httpMethod == "DELETE")
+        #expect(state.filteredNotifications.isEmpty)
+        #expect(state.unreadNotificationCount == 0)
+        #expect(state.errorMessage == "Unsubscribed, but failed to mark thread as done")
+        #expect(state.errorMessage != "Failed to unsubscribe from thread")
+
+        let relaunchedState = AppState(
+            notifications: [originalNotification],
+            authStatus: .signedIn(username: "octodot"),
+            userDefaults: defaults
+        )
+        relaunchedState.groupByRepo = false
+
+        #expect(relaunchedState.filteredNotifications.isEmpty)
+        #expect(relaunchedState.unreadNotificationCount == 0)
+    }
+
     @Test func unsubscribeFailureKeepsSelectionInSameRepoWhenGrouped() async {
         let now = Date()
         let notifications = [

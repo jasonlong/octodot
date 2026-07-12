@@ -398,14 +398,12 @@ struct PanelContentView: View {
             isSearchFieldFocused = false
             focusListSoon()
         case .closePanel:
-            appState.flushPendingActions()
             closePanel()
         }
     }
 
     private func openSelectedNotificationAndCloseIfNeeded() {
         if appState.openInBrowser() {
-            appState.flushPendingActions()
             closePanel()
         }
     }

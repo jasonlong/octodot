@@ -265,7 +265,17 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           URL="https://github.com/jasonlong/octodot/releases/download/v${VERSION}/Octodot-v${VERSION}-macos.zip"
-          SHA256=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
+          ARCHIVE="Octodot-${GITHUB_REF_NAME}-macos.zip"
+          curl --fail --show-error --silent --location \
+            --retry 5 --retry-delay 2 --retry-all-errors \
+            --output "$ARCHIVE" "$URL"
+          test -s "$ARCHIVE"
+          unzip -tqq "$ARCHIVE"
+          SHA256=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')
+          if ! printf '%s\n' "$SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "Invalid SHA-256 checksum" >&2
+            exit 1
+          fi
 
           git clone https://x-access-token:${TAP_TOKEN}@github.com/jasonlong/homebrew-tap.git tap
           cd tap

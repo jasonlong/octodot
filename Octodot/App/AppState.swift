@@ -20,8 +20,6 @@ final class AppState {
     private static let inboxModeStorageKey = "AppState.inboxMode.v1"
     private static let groupByRepoStorageKey = "AppState.groupByRepo.v1"
     private static let visibleSubjectStateBatchSize = 20
-    private static let unsupportedSecurityAlertActionMessage =
-        "Security alerts can only be opened or marked done"
     static let pageJumpCount = 8
     static let halfPageJumpCount = 4
 
@@ -504,10 +502,13 @@ final class AppState {
         if let batch = checkedNotificationsBatch() {
             let originalVisibleOrder = filteredNotifications
             let originalSelectionID = selectedNotificationID
-            let hasUnsupportedAlerts = batch.contains { $0.source == .dependabotAlert }
-            var acceptedItems: [GitHubNotification] = []
+            let securityAlerts = batch.filter { $0.source == .dependabotAlert }
+            var unsubscribedItems: [GitHubNotification] = []
             clearChecked()
 
+            for notification in securityAlerts {
+                dismissSecurityAlert(notification, updatesSelection: false)
+            }
             for group in groupedThreadNotifications(from: batch) {
                 guard let representative = group.first else { continue }
                 if startThreadAction(
@@ -518,7 +519,7 @@ final class AppState {
                 ) {
                     inboxStore.muteThread(representative.threadId)
                     clampSelection()
-                    acceptedItems.append(contentsOf: group)
+                    unsubscribedItems.append(contentsOf: group)
                 }
             }
 
@@ -526,18 +527,15 @@ final class AppState {
                 originalSelectionID: originalSelectionID,
                 originalVisibleOrder: originalVisibleOrder
             )
-            presentActionToast(verb: .unsub, items: acceptedItems)
-            if hasUnsupportedAlerts {
-                errorMessage = Self.unsupportedSecurityAlertActionMessage
-            }
+            presentActionToast(verb: .unsub, items: unsubscribedItems)
+            presentActionToast(verb: .done, items: securityAlerts)
             return
         }
         guard let notification = selectedNotification else { return }
-        guard notification.source == .thread else {
-            errorMessage = Self.unsupportedSecurityAlertActionMessage
-            return
-        }
-        if startThreadAction(.unsubscribe) {
+        if notification.source == .dependabotAlert {
+            dismissSecurityAlert(notification)
+            presentActionToast(verb: .done, items: [notification])
+        } else if startThreadAction(.unsubscribe) {
             inboxStore.muteThread(notification.threadId)
             clampSelection()
             presentActionToast(verb: .unsub, items: [notification])
@@ -933,7 +931,7 @@ final class AppState {
         guard let client = apiClient else { return false }
         guard let target = explicitTarget ?? selectedNotification else { return false }
         guard target.source == .thread else {
-            errorMessage = Self.unsupportedSecurityAlertActionMessage
+            errorMessage = "Security alerts can only be opened or marked done"
             return false
         }
         guard !threadActions.hasPendingAction(for: target.threadId) else { return false }
@@ -1101,9 +1099,7 @@ final class AppState {
             "target.thread=\(pending.notification.threadId) server=\(serverNotifications.map(\.id).joined(separator: ","))"
         )
 
-        if errorMessage != Self.unsupportedSecurityAlertActionMessage {
-            errorMessage = nil
-        }
+        errorMessage = nil
         rebuildDerivedState()
         DebugTrace.log(
             "after rebuild success kind=\(pending.kind.rawValue) selected=\(selectedNotificationID ?? "nil") " +

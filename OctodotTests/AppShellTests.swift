@@ -255,7 +255,6 @@ struct AppShellTests {
         )
 
         #expect(request?.targetID == "1")
-        #expect(request?.placement == .minimal)
         #expect(request?.visibleIDs == ["0", "1", "2"])
         #expect(NotificationListView.scrollRequest(
             selectedNotificationID: "999",
@@ -281,7 +280,7 @@ struct AppShellTests {
         #expect(original != reordered)
     }
 
-    @Test func notificationListScrollRequestTargetsRepositoryHeaderForFirstRowInGroup() {
+    @Test func notificationListScrollRequestKeepsSelectedRowTargetAcrossRepositoryBoundaries() {
         let notifications = [
             AppStateTests.makeNotification(id: 1, repo: "acme/alpha"),
             AppStateTests.makeNotification(id: 2, repo: "acme/alpha"),
@@ -304,12 +303,96 @@ struct AppShellTests {
             groupByRepo: true
         )
 
-        #expect(firstInFirstGroup?.targetID == "repo:acme/alpha")
-        #expect(firstInFirstGroup?.placement == .top)
+        #expect(firstInFirstGroup?.targetID == "1")
         #expect(secondInSameGroup?.targetID == "2")
-        #expect(secondInSameGroup?.placement == .minimal)
-        #expect(firstInSecondGroup?.targetID == "repo:acme/beta")
-        #expect(firstInSecondGroup?.placement == .top)
+        #expect(firstInSecondGroup?.targetID == "3")
+    }
+
+    @Test func notificationListRevealsContextWhenMovingDownFromViewportBottom() {
+        let notifications = AppStateTests.makeNotifications(4)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: false
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: notifications,
+            groupByRepo: false
+        )
+
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 356, width: 380, height: 44),
+            currentRowFrame: CGRect(x: 0, y: 400, width: 380, height: 44),
+            viewportHeight: 400
+        ))
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 300, width: 380, height: 44),
+            currentRowFrame: CGRect(x: 0, y: 400, width: 380, height: 44),
+            viewportHeight: 400
+        ))
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 348, width: 380, height: 44),
+            currentRowFrame: nil,
+            viewportHeight: 406
+        ))
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 300, width: 380, height: 44),
+            currentRowFrame: CGRect(x: 0, y: 344, width: 380, height: 44),
+            viewportHeight: 400
+        ) == false)
+    }
+
+    @Test func notificationListRevealsContextAfterActingOnBottomItem() {
+        let notifications = AppStateTests.makeNotifications(4)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: false
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: [notifications[0], notifications[2], notifications[3]],
+            groupByRepo: false
+        )
+
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 356, width: 380, height: 44),
+            currentRowFrame: CGRect(x: 0, y: 356, width: 380, height: 44),
+            viewportHeight: 400
+        ))
+    }
+
+    @Test func notificationListDoesNotRevealDownwardContextWhenMovingUp() {
+        let notifications = AppStateTests.makeNotifications(4)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: notifications,
+            groupByRepo: false
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: false
+        )
+
+        #expect(NotificationListView.shouldRevealDownwardContext(
+            previous: previous,
+            current: current!,
+            previousRowFrame: CGRect(x: 0, y: 356, width: 380, height: 44),
+            currentRowFrame: CGRect(x: 0, y: 312, width: 380, height: 44),
+            viewportHeight: 400
+        ) == false)
     }
 
     @Test func notificationListBuildsRepositoryHeadersOnlyAtBoundaries() {

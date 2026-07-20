@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct NotificationListView: View {
+    private static let scrollCoordinateSpace = "notification-list-scroll"
+    static let downwardContextAnchor = UnitPoint(x: 0.5, y: 0.35)
+
     let notifications: [GitHubNotification]
     let selectedNotificationID: String?
     let checkedIDs: Set<String>
@@ -24,16 +27,14 @@ struct NotificationListView: View {
         }
     }
 
-    enum ScrollPlacement: Equatable {
-        case minimal
-        case top
-    }
-
     struct ScrollRequest: Equatable {
+        let selectedNotificationID: String
         let targetID: String
-        let placement: ScrollPlacement
         let visibleIDs: [String]
     }
+
+    @State private var knownRowFrames: [String: CGRect] = [:]
+    @State private var previousScrollRequest: ScrollRequest?
 
     private var listItems: [ListItem] {
         Self.listItems(
@@ -44,33 +45,55 @@ struct NotificationListView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                LazyVStack(spacing: 0) {
-                    ForEach(listItems, id: \.id) { item in
-                        listItemView(item)
+        let currentScrollRequest = Self.scrollRequest(
+            selectedNotificationID: selectedNotificationID,
+            notifications: notifications,
+            groupByRepo: groupByRepo
+        )
+
+        GeometryReader { viewportGeometry in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(listItems, id: \.id) { item in
+                            listItemView(item)
+                        }
                     }
                 }
-            }
-            .task(id: Self.scrollRequest(
-                selectedNotificationID: selectedNotificationID,
-                notifications: notifications,
-                groupByRepo: groupByRepo
-            )) {
-                guard let scrollRequest = Self.scrollRequest(
-                    selectedNotificationID: selectedNotificationID,
-                    notifications: notifications,
-                    groupByRepo: groupByRepo
-                ) else {
-                    return
+                .coordinateSpace(name: Self.scrollCoordinateSpace)
+                .onPreferenceChange(NotificationListRowFramesPreferenceKey.self) { frames in
+                    knownRowFrames.merge(frames) { _, latest in latest }
                 }
+                .task(id: currentScrollRequest) {
+                    guard let scrollRequest = currentScrollRequest else {
+                        previousScrollRequest = nil
+                        return
+                    }
 
-                await Task.yield()
-                switch scrollRequest.placement {
-                case .minimal:
+                    let priorRequest = previousScrollRequest
+                    let priorRowFrame = priorRequest.flatMap {
+                        knownRowFrames[$0.selectedNotificationID]
+                    }
+                    previousScrollRequest = scrollRequest
+
+                    await Task.yield()
+                    let currentRowFrame = knownRowFrames[scrollRequest.selectedNotificationID]
+                    let shouldRevealContext = Self.shouldRevealDownwardContext(
+                        previous: priorRequest,
+                        current: scrollRequest,
+                        previousRowFrame: priorRowFrame,
+                        currentRowFrame: currentRowFrame,
+                        viewportHeight: viewportGeometry.size.height
+                    )
+                    if shouldRevealContext {
+                        proxy.scrollTo(
+                            scrollRequest.selectedNotificationID,
+                            anchor: Self.downwardContextAnchor
+                        )
+                        return
+                    }
+
                     proxy.scrollTo(scrollRequest.targetID)
-                case .top:
-                    proxy.scrollTo(scrollRequest.targetID, anchor: .top)
                 }
             }
         }
@@ -95,6 +118,18 @@ struct NotificationListView: View {
                 onToggleCheck: { onToggleCheck(notification.id) }
             )
             .id(notification.id)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: NotificationListRowFramesPreferenceKey.self,
+                        value: [
+                            notification.id: geometry.frame(
+                                in: .named(Self.scrollCoordinateSpace)
+                            )
+                        ]
+                    )
+                }
+            }
             .onTapGesture {
                 Self.handleRowTap(
                     id: notification.id,
@@ -118,29 +153,46 @@ struct NotificationListView: View {
     static func scrollRequest(
         selectedNotificationID: String?,
         notifications: [GitHubNotification],
-        groupByRepo: Bool
+        groupByRepo _: Bool
     ) -> ScrollRequest? {
         guard let selectedNotificationID,
-              let selectedIndex = notifications.firstIndex(where: { $0.id == selectedNotificationID }) else {
+              notifications.contains(where: { $0.id == selectedNotificationID }) else {
             return nil
         }
 
-        let targetID: String
-        let placement: ScrollPlacement
-        if groupByRepo,
-           selectedIndex == 0 || notifications[selectedIndex - 1].repository != notifications[selectedIndex].repository {
-            targetID = "repo:\(notifications[selectedIndex].repository)"
-            placement = .top
-        } else {
-            targetID = selectedNotificationID
-            placement = .minimal
-        }
-
         return ScrollRequest(
-            targetID: targetID,
-            placement: placement,
+            selectedNotificationID: selectedNotificationID,
+            targetID: selectedNotificationID,
             visibleIDs: notifications.map(\.id)
         )
+    }
+
+    static func shouldRevealDownwardContext(
+        previous: ScrollRequest?,
+        current: ScrollRequest,
+        previousRowFrame: CGRect?,
+        currentRowFrame: CGRect?,
+        viewportHeight: CGFloat
+    ) -> Bool {
+        guard let previous,
+              viewportHeight > 0,
+              let previousIndex = previous.visibleIDs.firstIndex(of: previous.selectedNotificationID),
+              let currentIndexInPreviousList = previous.visibleIDs.firstIndex(of: current.selectedNotificationID),
+              currentIndexInPreviousList > previousIndex else {
+            return false
+        }
+
+        guard let previousRowFrame else { return false }
+
+        guard let currentRowFrame else {
+            return true
+        }
+        if currentRowFrame.maxY > viewportHeight {
+            return true
+        }
+
+        let bottomTolerance = max(12, previousRowFrame.height * 0.5)
+        return previousRowFrame.maxY >= viewportHeight - bottomTolerance
     }
 
     static func listItems(
@@ -173,5 +225,13 @@ struct NotificationListView: View {
         }
 
         return items
+    }
+}
+
+private struct NotificationListRowFramesPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, latest in latest }
     }
 }

@@ -165,6 +165,29 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer ghp_secret")
     }
 
+    @Test func validateTokenRejectsExternalFinalResponseURL() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"login":"attacker"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://example.com/captured")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected a redirected external response to be rejected")
+        } catch GitHubAPIClient.APIError.untrustedGitHubAPIURL {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func validateTokenAcceptsRequiredClassicScopes() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -234,6 +257,83 @@ struct GitHubAPIClientTests {
         }
     }
 
+    @Test func validateTokenRejectsExplicitlyEmptyClassicScopes() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"login":"octodot"}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-OAuth-Scopes": ""]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected validateToken to reject an empty classic scope list")
+        } catch GitHubAPIClient.APIError.insufficientScopes(let missing) {
+            #expect(missing == ["notifications", "repo"])
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func validateTokenMapsExhausted403ToRateLimitError() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 403,
+                    httpVersion: nil,
+                    headerFields: ["X-RateLimit-Remaining": "0"]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected exhausted 403 response to map to rate limiting")
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test func tokenReplacementRejectsInFlightNotificationResponse() async throws {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.notificationsPayload(id: "old-account").data(using: .utf8)!,
+                response: HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!,
+                delayNanoseconds: 80_000_000
+            )
+        ])
+        let client = GitHubAPIClient(token: "old_token", session: session, useGraphQLForSubjectMetadata: false)
+        let fetch = Task {
+            try await client.fetchNotifications(force: true)
+        }
+        try await Task.sleep(nanoseconds: 5_000_000)
+
+        await client.updateToken("new_token")
+
+        do {
+            _ = try await fetch.value
+            Issue.record("Expected the old credential response to be rejected")
+        } catch GitHubAPIClient.APIError.staleCredentialResponse {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func fetchNotificationsUsesConditionalPollingHeaders() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -270,6 +370,92 @@ struct GitHubAPIClientTests {
         #expect(requests.count == 2)
         #expect(requests.first?.url?.query?.contains("all=false") == true)
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
+    }
+
+    @Test func duplicateNotificationIDsAreDeduplicatedWithoutPoisoningCache() async throws {
+        let duplicatePayload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "duplicate",
+                unread: true,
+                title: "First copy",
+                subjectType: "PullRequest",
+                subjectURL: nil
+            ),
+            NotificationFixture(
+                id: "duplicate",
+                unread: true,
+                title: "Second copy",
+                subjectType: "PullRequest",
+                subjectURL: nil
+            ),
+        ])
+        let session = StubNetworkSession(results: [
+            .success((
+                duplicatePayload.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "0"]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(id: "duplicate").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let initial = try await client.fetchNotifications(force: true)
+        let refreshed = try await client.fetchNotifications(force: true)
+
+        #expect(initial.map(\.id) == ["duplicate"])
+        #expect(refreshed.map(\.id) == ["duplicate"])
+    }
+
+    @Test func malformedPollIntervalFallsBackToSafeDefault() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "1").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "nan"]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        _ = try await client.fetchNotifications(force: true)
+        let delay = await client.suggestedRefreshDelayNanoseconds()
+
+        #expect(delay > 55_000_000_000)
+        #expect(delay <= 60_000_000_000)
+    }
+
+    @Test func notificationsWithInvalidTimestampsAreDropped() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "1", updatedAt: "not-a-date").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let notifications = try await client.fetchNotifications(force: true)
+
+        #expect(notifications.isEmpty)
     }
 
     @Test func olderConcurrentFetchDoesNotOverwriteNewerUnreadCache() async throws {
@@ -526,6 +712,33 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.url?.host == "api.github.com")
     }
 
+    @Test func fetchNotificationsRejectsGitHubPaginationURLOnUnexpectedPort() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "1").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Link": #"<https://api.github.com:8443/notifications?page=2>; rel="next""#,
+                    ]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            _ = try await client.fetchNotifications(force: true)
+            Issue.record("Expected pagination on a custom port to be rejected")
+        } catch GitHubAPIClient.APIError.untrustedGitHubAPIURL {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await session.recordedRequests().count == 1)
+    }
+
     @Test func fetchNotificationsReusesSubjectStateForUnchangedItems() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -765,6 +978,20 @@ struct GitHubAPIClientTests {
             Set(requests.compactMap(\.url?.path)) ==
             Set(["/repos/acme/api/dependabot/alerts", "/repos/octodot/personal/dependabot/alerts"])
         )
+    }
+
+    @Test func fetchDependabotAlertsRejectsMalformedRepositoryPaths() async throws {
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let alerts = try await client.fetchDependabotAlerts(
+            repositoryNames: ["acme/api/../../user"],
+            currentUsername: "octodot",
+            force: true
+        )
+
+        #expect(alerts.isEmpty)
+        #expect(await session.recordedRequests().isEmpty)
     }
 
     @Test func fetchDependabotAlertsSkipsForbiddenRepositories() async throws {
@@ -1165,6 +1392,29 @@ struct GitHubAPIClientTests {
         #expect(requests.isEmpty)
     }
 
+    @Test func resolveSubjectMetadataRejectsUnexpectedGitHubAPIPath() async throws {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "1",
+            title: "Malformed subject",
+            repository: "acme/test",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/1")!,
+            subjectURL: "https://api.github.com/repos/acme/test/pulls/1/comments",
+            subjectState: .unknown
+        )
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let metadata = await client.resolveSubjectMetadata(for: [notification])
+
+        #expect(metadata["1"]?.state == .unknown)
+        #expect(await session.recordedRequests().isEmpty)
+    }
+
     @Test func resolveSubjectMetadataMapsOpenPullRequestCheckRunsToCIStatus() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
@@ -1452,6 +1702,44 @@ struct GitHubAPIClientTests {
         #expect(refreshed.map(\.id) == ["fresh"])
     }
 
+    @Test func threadActionsRejectPathTraversalIdentifiersWithoutNetworking() async throws {
+        let session = StubNetworkSession(results: [])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            try await client.markAsRead(threadId: "../user")
+            Issue.record("Expected an invalid thread identifier to be rejected")
+        } catch GitHubAPIClient.APIError.invalidThreadID {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await session.recordedRequests().isEmpty)
+    }
+
+    @Test func markAsReadMapsRevokedCredentialsToUnauthorized() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/1")!,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "revoked", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            try await client.markAsRead(threadId: "1")
+            Issue.record("Expected revoked credentials to be reported as unauthorized")
+        } catch GitHubAPIClient.APIError.unauthorized {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func unsubscribeIgnoresFutureUpdatesWithoutRemovingThreadFromInbox() async throws {
         let notification = GitHubNotification(
             id: "1",
@@ -1537,6 +1825,81 @@ struct GitHubAPIClientTests {
         #expect(requests[0].url?.path == "/graphql")
         #expect(requests[1].httpMethod == "PUT")
         #expect(requests[1].url?.path == "/notifications/threads/thread-1/subscription")
+    }
+
+    @Test func unsubscribeGraphQLMapsRevokedCredentialsToUnauthorizedWithoutRESTFallback() async {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open,
+            graphQLNodeID: "PR_node_1"
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "revoked", session: session)
+
+        do {
+            try await client.unsubscribe(notification: notification)
+            Issue.record("Expected revoked credentials to be reported as unauthorized")
+        } catch GitHubAPIClient.APIError.unauthorized {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await session.recordedRequests().count == 1)
+    }
+
+    @Test func unsubscribeRESTMapsRevokedCredentialsToUnauthorized() async {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1/subscription")!,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "revoked", session: session)
+
+        do {
+            try await client.unsubscribe(notification: notification)
+            Issue.record("Expected revoked credentials to be reported as unauthorized")
+        } catch GitHubAPIClient.APIError.unauthorized {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test func unsubscribeThrowsWhenGraphQLErrorsAndRESTFallbackFails() async throws {
@@ -1651,6 +2014,42 @@ struct GitHubAPIClientTests {
         #expect(requests.count == 3)
         #expect(requests[2].httpMethod == "GET")
         #expect(requests[2].value(forHTTPHeaderField: "If-Modified-Since") == nil)
+    }
+
+    @Test func markAsDoneMapsRevokedCredentialsToUnauthorized() async {
+        let notification = GitHubNotification(
+            id: "1",
+            threadId: "thread-1",
+            title: "Notification 1",
+            repository: "acme/alpha",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+            subjectURL: nil,
+            subjectState: .open
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/thread-1")!,
+                    statusCode: 401,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "revoked", session: session, useGraphQLForSubjectMetadata: false)
+
+        do {
+            try await client.markAsDone(notification: notification)
+            Issue.record("Expected revoked credentials to be reported as unauthorized")
+        } catch GitHubAPIClient.APIError.unauthorized {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test func unsubscribeThenDoneInvalidatesCacheWithoutReusingLocallyPrunedUnreadFeed() async throws {

@@ -38,7 +38,7 @@ wait_for_app_exit() {
   while /usr/bin/pgrep -x Octodot >/dev/null 2>&1; do
     (( attempts += 1 ))
     if (( attempts > 40 )); then
-      /usr/bin/pkill -x Octodot >/dev/null 2>&1 || true
+      /usr/bin/killall -9 Octodot >/dev/null 2>&1 || true
       break
     fi
     /bin/sleep 0.25

@@ -36,8 +36,11 @@ final class StatusItemController: NSObject {
     private let unreadIcon = StatusItemController.makeIcon(named: "menubar-icon-unread")
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
+    private var hotKeyHandlerFailureStatus: OSStatus?
+    private var registeredShortcut: AppPreferences.GlobalShortcut?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var notificationObservers: [NSObjectProtocol] = []
 
     init(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker, settingsWindowController: SettingsWindowController) {
         self.appState = appState
@@ -79,9 +82,10 @@ final class StatusItemController: NSObject {
         observeHotkeyPreference()
         updateRegisteredGlobalHotkey()
         setupOutsideClickMonitors()
+        setupLifecycleObservers()
     }
 
-    deinit {
+    isolated deinit {
         if let hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
         }
@@ -94,6 +98,10 @@ final class StatusItemController: NSObject {
         if let localMouseMonitor {
             NSEvent.removeMonitor(localMouseMonitor)
         }
+        for observer in notificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     private func setupGlobalHotkeyHandler() {
@@ -140,6 +148,7 @@ final class StatusItemController: NSObject {
             &hotKeyHandlerRef
         )
         guard installStatus == noErr else {
+            hotKeyHandlerFailureStatus = installStatus
             handleHotkeyFailure(
                 kind: .installHandler,
                 status: installStatus,
@@ -150,22 +159,31 @@ final class StatusItemController: NSObject {
     }
 
     private func updateRegisteredGlobalHotkey() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
+        guard hotKeyHandlerRef != nil else {
+            handleHotkeyFailure(
+                kind: .installHandler,
+                status: hotKeyHandlerFailureStatus ?? OSStatus(eventInternalErr),
+                shortcut: preferences.globalShortcut
+            )
+            return
         }
 
         let hotKeyID = EventHotKeyID(signature: Constants.hotKeySignature, id: Constants.hotKeyID)
         let shortcut = preferences.globalShortcut
+        guard shortcut != registeredShortcut else { return }
+        var replacementHotKeyRef: EventHotKeyRef?
         let registerStatus = RegisterEventHotKey(
             UInt32(shortcut.keyCode),
             Self.carbonModifiers(from: shortcut.modifierFlags),
             hotKeyID,
             GetApplicationEventTarget(),
             0,
-            &hotKeyRef
+            &replacementHotKeyRef
         )
-        guard registerStatus == noErr else {
+        guard registerStatus == noErr, let replacementHotKeyRef else {
+            if let registeredShortcut {
+                preferences.globalShortcut = registeredShortcut
+            }
             handleHotkeyFailure(
                 kind: .registerShortcut,
                 status: registerStatus,
@@ -174,6 +192,11 @@ final class StatusItemController: NSObject {
             return
         }
 
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+        }
+        hotKeyRef = replacementHotKeyRef
+        registeredShortcut = shortcut
         clearHotkeyFailure()
     }
 
@@ -250,6 +273,30 @@ final class StatusItemController: NSObject {
         }
     }
 
+    private func setupLifecycleObservers() {
+        let center = NotificationCenter.default
+        notificationObservers.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard self?.panel.isVisible == true else { return }
+                self?.panel.close()
+            }
+        })
+        notificationObservers.append(center.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard self?.panel.isVisible == true else { return }
+                self?.panel.close()
+            }
+        })
+    }
+
     @objc private func handleClick() {
         guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseUp {
@@ -275,7 +322,6 @@ final class StatusItemController: NSObject {
         preferences.globalShortcutErrorMessage = message
         appState.errorMessage = message
         DebugTrace.log("hotkey failure kind=\(String(describing: kind)) status=\(status) shortcut=\(shortcut.displayText)")
-        assertionFailure(message)
     }
 
     private func clearHotkeyFailure() {
@@ -321,7 +367,16 @@ final class StatusItemController: NSObject {
 
     private func showPanel() {
         guard let buttonRect = statusItemButtonScreenFrame() else { return }
-        panel.setFrameOrigin(Self.panelOrigin(buttonRect: buttonRect, panelSize: panel.frame.size))
+        let visibleFrame = NSScreen.screens.first(where: { $0.frame.intersects(buttonRect) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+        let origin = visibleFrame.map {
+            Self.clampedPanelOrigin(
+                buttonRect: buttonRect,
+                panelSize: panel.frame.size,
+                visibleFrame: $0
+            )
+        } ?? Self.panelOrigin(buttonRect: buttonRect, panelSize: panel.frame.size)
+        panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         appState.isPanelVisible = true
@@ -348,9 +403,13 @@ final class StatusItemController: NSObject {
     }
 
     private func closePanelForOutsideClickIfNeeded(mouseLocation: CGPoint) {
-        guard panel.isVisible,
-              let statusItemFrame = statusItemButtonScreenFrame()
-        else { return }
+        guard panel.isVisible else { return }
+        guard let statusItemFrame = statusItemButtonScreenFrame() else {
+            if !panel.frame.contains(mouseLocation) {
+                panel.close()
+            }
+            return
+        }
 
         let shouldClose = Self.shouldClosePanelForClick(
             mouseLocation: mouseLocation,
@@ -389,6 +448,13 @@ final class StatusItemController: NSObject {
         let appearance = Self.appearance(isSignedIn: appState.isSignedIn, unreadCount: appState.unreadNotificationCount)
         button.image = appearance.iconName == "menubar-icon-unread" ? unreadIcon : defaultIcon
         button.alphaValue = appearance.alpha
+        let unreadDescription = appState.unreadNotificationCount == 1
+            ? "1 unread notification"
+            : "\(appState.unreadNotificationCount) unread notifications"
+        button.toolTip = appState.isSignedIn ? "Octodot — \(unreadDescription)" : "Octodot — Signed out"
+        button.setAccessibilityLabel("Octodot")
+        button.setAccessibilityValue(appState.isSignedIn ? unreadDescription : "Signed out")
+        button.setAccessibilityHelp("Opens GitHub notifications. Right-click for more options.")
     }
 
     private static func makeIcon(named name: String) -> NSImage? {
@@ -410,6 +476,20 @@ final class StatusItemController: NSObject {
         CGPoint(
             x: buttonRect.midX - panelSize.width / 2,
             y: buttonRect.minY - panelSize.height
+        )
+    }
+
+    static func clampedPanelOrigin(
+        buttonRect: CGRect,
+        panelSize: CGSize,
+        visibleFrame: CGRect
+    ) -> CGPoint {
+        let desired = panelOrigin(buttonRect: buttonRect, panelSize: panelSize)
+        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - panelSize.width)
+        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - panelSize.height)
+        return CGPoint(
+            x: min(max(desired.x, visibleFrame.minX), maximumX),
+            y: min(max(desired.y, visibleFrame.minY), maximumY)
         )
     }
 

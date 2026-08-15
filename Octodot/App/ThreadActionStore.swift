@@ -39,6 +39,7 @@ struct ThreadActionStore {
         let kind: ActionKind
         let notification: GitHubNotification
         let activityIdentities: [String]
+        let projectionCutoff: Date
         let originalServerIndex: Int
         var phase: PendingActionPhase
     }
@@ -73,6 +74,10 @@ struct ThreadActionStore {
         pendingActions[threadId] != nil
     }
 
+    var hasPendingActions: Bool {
+        !pendingActions.isEmpty
+    }
+
     func pendingAction(for threadId: String) -> PendingAction? {
         pendingActions[threadId]
     }
@@ -92,6 +97,7 @@ struct ThreadActionStore {
         _ kind: ActionKind,
         notification: GitHubNotification,
         activityIdentities: [String]? = nil,
+        projectionCutoff: Date? = nil,
         originalServerIndex: Int
     ) -> PendingAction {
         let pending = PendingAction(
@@ -99,6 +105,7 @@ struct ThreadActionStore {
             kind: kind,
             notification: notification,
             activityIdentities: activityIdentities ?? [notification.activityIdentity],
+            projectionCutoff: projectionCutoff ?? notification.updatedAt,
             originalServerIndex: originalServerIndex,
             phase: .queued
         )
@@ -108,6 +115,9 @@ struct ThreadActionStore {
     }
 
     mutating func updatePendingAction(_ pending: PendingAction) {
+        guard pendingActions[pending.notification.threadId]?.requestID == pending.requestID else {
+            return
+        }
         pendingActions[pending.notification.threadId] = pending
     }
 
@@ -115,17 +125,22 @@ struct ThreadActionStore {
         _ pending: PendingAction,
         serverNotifications: inout [GitHubNotification]
     ) {
+        guard pendingActions[pending.notification.threadId]?.requestID == pending.requestID else {
+            return
+        }
         pendingActions[pending.notification.threadId] = nil
 
         switch pending.kind {
         case .markRead:
-            if let index = serverNotifications.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+            for index in serverNotifications.indices
+                where serverNotifications[index].threadId == pending.notification.threadId &&
+                    serverNotifications[index].updatedAt <= pending.projectionCutoff {
                 serverNotifications[index].isUnread = false
             }
             committedActions[pending.notification.threadId] = CommittedAction(
                 kind: .markRead,
                 threadId: pending.notification.threadId,
-                updatedAt: pending.notification.updatedAt,
+                updatedAt: pending.projectionCutoff,
                 activityIdentities: pending.activityIdentities
             )
             persistCommittedActions()
@@ -153,6 +168,9 @@ struct ThreadActionStore {
     }
 
     mutating func handleFailure(_ pending: PendingAction) -> String {
+        guard pendingActions[pending.notification.threadId]?.requestID == pending.requestID else {
+            return pending.kind.failureMessage
+        }
         pendingActions[pending.notification.threadId] = nil
         return pending.kind.failureMessage
     }
@@ -163,8 +181,9 @@ struct ThreadActionStore {
         for committed in committedActions.values {
             switch committed.kind {
             case .markRead:
-                if let index = projected.firstIndex(where: { $0.threadId == committed.threadId }),
-                   projected[index].updatedAt <= committed.updatedAt {
+                for index in projected.indices
+                    where projected[index].threadId == committed.threadId &&
+                        projected[index].updatedAt <= committed.updatedAt {
                     projected[index].isUnread = false
                 }
             case .done, .unsubscribe:
@@ -181,7 +200,9 @@ struct ThreadActionStore {
         for pending in pendingActions.values {
             switch pending.kind {
             case .markRead:
-                if let index = projected.firstIndex(where: { $0.threadId == pending.notification.threadId }) {
+                for index in projected.indices
+                    where projected[index].threadId == pending.notification.threadId &&
+                        projected[index].updatedAt <= pending.projectionCutoff {
                     projected[index].isUnread = false
                 }
 
@@ -203,13 +224,14 @@ struct ThreadActionStore {
         committedActions = committedActions.filter { threadId, committed in
             switch committed.kind {
             case .markRead:
-                guard let fetched = fetchedNotifications.first(where: { $0.threadId == threadId }) else {
+                let fetchedSnapshots = fetchedNotifications.filter { $0.threadId == threadId }
+                guard !fetchedSnapshots.isEmpty else {
                     return false
                 }
-                guard fetched.updatedAt <= committed.updatedAt else {
+                guard fetchedSnapshots.allSatisfy({ $0.updatedAt <= committed.updatedAt }) else {
                     return false
                 }
-                return fetched.isUnread
+                return fetchedSnapshots.contains(where: \.isUnread)
 
             case .done, .unsubscribe:
                 let fetchedSnapshots = fetchedNotifications.filter { $0.threadId == threadId }
@@ -287,22 +309,28 @@ struct ThreadActionStore {
         decoder.dateDecodingStrategy = .iso8601
 
         guard let persisted = try? decoder.decode([PersistedCommittedAction].self, from: data) else {
+            userDefaults.removeObject(forKey: committedThreadActionsStorageKey)
             return [:]
         }
 
-        return Dictionary(
-            uniqueKeysWithValues: persisted.map {
-                (
-                    $0.threadId,
-                    CommittedAction(
-                        kind: $0.kind,
-                        threadId: $0.threadId,
-                        updatedAt: $0.updatedAt,
-                        activityIdentities: $0.activityIdentities ?? $0.activityIdentity.map { [$0] } ?? []
-                    )
-                )
+        return persisted.reduce(into: [:]) { actions, stored in
+            guard !stored.threadId.isEmpty else { return }
+            let rawActivityIdentities = stored.activityIdentities ?? stored.activityIdentity.map { [$0] } ?? []
+            let activityIdentities = rawActivityIdentities.reduce(into: [String]()) { identities, identity in
+                guard !identity.isEmpty, !identities.contains(identity) else { return }
+                identities.append(identity)
             }
-        )
+            let action = CommittedAction(
+                kind: stored.kind,
+                threadId: stored.threadId,
+                updatedAt: stored.updatedAt,
+                activityIdentities: activityIdentities
+            )
+            if let existing = actions[stored.threadId], existing.updatedAt > action.updatedAt {
+                return
+            }
+            actions[stored.threadId] = action
+        }
     }
 
     private func persistCommittedActions() {
@@ -311,23 +339,34 @@ struct ThreadActionStore {
             return
         }
 
-        let persisted = committedActions.values.map {
-            PersistedCommittedAction(
-                kind: $0.kind,
-                threadId: $0.threadId,
-                updatedAt: $0.updatedAt,
-                activityIdentity: $0.activityIdentities.first,
-                activityIdentities: $0.activityIdentities
-            )
-        }
+        let persisted = committedActions.values
+            .sorted { $0.threadId < $1.threadId }
+            .map {
+                PersistedCommittedAction(
+                    kind: $0.kind,
+                    threadId: $0.threadId,
+                    updatedAt: $0.updatedAt,
+                    activityIdentity: $0.activityIdentities.first,
+                    activityIdentities: $0.activityIdentities
+                )
+            }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
 
         guard let data = try? encoder.encode(persisted) else {
             return
         }
 
         userDefaults.set(data, forKey: Self.committedThreadActionsStorageKey)
+    }
+
+    private static var preciseDateEncodingStrategy: JSONEncoder.DateEncodingStrategy {
+        .custom { date, encoder in
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var container = encoder.singleValueContainer()
+            try container.encode(formatter.string(from: date))
+        }
     }
 }

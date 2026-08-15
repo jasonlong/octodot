@@ -172,6 +172,77 @@ struct AppStateBootstrapTests {
         #expect((await session.recordedRequests()).count == 1)
     }
 
+    @Test func signingOutDuringTokenValidationSuppressesStaleFailure() async {
+        let session = SuspendedTokenValidationSession(
+            response: AppStateTests.httpResponse(
+                url: "https://api.github.com/user",
+                statusCode: 401
+            )
+        )
+        let client = GitHubAPIClient(token: "ghp_stale", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [],
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            apiClientFactory: { _ in client }
+        )
+
+        let submission = Task { try await state.submitToken("ghp_stale") }
+        await AppStateTests.waitUntil {
+            await session.requestStarted()
+        }
+        state.signOut()
+        await session.resume()
+
+        do {
+            try await submission.value
+        } catch {
+            Issue.record("A superseded token submission surfaced a stale error: \(error)")
+        }
+        #expect(state.authStatus == .signedOut)
+    }
+
+    @Test func switchingAccountsClearsAccountSpecificProjectionState() async {
+        let defaults = AppStateTests.makeIsolatedUserDefaults()
+        let notification = AppStateTests.makeNotification(id: 0)
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+        inboxStore.muteThread(notification.threadId)
+        var actionStore = ThreadActionStore(userDefaults: defaults)
+        var serverNotifications = [notification]
+        let pending = actionStore.start(.done, notification: notification, originalServerIndex: 0)
+        actionStore.handleSuccess(pending, serverNotifications: &serverNotifications)
+
+        let session = StubNetworkSession(results: [
+            .success((
+                Data("[]".utf8),
+                AppStateTests.httpResponse(url: "https://api.github.com/notifications", statusCode: 200)
+            )),
+            .success((
+                Data("[]".utf8),
+                AppStateTests.httpResponse(url: "https://api.github.com/notifications?all=true", statusCode: 200)
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_new", session: session, useGraphQLForSubjectMetadata: false)
+        let state = AppState(
+            notifications: [notification],
+            authStatus: .signedIn(username: "old-account"),
+            userDefaults: defaults,
+            apiClientFactory: { _ in client }
+        )
+
+        state.signIn(token: "ghp_new", username: "new-account")
+
+        #expect(state.authStatus == .signedIn(username: "new-account"))
+        #expect(state.notifications.isEmpty)
+        #expect(defaults.object(forKey: ThreadActionStore.committedThreadActionsStorageKey) == nil)
+        let reloadedInboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+        #expect(reloadedInboxStore.isThreadMuted(notification.threadId) == false)
+
+        await AppStateTests.waitUntil {
+            await session.recordedRequests().count == 2
+        }
+        state.signOut()
+    }
+
     @Test func startupUnauthorizedDeletesSavedTokenAndSignsOut() async {
         let session = StubNetworkSession(results: [
             .success((
@@ -239,6 +310,36 @@ struct AppStateBootstrapTests {
         #expect((await session.recordedRequests()).count == 1)
     }
 
+    @Test func signingOutDuringStartupValidationPreventsStaleSignIn() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Data(#"{"login":"stale-user"}"#.utf8),
+                response: AppStateTests.httpResponse(
+                    url: "https://api.github.com/user",
+                    statusCode: 200
+                ),
+                delayNanoseconds: 100_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_saved", session: session, useGraphQLForSubjectMetadata: false)
+        var deletedTokenCount = 0
+        let state = AppState(
+            notifications: AppStateTests.makeNotifications(2),
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            tokenDeleter: { deletedTokenCount += 1 },
+            apiClientFactory: { _ in client },
+            bootstrapToken: "ghp_saved"
+        )
+
+        await AppStateTests.settleTasks()
+        state.signOut()
+        try? await Task.sleep(for: .milliseconds(150))
+
+        #expect(state.authStatus == .signedOut)
+        #expect(state.notifications.isEmpty)
+        #expect(deletedTokenCount == 1)
+    }
+
     @Test func signInSelectsTopItemAfterLoad() async {
         let session = StubNetworkSession(results: [
             .success((
@@ -275,5 +376,32 @@ struct AppStateBootstrapTests {
 
         #expect(state.selectedIndex == 0)
         #expect(state.selectedNotificationID == state.notifications.first?.id)
+    }
+}
+
+private actor SuspendedTokenValidationSession: NetworkSession {
+    private let response: HTTPURLResponse
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(response: HTTPURLResponse) {
+        self.response = response
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        started = true
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        return (Data(), response)
+    }
+
+    func requestStarted() -> Bool {
+        started
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
     }
 }

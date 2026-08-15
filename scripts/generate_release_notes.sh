@@ -9,6 +9,14 @@ fi
 
 tag="$1"
 output_path="${2:-}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+
+"$script_dir/validate_release_tag.sh" "$tag"
+
+if ! git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" >/dev/null; then
+  echo "Release tag does not exist: $tag" >&2
+  exit 1
+fi
 
 repo_slug="${GITHUB_REPOSITORY:-jasonlong/octodot}"
 compare_base=""

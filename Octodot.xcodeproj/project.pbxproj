@@ -33,6 +33,7 @@
 		BB0000000000000000000030 /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* InboxStore.swift */; };
 		BB0000000000000000000032 /* SemanticVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000032 /* SemanticVersion.swift */; };
 		BB0000000000000000000033 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* UpdateChecker.swift */; };
+		BB0000000000000000000036 /* UpdateInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000036 /* UpdateInstaller.swift */; };
 			BB0000000000000000000034 /* SemanticVersionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000034 /* SemanticVersionTests.swift */; };
 			BB0000000000000000000035 /* UpdateCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* UpdateCheckerTests.swift */; };
 			BB0000000000000000000020 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000020 /* AppStateTests.swift */; };
@@ -81,6 +82,7 @@
 		AA0000000000000000000030 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		AA0000000000000000000032 /* SemanticVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVersion.swift; sourceTree = "<group>"; };
 		AA0000000000000000000033 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
+		AA0000000000000000000036 /* UpdateInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateInstaller.swift; sourceTree = "<group>"; };
 		AA0000000000000000000034 /* SemanticVersionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVersionTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000035 /* UpdateCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckerTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000010 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
@@ -136,6 +138,7 @@
 				AA0000000000000000000032 /* SemanticVersion.swift */,
 				AA0000000000000000000029 /* ThreadActionStore.swift */,
 				AA0000000000000000000033 /* UpdateChecker.swift */,
+				AA0000000000000000000036 /* UpdateInstaller.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -317,6 +320,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		DD0000000000000000000015 /* Remove Legacy Icon Key */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -361,6 +365,7 @@
 				BB0000000000000000000027 /* DebugTrace.swift in Sources */,
 				BB0000000000000000000032 /* SemanticVersion.swift in Sources */,
 				BB0000000000000000000033 /* UpdateChecker.swift in Sources */,
+				BB0000000000000000000036 /* UpdateInstaller.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -446,11 +451,12 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				OCTODOT_BUILD_NUMBER = 1;
-				OCTODOT_MARKETING_VERSION = 0.5.7;
+				OCTODOT_MARKETING_VERSION = 0.5.8;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
 			};
 			name = Debug;
 		};
@@ -502,10 +508,11 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_FAST_MATH = YES;
 				OCTODOT_BUILD_NUMBER = 1;
-				OCTODOT_MARKETING_VERSION = 0.5.7;
+				OCTODOT_MARKETING_VERSION = 0.5.8;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
 			};
 			name = Release;
 		};

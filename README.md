@@ -71,6 +71,7 @@ Global hotkey:
 
 Octodot includes a native settings window with:
 
-- `Account`: sign in, update token, sign out
-- `Appearance`: `System`, `Light`, or `Dark`
+- `General`: appearance and launch-at-login behavior
 - `Shortcuts`: global shortcut recorder and full panel keybinding reference
+- `Account`: sign in, update token, sign out
+- `About`: version information and signed in-app update checks

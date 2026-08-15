@@ -5,16 +5,26 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example, v1.2.3)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   build-and-release:
+    permissions:
+      contents: write
     runs-on: macos-26
     timeout-minutes: 30
     env:
@@ -22,8 +32,8 @@ jobs:
       XCARCHIVE_PATH: /tmp/Octodot.xcarchive
       EXPORT_PATH: /tmp/octodot-export
       EXPORT_OPTIONS_PLIST: /tmp/OctodotExportOptions.plist
-      ARCHIVE_PATH: /tmp/Octodot-${{ github.ref_name }}-unsigned.zip
-      FINAL_ARCHIVE_PATH: Octodot-${{ github.ref_name }}-macos.zip
+      ARCHIVE_PATH: /tmp/Octodot-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}-unsigned.zip
+      FINAL_ARCHIVE_PATH: Octodot-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}-macos.zip
       KEYCHAIN_PATH: /tmp/octodot-build.keychain-db
       KEYCHAIN_PROFILE: octodot-notary
 
@@ -32,30 +42,28 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Verify release ref is main
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          default_branch="${{ github.event.repository.default_branch }}"
-          git fetch --force origin "$default_branch:refs/remotes/origin/$default_branch"
+          git fetch --force origin "$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
 
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-              echo "::error::Release pushes must be tag refs"
-              exit 1
-            fi
+          scripts/validate_release_tag.sh "$RELEASE_TAG"
 
-            tag_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
-            main_commit="$(git rev-parse "origin/$default_branch")"
+          if ! git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}" >/dev/null; then
+            echo "::error::Release tag $RELEASE_TAG does not exist"
+            exit 1
+          fi
 
-            if [ "$tag_commit" != "$main_commit" ]; then
-              echo "::error::Release tag $GITHUB_REF_NAME points at $tag_commit, not origin/$default_branch $main_commit"
-              exit 1
-            fi
-          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "$GITHUB_REF_NAME" != "$default_branch" ]; then
-              echo "::error::Manual releases must be dispatched from $default_branch"
-              exit 1
-            fi
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          main_commit="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+
+          if [ "$tag_commit" != "$main_commit" ]; then
+            echo "::error::Release tag $RELEASE_TAG points at $tag_commit, not origin/$DEFAULT_BRANCH $main_commit"
+            exit 1
           fi
 
       - name: Show Xcode version
@@ -63,7 +71,7 @@ jobs:
 
       - name: Resolve release version
         run: |
-          echo "RELEASE_MARKETING_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_MARKETING_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
           echo "RELEASE_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
       - name: Run test suite
@@ -159,6 +167,24 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           codesign --display --verbose=4 "$APP_PATH"
 
+          info_plist="$APP_PATH/Contents/Info.plist"
+          actual_bundle_id="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$info_plist")"
+          actual_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$info_plist")"
+          actual_build="$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$info_plist")"
+
+          if [ "$actual_bundle_id" != "com.octodot.app" ]; then
+            echo "::error::Unexpected bundle identifier: $actual_bundle_id"
+            exit 1
+          fi
+          if [ "$actual_version" != "$RELEASE_MARKETING_VERSION" ]; then
+            echo "::error::Expected version $RELEASE_MARKETING_VERSION, found $actual_version"
+            exit 1
+          fi
+          if [ "$actual_build" != "$RELEASE_BUILD_NUMBER" ]; then
+            echo "::error::Expected build $RELEASE_BUILD_NUMBER, found $actual_build"
+            exit 1
+          fi
+
       - name: Store notarization credentials
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -182,32 +208,32 @@ jobs:
 
       - name: Submit for notarization
         run: |
+          set +e
           xcrun notarytool submit "$ARCHIVE_PATH" \
             --keychain-profile "$KEYCHAIN_PROFILE" \
             --keychain "$KEYCHAIN_PATH" \
             --wait \
             --output-format json | tee /tmp/notary-submit-output.json
+          submit_exit="${PIPESTATUS[0]}"
+          set -e
 
-      - name: Show notarization submission output
-        if: always()
-        run: |
-          cat /tmp/notary-submit-output.json
+          submission_id="$(/usr/bin/plutil -extract id raw -o - /tmp/notary-submit-output.json 2>/dev/null || true)"
+          status="$(/usr/bin/plutil -extract status raw -o - /tmp/notary-submit-output.json 2>/dev/null || true)"
 
-      - name: Fetch notarization log on rejection
-        run: |
-          submission_id="$(/usr/bin/plutil -extract id raw -o - /tmp/notary-submit-output.json)"
-          status="$(/usr/bin/plutil -extract status raw -o - /tmp/notary-submit-output.json)"
-
-          if [ "$status" = "Accepted" ]; then
+          if [ "$submit_exit" -eq 0 ] && [ "$status" = "Accepted" ]; then
             exit 0
           fi
 
-          echo "Notarization status: $status"
-          xcrun notarytool log "$submission_id" \
-            --keychain-profile "$KEYCHAIN_PROFILE" \
-            --keychain "$KEYCHAIN_PATH" \
-            /tmp/notary-log.json
-          cat /tmp/notary-log.json
+          echo "Notarization failed (exit $submit_exit, status: ${status:-unknown})"
+          if [ -n "$submission_id" ]; then
+            xcrun notarytool log "$submission_id" \
+              --keychain-profile "$KEYCHAIN_PROFILE" \
+              --keychain "$KEYCHAIN_PATH" \
+              /tmp/notary-log.json || true
+          fi
+          if [ -f /tmp/notary-log.json ]; then
+            cat /tmp/notary-log.json
+          fi
           exit 1
 
       - name: Staple notarization ticket
@@ -228,8 +254,6 @@ jobs:
           spctl --assess --type execute --verbose=4 "$APP_PATH"
 
       - name: Package signed release app
-        env:
-          TAG_NAME: ${{ github.ref_name }}
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
             "$APP_PATH" \
@@ -237,22 +261,23 @@ jobs:
 
       - name: Generate release notes
         env:
-          TAG_NAME: ${{ github.ref_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           chmod +x scripts/generate_release_notes.sh
-          scripts/generate_release_notes.sh "${TAG_NAME}" RELEASE_NOTES.md
+          scripts/generate_release_notes.sh "${RELEASE_TAG}" RELEASE_NOTES.md
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: ${{ env.FINAL_ARCHIVE_PATH }}
           body_path: RELEASE_NOTES.md
+          tag_name: ${{ env.RELEASE_TAG }}
 
       - name: Clean up signing keychain
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN_PATH" || true
+          rm -f /tmp/octodot-developer-id.p12 /tmp/notary-submit-output.json /tmp/notary-log.json
 
   update-homebrew:
     needs: build-and-release
@@ -263,9 +288,10 @@ jobs:
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          test -n "$TAP_TOKEN"
+          VERSION="${RELEASE_TAG#v}"
           URL="https://github.com/jasonlong/octodot/releases/download/v${VERSION}/Octodot-v${VERSION}-macos.zip"
-          ARCHIVE="Octodot-${GITHUB_REF_NAME}-macos.zip"
+          ARCHIVE="Octodot-${RELEASE_TAG}-macos.zip"
           curl --fail --show-error --silent --location \
             --retry 5 --retry-delay 2 --retry-all-errors \
             --output "$ARCHIVE" "$URL"
@@ -277,7 +303,7 @@ jobs:
             exit 1
           fi
 
-          git clone https://x-access-token:${TAP_TOKEN}@github.com/jasonlong/homebrew-tap.git tap
+          git clone https://github.com/jasonlong/homebrew-tap.git tap
           cd tap
 
           cat > Casks/octodot.rb << CASK
@@ -293,11 +319,6 @@ jobs:
             auto_updates true
             depends_on macos: ">= :sonoma"
 
-            preflight do
-              system_command "/usr/bin/xattr",
-                args: ["-cr", "#{staged_path}/Octodot.app"]
-            end
-
             app "Octodot.app"
 
             zap trash: [
@@ -310,5 +331,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/octodot.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew cask already matches ${VERSION}; nothing to commit."
+            exit 0
+          fi
           git commit -m "Update octodot to ${VERSION}"
-          git push
+          auth_header="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth_header" push

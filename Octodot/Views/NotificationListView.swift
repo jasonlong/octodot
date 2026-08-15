@@ -45,6 +45,7 @@ struct NotificationListView: View {
     }
 
     var body: some View {
+        let visibleNotificationIDs = notifications.map(\.id)
         let currentScrollRequest = Self.scrollRequest(
             selectedNotificationID: selectedNotificationID,
             notifications: notifications,
@@ -60,9 +61,17 @@ struct NotificationListView: View {
                         }
                     }
                 }
-                .coordinateSpace(name: Self.scrollCoordinateSpace)
+                .coordinateSpace(.named(Self.scrollCoordinateSpace))
                 .onPreferenceChange(NotificationListRowFramesPreferenceKey.self) { frames in
-                    knownRowFrames.merge(frames) { _, latest in latest }
+                    var updatedFrames = knownRowFrames
+                    updatedFrames.merge(frames) { _, latest in latest }
+                    if updatedFrames != knownRowFrames {
+                        knownRowFrames = updatedFrames
+                    }
+                }
+                .onChange(of: visibleNotificationIDs) { _, visibleIDs in
+                    let visibleIDSet = Set(visibleIDs)
+                    knownRowFrames = knownRowFrames.filter { visibleIDSet.contains($0.key) }
                 }
                 .task(id: currentScrollRequest) {
                     guard let scrollRequest = currentScrollRequest else {
@@ -115,7 +124,14 @@ struct NotificationListView: View {
                 notification: notification,
                 isSelected: isSelected,
                 isChecked: checkedIDs.contains(notification.id),
-                onToggleCheck: { onToggleCheck(notification.id) }
+                onToggleCheck: { onToggleCheck(notification.id) },
+                onActivate: {
+                    Self.handleRowTap(
+                        id: notification.id,
+                        onSelect: onSelect,
+                        onOpen: onOpen
+                    )
+                }
             )
             .id(notification.id)
             .background {
@@ -129,13 +145,6 @@ struct NotificationListView: View {
                         ]
                     )
                 }
-            }
-            .onTapGesture {
-                Self.handleRowTap(
-                    id: notification.id,
-                    onSelect: onSelect,
-                    onOpen: onOpen
-                )
             }
             .onAppear { onNotificationVisible(notification.id) }
         }
@@ -229,7 +238,7 @@ struct NotificationListView: View {
 }
 
 private struct NotificationListRowFramesPreferenceKey: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
+    static let defaultValue: [String: CGRect] = [:]
 
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue()) { _, latest in latest }

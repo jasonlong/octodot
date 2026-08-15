@@ -89,6 +89,11 @@ struct PanelContentViewTests {
         )
     }
 
+    @Test func searchSubmitSuppressesOnlyReturnKeyUp() {
+        #expect(PanelInput.suppressedKeyUpInput(for: .returnKey) == .return)
+        #expect(PanelInput.suppressedKeyUpInput(for: .tab) == nil)
+    }
+
     @Test func persistentQueryKeepsSearchBarVisible() {
         #expect(
             PanelInput.shouldShowSearchBar(

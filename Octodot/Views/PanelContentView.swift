@@ -13,6 +13,7 @@ struct PanelContentView: View {
     @State private var lastSingleFireCommand: PanelInput.KeyboardCommand?
     @State private var lastSingleFireCommandAt = Date.distantPast
     @State private var suppressedKeyUpInput: PanelInput.KeyInput?
+    @State private var focusRequestID = UUID()
 
     private var displayedSelectedNotificationID: String? {
         isSearchFieldFocused ? nil : appState.selectedNotificationID
@@ -91,6 +92,7 @@ struct PanelContentView: View {
                     if appState.isLoading {
                         ProgressView()
                             .controlSize(.small)
+                            .accessibilityLabel("Refreshing notifications")
                     } else {
                         summaryText
                             .font(.system(size: 11))
@@ -129,10 +131,12 @@ struct PanelContentView: View {
                             Image(systemName: appState.searchQuery.isEmpty ? "bell.slash" : "magnifyingglass")
                                 .font(.system(size: 24))
                                 .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
                             Text(appState.searchQuery.isEmpty ? "All caught up" : "No matches")
                                 .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
+                        .accessibilityElement(children: .combine)
                         Spacer()
                     }
                 } else {
@@ -164,7 +168,8 @@ struct PanelContentView: View {
                             .font(.system(size: 10))
                         Text(error)
                             .font(.system(size: 11))
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 10)
@@ -173,6 +178,8 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Error: \(error)")
             } else if let warning = appState.warningMessage {
                 HStack {
                     Spacer()
@@ -181,7 +188,8 @@ struct PanelContentView: View {
                             .font(.system(size: 10))
                         Text(warning)
                             .font(.system(size: 11))
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .foregroundStyle(.yellow)
                     .padding(.horizontal, 10)
@@ -190,6 +198,8 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Warning: \(warning)")
             } else if updateChecker.availableVersion != nil || updateChecker.installState != .idle || updateChecker.showingUpToDate {
                 UpdateBanner(updateChecker: updateChecker)
                     .padding(.horizontal, 14)
@@ -223,6 +233,8 @@ struct PanelContentView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.quaternary)
                 }
+                .accessibilityLabel("Octodot menu")
+                .help("Updates, settings, and quit")
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
@@ -240,6 +252,13 @@ struct PanelContentView: View {
             if visible {
                 focusListAndRefresh()
                 updateChecker.checkForUpdatesIfNeeded()
+            } else {
+                focusRequestID = UUID()
+                isSearchFieldFocused = false
+                pendingG = false
+                suppressedKeyUpInput = nil
+                lastSingleFireCommand = nil
+                lastSingleFireCommandAt = .distantPast
             }
         }
         .animation(
@@ -328,8 +347,8 @@ struct PanelContentView: View {
         return routing.isHandled
     }
 
-    private func commitSearch() {
-        suppressedKeyUpInput = .return
+    private func commitSearch(trigger: PanelInput.SearchSubmitTrigger) {
+        suppressedKeyUpInput = PanelInput.suppressedKeyUpInput(for: trigger)
         applySearchFieldEffect(PanelInput.searchFieldEffect(for: .submit))
     }
 
@@ -427,8 +446,11 @@ struct PanelContentView: View {
     }
 
     private func focusListAndRefresh() {
+        let requestID = UUID()
+        focusRequestID = requestID
         Task { @MainActor in
             await Task.yield()
+            guard focusRequestID == requestID, appState.isPanelVisible else { return }
             windowFocusBridge.focusHostingView()
             isSearchFieldFocused = false
             appState.refreshForPanelPresentation()
@@ -436,16 +458,22 @@ struct PanelContentView: View {
     }
 
     private func focusListSoon() {
+        let requestID = UUID()
+        focusRequestID = requestID
         Task { @MainActor in
             await Task.yield()
+            guard focusRequestID == requestID, appState.isPanelVisible else { return }
             windowFocusBridge.focusHostingView()
             isSearchFieldFocused = false
         }
     }
 
     private func focusSearchSoon() {
+        let requestID = UUID()
+        focusRequestID = requestID
         Task { @MainActor in
             await Task.yield()
+            guard focusRequestID == requestID, appState.isPanelVisible else { return }
             isSearchFieldFocused = true
         }
     }
@@ -457,12 +485,13 @@ struct PanelContentView: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
                 .background(Color.white.opacity(0.1))
-                .cornerRadius(3)
+                .clipShape(.rect(cornerRadius: 3))
 
             Text(label)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
+        .accessibilityHidden(true)
     }
 
     private func debugName(for phase: PanelKeyEventPhase) -> String {
@@ -538,6 +567,7 @@ private struct ActionToastView: View {
                     .fill(background)
             )
             .shadow(color: Color.black.opacity(0.18), radius: 3, y: 1)
+            .accessibilityLabel("Action completed: \(message)")
     }
 }
 
@@ -586,6 +616,8 @@ private struct UpdateBanner: View {
                     }
                     .buttonStyle(.plain)
                     .opacity(0.6)
+                    .accessibilityLabel("Dismiss update")
+                    .help("Dismiss this update")
 
                 case .downloading(let progress):
                     ProgressView(value: progress)
@@ -624,6 +656,8 @@ private struct UpdateBanner: View {
                     }
                     .buttonStyle(.plain)
                     .opacity(0.6)
+                    .accessibilityLabel("Dismiss update error")
+                    .help("Dismiss this update error")
                 }
             }
             .foregroundStyle(bannerColor)

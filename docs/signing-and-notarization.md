@@ -10,6 +10,7 @@ The release workflow expects these GitHub Actions secrets:
 - `APPLE_TEAM_ID`
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
+- `HOMEBREW_TAP_TOKEN`
 
 ## 1. Create a Developer ID Application certificate
 
@@ -91,11 +92,11 @@ In GitHub:
 
 1. Open the repository.
 2. Go to `Settings` -> `Secrets and variables` -> `Actions`.
-3. Add all six secrets listed above.
+3. Add all seven secrets listed above. `HOMEBREW_TAP_TOKEN` must be able to write repository contents in `jasonlong/homebrew-tap`.
 
 ## 8. Trigger a notarized release
 
-Create and push a version tag:
+Create and push a canonical stable three-component version tag (no suffixes or leading zeroes):
 
 ```sh
 git tag -a v0.2.4 -m "v0.2.4"
@@ -110,6 +111,9 @@ The release workflow will:
 4. notarize the zipped app with `notarytool`
 5. staple the notarization ticket
 6. upload the stapled zip to the GitHub release
+7. update the Homebrew cask after the release succeeds
+
+To retry an existing release without moving its tag, run the `Release` workflow manually and provide the existing `vMAJOR.MINOR.PATCH` tag. The tag must still point to the current default-branch commit.
 
 ## 9. Verify the result locally
 

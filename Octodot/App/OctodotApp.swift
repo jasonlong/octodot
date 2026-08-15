@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct OctodotApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         Settings {

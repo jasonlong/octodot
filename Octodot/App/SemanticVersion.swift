@@ -7,17 +7,25 @@ struct SemanticVersion: Comparable, Equatable, CustomStringConvertible {
 
     init?(_ string: String) {
         let stripped = string.hasPrefix("v") ? String(string.dropFirst()) : string
-        let parts = stripped.split(separator: ".", maxSplits: 2).map(String.init)
+        let parts = stripped.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
+              parts.allSatisfy(Self.isCanonicalNumericComponent),
               let major = Int(parts[0]),
               let minor = Int(parts[1]),
-              let patch = Int(parts[2]),
-              major >= 0, minor >= 0, patch >= 0 else {
+              let patch = Int(parts[2]) else {
             return nil
         }
         self.major = major
         self.minor = minor
         self.patch = patch
+    }
+
+    private static func isCanonicalNumericComponent(_ component: Substring) -> Bool {
+        guard !component.isEmpty,
+              component.utf8.allSatisfy({ (48...57).contains($0) }) else {
+            return false
+        }
+        return component.count == 1 || component.first != "0"
     }
 
     var description: String {

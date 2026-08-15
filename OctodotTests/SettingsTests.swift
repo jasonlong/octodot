@@ -59,6 +59,8 @@ struct SettingsTests {
         let preferences = AppPreferences(userDefaults: userDefaults)
 
         #expect(preferences.globalShortcut == .controlOptionN)
+        #expect(userDefaults.string(forKey: "AppPreferences.globalShortcut.v2") == preferences.globalShortcut.storageValue)
+        #expect(userDefaults.object(forKey: "AppPreferences.globalShortcut.v1") == nil)
     }
 
     @Test func shortcutValidityRequiresNonShiftModifier() {
@@ -67,6 +69,38 @@ struct SettingsTests {
         #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.command, .shift]).isValid)
         #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.shift]).isValid == false)
         #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: []).isValid == false)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 128, modifierFlags: [.command]).isValid == false)
+        #expect(AppPreferences.GlobalShortcut(keyCode: 0, modifierFlags: [.command, .capsLock]).isValid == false)
+    }
+
+    @Test func corruptCurrentShortcutDoesNotReviveStaleLegacyValue() {
+        let suiteName = "SettingsTests.defaults.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+
+        userDefaults.set("invalid", forKey: "AppPreferences.globalShortcut.v2")
+        userDefaults.set("controlOptionN", forKey: "AppPreferences.globalShortcut.v1")
+
+        let preferences = AppPreferences(userDefaults: userDefaults)
+
+        #expect(preferences.globalShortcut == .commandQuote)
+        #expect(userDefaults.string(forKey: "AppPreferences.globalShortcut.v2") == preferences.globalShortcut.storageValue)
+    }
+
+    @Test func invalidShortcutAssignmentPreservesLastValidPreference() {
+        let suiteName = "SettingsTests.defaults.\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        let preferences = AppPreferences(userDefaults: userDefaults)
+
+        preferences.globalShortcut = AppPreferences.GlobalShortcut(
+            keyCode: 0,
+            modifierFlags: [.shift]
+        )
+
+        #expect(preferences.globalShortcut == .commandQuote)
+        #expect(preferences.globalShortcutErrorMessage != nil)
+        #expect(userDefaults.string(forKey: "AppPreferences.globalShortcut.v2") == preferences.globalShortcut.storageValue)
     }
 
     @Test func preferencesRejectStoredShiftOnlyShortcut() {
@@ -107,5 +141,39 @@ struct SettingsTests {
             modifierFlags: [.command, .shift],
             shortcut: .commandQuote
         ) == false)
+    }
+
+    @Test func launchAtLoginFailureIsActionableAndLeavesToggleOff() {
+        struct TestError: LocalizedError {
+            var errorDescription: String? { "Registration unavailable" }
+        }
+
+        let preferences = AppPreferences(
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            launchAtLoginService: .init(
+                isEnabled: { false },
+                setEnabled: { _ in throw TestError() }
+            )
+        )
+
+        preferences.launchAtLogin = true
+
+        #expect(preferences.launchAtLogin == false)
+        #expect(preferences.launchAtLoginErrorMessage?.contains("Registration unavailable") == true)
+    }
+
+    @Test func launchAtLoginApprovalRequirementIsSurfaced() {
+        let preferences = AppPreferences(
+            userDefaults: AppStateTests.makeIsolatedUserDefaults(),
+            launchAtLoginService: .init(
+                isEnabled: { false },
+                setEnabled: { _ in }
+            )
+        )
+
+        preferences.launchAtLogin = true
+
+        #expect(preferences.launchAtLogin == false)
+        #expect(preferences.launchAtLoginErrorMessage?.contains("System Settings") == true)
     }
 }

@@ -93,6 +93,21 @@ struct GitHubNotification: Identifiable, Hashable {
         activityIdentity == other.activityIdentity
     }
 
+    @discardableResult
+    mutating func apply(_ metadata: SubjectMetadata) -> Bool {
+        let resolvedNodeID = metadata.nodeID ?? graphQLNodeID
+        guard subjectState != metadata.state ||
+                ciStatus != metadata.ciStatus ||
+                graphQLNodeID != resolvedNodeID else {
+            return false
+        }
+
+        subjectState = metadata.state
+        ciStatus = metadata.ciStatus
+        graphQLNodeID = resolvedNodeID
+        return true
+    }
+
     var needsSubjectMetadataResolution: Bool {
         guard subjectURL != nil else { return false }
 

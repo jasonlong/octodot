@@ -6,14 +6,18 @@ final class SettingsWindowController: NSWindowController {
     private let appState: AppState
     private let preferences: AppPreferences
     private let updateChecker: UpdateChecker
-    private let hostingController: NSHostingController<AnyView>
+    private let hostingController: NSHostingController<SettingsRootView>
 
     init(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker) {
         self.appState = appState
         self.preferences = preferences
         self.updateChecker = updateChecker
         self.hostingController = NSHostingController(
-            rootView: Self.makeRootView(appState: appState, preferences: preferences, updateChecker: updateChecker)
+            rootView: SettingsRootView(
+                appState: appState,
+                preferences: preferences,
+                updateChecker: updateChecker
+            )
         )
 
         super.init(window: nil)
@@ -28,9 +32,8 @@ final class SettingsWindowController: NSWindowController {
     func show() {
         guard let window else { return }
         DebugTrace.log("settings window show visible=\(window.isVisible) key=\(window.isKeyWindow)")
-        window.orderFrontRegardless()
-        window.makeKey()
         NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
         DebugTrace.log("settings window shown visible=\(window.isVisible) key=\(window.isKeyWindow)")
     }
 
@@ -38,7 +41,6 @@ final class SettingsWindowController: NSWindowController {
         guard let window else {
             return
         }
-        hostingController.rootView = Self.makeRootView(appState: appState, preferences: preferences, updateChecker: updateChecker)
         window.appearance = preferences.appearanceMode.windowAppearance
         window.invalidateShadow()
         window.displayIfNeeded()
@@ -60,11 +62,19 @@ final class SettingsWindowController: NSWindowController {
         window.appearance = preferences.appearanceMode.windowAppearance
         return window
     }
+}
 
-    private static func makeRootView(appState: AppState, preferences: AppPreferences, updateChecker: UpdateChecker) -> AnyView {
-        AnyView(
-            SettingsView(appState: appState, preferences: preferences, updateChecker: updateChecker)
-                .preferredColorScheme(preferences.appearanceMode.colorScheme)
+private struct SettingsRootView: View {
+    @Bindable var appState: AppState
+    @Bindable var preferences: AppPreferences
+    var updateChecker: UpdateChecker
+
+    var body: some View {
+        SettingsView(
+            appState: appState,
+            preferences: preferences,
+            updateChecker: updateChecker
         )
+        .preferredColorScheme(preferences.appearanceMode.colorScheme)
     }
 }

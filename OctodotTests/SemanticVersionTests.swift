@@ -30,6 +30,22 @@ struct SemanticVersionTests {
         #expect(SemanticVersion("-1.0.0") == nil)
     }
 
+    @Test func rejectsNonCanonicalNumericComponents() {
+        #expect(SemanticVersion("01.2.3") == nil)
+        #expect(SemanticVersion("1.02.3") == nil)
+        #expect(SemanticVersion("1.2.03") == nil)
+        #expect(SemanticVersion("+1.2.3") == nil)
+        #expect(SemanticVersion("1.2.+3") == nil)
+        #expect(SemanticVersion(" 1.2.3") == nil)
+        #expect(SemanticVersion("1.2.3 ") == nil)
+    }
+
+    @Test func rejectsEmptyAndOverflowingComponents() {
+        #expect(SemanticVersion("1..3") == nil)
+        #expect(SemanticVersion("1.2.") == nil)
+        #expect(SemanticVersion("1.2.999999999999999999999999") == nil)
+    }
+
     @Test func comparison() {
         let v030 = SemanticVersion("0.3.0")!
         let v031 = SemanticVersion("0.3.1")!

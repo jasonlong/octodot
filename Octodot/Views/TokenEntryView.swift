@@ -13,25 +13,28 @@ struct TokenEntryView: View {
             Image(systemName: "bell.fill")
                 .font(.system(size: 28))
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
 
             Text("Sign in to GitHub")
                 .font(.system(size: 15, weight: .semibold))
 
             VStack(spacing: 4) {
-                Text("Create a classic Personal Access Token with the\n**notifications** and **repo** scopes.")
+                Text("Create a classic Personal Access Token with the **notifications** and **repo** scopes.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
+                    .frame(maxWidth: 280)
 
-                Link("Create token on GitHub →",
-                     destination: URL(string: "https://github.com/settings/tokens")!)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.accentColor)
+                if let tokenURL = URL(string: "https://github.com/settings/tokens") {
+                    Link("Create token on GitHub →", destination: tokenURL)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.accentColor)
+                }
             }
 
             VStack(spacing: 8) {
-                SecureField("ghp_...", text: $tokenInput)
+                SecureField("Personal Access Token", text: $tokenInput, prompt: Text("ghp_…"))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13, design: .monospaced))
                     .frame(maxWidth: 280)
@@ -40,6 +43,8 @@ struct TokenEntryView: View {
                     Text(errorMessage)
                         .font(.system(size: 11))
                         .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Sign-in failed: \(errorMessage)")
                 }
             }
 
@@ -55,8 +60,9 @@ struct TokenEntryView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
-            .disabled(tokenInput.isEmpty || isValidating)
+            .disabled(isTokenEmpty || isValidating)
             .keyboardShortcut(.return, modifiers: [])
+            .accessibilityLabel(isValidating ? "Signing in" : "Sign In")
 
             Spacer()
         }
@@ -64,7 +70,13 @@ struct TokenEntryView: View {
         .frame(width: 380, height: 500)
     }
 
+    private var isTokenEmpty: Bool {
+        tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func submit() {
+        let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
         isValidating = true
         errorMessage = nil
 
@@ -73,7 +85,7 @@ struct TokenEntryView: View {
                 await MainActor.run {
                     errorMessage = nil
                 }
-                try await appState.submitToken(tokenInput)
+                try await appState.submitToken(token)
                 await MainActor.run {
                     isValidating = false
                     tokenInput = ""

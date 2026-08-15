@@ -51,6 +51,11 @@ enum PanelInput {
         case cancel
     }
 
+    enum SearchSubmitTrigger: Equatable {
+        case returnKey
+        case tab
+    }
+
     struct SearchFieldEffect: Equatable {
         let clearsQuery: Bool
         let keepsSearchActive: Bool
@@ -94,6 +99,10 @@ enum PanelInput {
                 focusDirective: .list
             )
         }
+    }
+
+    static func suppressedKeyUpInput(for trigger: SearchSubmitTrigger) -> KeyInput? {
+        trigger == .returnKey ? .return : nil
     }
 
     static func shouldShowSearchBar(isSearchActive: Bool, query: String) -> Bool {

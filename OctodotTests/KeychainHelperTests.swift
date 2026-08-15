@@ -33,4 +33,29 @@ struct KeychainHelperTests {
 
         #expect(KeychainHelper.loadToken(service: service, account: account) == nil)
     }
+
+    @Test func tokenWhitespaceIsTrimmedBeforeSaving() throws {
+        let service = "com.octodot.tests.\(UUID().uuidString)"
+        let account = UUID().uuidString
+        defer { KeychainHelper.deleteToken(service: service, account: account) }
+
+        try KeychainHelper.saveToken("  ghp_trimmed\n", service: service, account: account)
+
+        #expect(KeychainHelper.loadToken(service: service, account: account) == "ghp_trimmed")
+    }
+
+    @Test func rejectsEmptyAndMalformedTokens() {
+        let service = "com.octodot.tests.\(UUID().uuidString)"
+        let account = UUID().uuidString
+
+        #expect(throws: KeychainHelper.KeychainError.self) {
+            try KeychainHelper.saveToken(" \n", service: service, account: account)
+        }
+        #expect(throws: KeychainHelper.KeychainError.self) {
+            try KeychainHelper.saveToken("ghp_not valid", service: service, account: account)
+        }
+        #expect(throws: KeychainHelper.KeychainError.self) {
+            try KeychainHelper.saveToken("ghp_🔐", service: service, account: account)
+        }
+    }
 }

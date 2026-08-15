@@ -1,25 +1,39 @@
-import AppKit
 import SwiftUI
 
-struct NotificationRowView: View, Equatable {
+struct NotificationRowView: View {
     let notification: GitHubNotification
     let isSelected: Bool
     let isChecked: Bool
     let onToggleCheck: () -> Void
-
-    static func == (lhs: NotificationRowView, rhs: NotificationRowView) -> Bool {
-        lhs.notification == rhs.notification
-            && lhs.isSelected == rhs.isSelected
-            && lhs.isChecked == rhs.isChecked
-    }
+    let onActivate: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            CheckableIconView(
+        ZStack(alignment: .leading) {
+            Button(action: onActivate) {
+                rowContent
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(accessibilityValue)
+            .accessibilityHint("Opens the notification in your browser")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+            CheckableIconButton(
                 notification: notification,
                 isChecked: isChecked,
                 onToggle: onToggleCheck
             )
+        }
+        .frame(height: 44)
+        .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
+        .overlay(HoverBackground())
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: 8) {
+            Color.clear
+                .frame(width: 40, height: 44)
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 repositoryLabel
@@ -61,12 +75,15 @@ struct NotificationRowView: View, Equatable {
                             .aspectRatio(contentMode: .fit)
                             .frame(width: 10, height: 10)
                             .foregroundStyle(ciColor)
+                            .accessibilityHidden(true)
                     }
 
-                    Text(relativeTime)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: true, vertical: false)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(Self.relativeTimeText(from: notification.updatedAt, now: context.date))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                 }
             }
             .frame(minWidth: 58, alignment: .trailing)
@@ -74,12 +91,22 @@ struct NotificationRowView: View, Equatable {
         }
         .frame(height: 44)
         .contentShape(Rectangle())
-        .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
-        .overlay(HoverBackground())
     }
 
-    private var relativeTime: String {
-        Self.relativeTimeText(from: notification.updatedAt)
+    private var accessibilityLabel: String {
+        var parts = [notification.title, notification.repository, notification.reason.rawValue]
+        if let referenceNumber = notification.displayReferenceNumber {
+            parts[1] += referenceNumber
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private var accessibilityValue: String {
+        var values = [notification.isUnread ? "Unread" : "Read"]
+        if isChecked {
+            values.append("Selected for bulk actions")
+        }
+        return values.joined(separator: ", ")
     }
 
     private var repositoryLabel: Text {
@@ -99,7 +126,7 @@ struct NotificationRowView: View, Equatable {
     }
 }
 
-private struct CheckableIconView: View {
+private struct CheckableIconButton: View {
     let notification: GitHubNotification
     let isChecked: Bool
     let onToggle: () -> Void
@@ -107,20 +134,24 @@ private struct CheckableIconView: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            Circle()
-                .fill(notification.isUnread ? Color(red: 0.039, green: 0.518, blue: 1.0) : Color.clear)
-                .frame(width: 6, height: 6)
-                .frame(maxWidth: .infinity)
+        Button(action: onToggle) {
+            HStack(spacing: 0) {
+                Circle()
+                    .fill(notification.isUnread ? Color(red: 0.039, green: 0.518, blue: 1.0) : Color.clear)
+                    .frame(width: 6, height: 6)
+                    .frame(maxWidth: .infinity)
 
-            iconContent
-                .frame(width: 14, height: 14)
-                .frame(width: 20)
+                iconContent
+                    .frame(width: 14, height: 14)
+                    .frame(width: 20)
+            }
+            .frame(width: 40, height: 44)
+            .contentShape(Rectangle())
         }
-        .frame(width: 40, height: 44)
-        .contentShape(Rectangle())
-        .background(HoverDetector { isHovering = $0 })
-        .onTapGesture { onToggle() }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel(isChecked ? "Remove from bulk actions" : "Select for bulk actions")
+        .accessibilityHint(notification.title)
     }
 
     @ViewBuilder
@@ -156,90 +187,5 @@ private struct HoverBackground: View {
             .fill(isHovered ? Color.primary.opacity(0.05) : Color.clear)
             .allowsHitTesting(false)
             .onHover { isHovered = $0 }
-    }
-}
-
-private struct HoverDetector: NSViewRepresentable {
-    let onHover: (Bool) -> Void
-
-    func makeNSView(context: Context) -> TrackingView {
-        let view = TrackingView()
-        view.onHoverChange = onHover
-        return view
-    }
-
-    func updateNSView(_ nsView: TrackingView, context: Context) {
-        nsView.onHoverChange = onHover
-    }
-
-    final class TrackingView: NSView {
-        var onHoverChange: ((Bool) -> Void)?
-        private var trackingArea: NSTrackingArea?
-        private var lastDeliveredHover: Bool?
-
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            if let trackingArea {
-                removeTrackingArea(trackingArea)
-            }
-            let newArea = NSTrackingArea(
-                rect: bounds,
-                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                owner: self,
-                userInfo: nil
-            )
-            addTrackingArea(newArea)
-            trackingArea = newArea
-            syncHoverStateToCursor()
-        }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if window == nil {
-                deliverHoverChange(false)
-            } else {
-                syncHoverStateToCursor()
-            }
-        }
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            nil
-        }
-
-        override func mouseEntered(with event: NSEvent) {
-            deliverHoverChange(true, async: false)
-        }
-
-        override func mouseExited(with event: NSEvent) {
-            deliverHoverChange(false, async: false)
-        }
-
-        private func syncHoverStateToCursor() {
-            guard let window else {
-                deliverHoverChange(false)
-                return
-            }
-            let mouseInWindow = window.mouseLocationOutsideOfEventStream
-            let mouseInView = convert(mouseInWindow, from: nil)
-            let isInside = visibleRect.contains(mouseInView)
-            if !isInside {
-                deliverHoverChange(false)
-            }
-        }
-
-        // Writes to SwiftUI @State via onHoverChange must defer off AppKit's
-        // display cycle (updateTrackingAreas) to avoid a setNeedsUpdateConstraints
-        // crash. mouseEntered/Exited are on a safe phase, so they skip the async.
-        private func deliverHoverChange(_ isHovering: Bool, async: Bool = true) {
-            guard lastDeliveredHover != isHovering else { return }
-            lastDeliveredHover = isHovering
-            if async {
-                DispatchQueue.main.async { [weak self] in
-                    self?.onHoverChange?(isHovering)
-                }
-            } else {
-                onHoverChange?(isHovering)
-            }
-        }
     }
 }

@@ -3,13 +3,13 @@ import Foundation
 enum DebugTrace {
 #if DEBUG
     private static let queue = DispatchQueue(label: "com.octodot.debug-trace")
-    static let logURL = URL(fileURLWithPath: "/tmp/octodot-debug-trace.log")
+    static let logURL = URL.temporaryDirectory.appending(path: "octodot-debug-trace.log")
     private static let maxLogSize: UInt64 = 2 * 1024 * 1024 // 2 MB
 
     static func reset() {
         queue.sync {
             rotateIfNeeded()
-            let header = "\n========== Session \(ISO8601DateFormatter().string(from: Date())) ==========\n"
+            let header = "\n========== Session \(Date.now.formatted(.iso8601)) ==========\n"
             if let data = header.data(using: .utf8) {
                 appendData(data)
             }
@@ -17,7 +17,7 @@ enum DebugTrace {
     }
 
     static func log(_ message: @autoclosure () -> String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let timestamp = Date.now.formatted(.iso8601)
         let line = "\(timestamp) \(message())\n"
         queue.async {
             guard let data = line.data(using: .utf8) else { return }
@@ -29,7 +29,7 @@ enum DebugTrace {
         if FileManager.default.fileExists(atPath: logURL.path),
            let handle = try? FileHandle(forWritingTo: logURL) {
             defer { try? handle.close() }
-            try? handle.seekToEnd()
+            _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         } else {
             try? data.write(to: logURL, options: .atomic)

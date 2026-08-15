@@ -10,6 +10,22 @@ final class AppPreferences {
     private static let globalShortcutStorageKey = "AppPreferences.globalShortcut.v2"
     private static let legacyGlobalShortcutStorageKey = "AppPreferences.globalShortcut.v1"
 
+    struct LaunchAtLoginService {
+        let isEnabled: () -> Bool
+        let setEnabled: (Bool) throws -> Void
+
+        @MainActor static let mainApp = LaunchAtLoginService(
+            isEnabled: { SMAppService.mainApp.status == .enabled },
+            setEnabled: { enabled in
+                if enabled {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            }
+        )
+    }
+
     enum AppearanceMode: String, CaseIterable, Identifiable {
         case system
         case light
@@ -38,9 +54,9 @@ final class AppPreferences {
             case .system:
                 nil
             case .light:
-                NSAppearance(named: .aqua) ?? .init(named: .aqua)!
+                NSAppearance(named: .aqua)
             case .dark:
-                NSAppearance(named: .darkAqua) ?? .init(named: .darkAqua)!
+                NSAppearance(named: .darkAqua)
             }
         }
     }
@@ -62,7 +78,10 @@ final class AppPreferences {
         }
 
         var isValid: Bool {
-            !modifierFlags.intersection([.command, .option, .control]).isEmpty
+            let allowedModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+            return keyCode <= 127
+                && modifierFlags.subtracting(allowedModifiers).isEmpty
+                && !modifierFlags.intersection([.command, .option, .control]).isEmpty
         }
 
         static let commandQuote = GlobalShortcut(keyCode: 39, modifierFlags: [.command])
@@ -176,6 +195,7 @@ final class AppPreferences {
     }
 
     private let userDefaults: UserDefaults
+    @ObservationIgnored private let launchAtLoginService: LaunchAtLoginService
 
     var appearanceMode: AppearanceMode {
         didSet {
@@ -187,29 +207,44 @@ final class AppPreferences {
     var globalShortcut: GlobalShortcut {
         didSet {
             guard globalShortcut != oldValue else { return }
+            guard globalShortcut.isValid else {
+                globalShortcut = oldValue
+                globalShortcutErrorMessage = "Choose a valid key with Command, Option, or Control"
+                return
+            }
+            globalShortcutErrorMessage = nil
             userDefaults.set(globalShortcut.storageValue, forKey: Self.globalShortcutStorageKey)
         }
     }
 
     var globalShortcutErrorMessage: String?
+    var launchAtLoginErrorMessage: String?
 
     var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
+        get { launchAtLoginService.isEnabled() }
         set {
             do {
-                if newValue {
-                    try SMAppService.mainApp.register()
+                try launchAtLoginService.setEnabled(newValue)
+                if newValue, !launchAtLoginService.isEnabled() {
+                    launchAtLoginErrorMessage = "Allow Octodot in System Settings › General › Login Items to launch it automatically."
+                } else if !newValue, launchAtLoginService.isEnabled() {
+                    launchAtLoginErrorMessage = "Octodot couldn't turn off Launch at Login. Try again from System Settings › General › Login Items."
                 } else {
-                    try SMAppService.mainApp.unregister()
+                    launchAtLoginErrorMessage = nil
                 }
             } catch {
+                launchAtLoginErrorMessage = "Octodot couldn't update Launch at Login: \(error.localizedDescription)"
                 DebugTrace.log("launch at login failed: \(error.localizedDescription)")
             }
         }
     }
 
-    init(userDefaults: UserDefaults = .standard) {
+    init(
+        userDefaults: UserDefaults = .standard,
+        launchAtLoginService: LaunchAtLoginService = .mainApp
+    ) {
         self.userDefaults = userDefaults
+        self.launchAtLoginService = launchAtLoginService
         self.appearanceMode = Self.loadAppearanceMode(from: userDefaults)
         self.globalShortcut = Self.loadGlobalShortcut(from: userDefaults)
     }
@@ -223,8 +258,11 @@ final class AppPreferences {
     }
 
     private static func loadGlobalShortcut(from userDefaults: UserDefaults) -> GlobalShortcut {
-        if let storedValue = userDefaults.string(forKey: globalShortcutStorageKey),
-           let shortcut = GlobalShortcut.from(storageValue: storedValue) {
+        if let storedValue = userDefaults.string(forKey: globalShortcutStorageKey) {
+            guard let shortcut = GlobalShortcut.from(storageValue: storedValue) else {
+                userDefaults.set(GlobalShortcut.commandQuote.storageValue, forKey: globalShortcutStorageKey)
+                return .commandQuote
+            }
             return shortcut
         }
 
@@ -232,13 +270,17 @@ final class AppPreferences {
             return .commandQuote
         }
 
+        let shortcut: GlobalShortcut
         switch legacyRawValue {
         case "commandQuote":
-            return .commandQuote
+            shortcut = .commandQuote
         case "controlOptionN":
-            return .controlOptionN
+            shortcut = .controlOptionN
         default:
-            return .commandQuote
+            shortcut = .commandQuote
         }
+        userDefaults.set(shortcut.storageValue, forKey: globalShortcutStorageKey)
+        userDefaults.removeObject(forKey: legacyGlobalShortcutStorageKey)
+        return shortcut
     }
 }

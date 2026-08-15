@@ -27,6 +27,7 @@ final class InboxStore {
         let subjectURL: String?
         let subjectState: GitHubNotification.SubjectState
         let ciStatus: GitHubNotification.CIStatus?
+        let graphQLNodeID: String?
         let source: GitHubNotification.Source
 
         init(notification: GitHubNotification) {
@@ -42,6 +43,7 @@ final class InboxStore {
             self.subjectURL = notification.subjectURL
             self.subjectState = notification.subjectState
             self.ciStatus = notification.ciStatus
+            self.graphQLNodeID = notification.graphQLNodeID
             self.source = notification.source
         }
 
@@ -59,6 +61,7 @@ final class InboxStore {
             subjectURL = try container.decodeIfPresent(String.self, forKey: .subjectURL)
             subjectState = try container.decode(GitHubNotification.SubjectState.self, forKey: .subjectState)
             ciStatus = try container.decodeIfPresent(GitHubNotification.CIStatus.self, forKey: .ciStatus)
+            graphQLNodeID = try container.decodeIfPresent(String.self, forKey: .graphQLNodeID)
             source = try container.decodeIfPresent(GitHubNotification.Source.self, forKey: .source) ?? .thread
         }
 
@@ -76,6 +79,7 @@ final class InboxStore {
                 subjectURL: subjectURL,
                 subjectState: subjectState,
                 ciStatus: ciStatus,
+                graphQLNodeID: graphQLNodeID,
                 source: source
             )
         }
@@ -113,14 +117,14 @@ final class InboxStore {
         }
     }
 
-    func recentInboxSinceDate(relativeTo unreadNotifications: [GitHubNotification], now: Date = Date()) -> Date {
+    func recentInboxSinceDate(relativeTo unreadNotifications: [GitHubNotification], now: Date = .now) -> Date {
         let fallback = now.addingTimeInterval(-Self.inboxRecentReadFallbackWindow)
         guard let oldestUnread = unreadNotifications.map(\.updatedAt).min() else {
             return fallback
         }
 
         let oldestUnreadGraceWindow = oldestUnread.addingTimeInterval(-Self.inboxRecentReadGraceBeforeOldestUnread)
-        return max(fallback, oldestUnreadGraceWindow)
+        return min(now, max(fallback, oldestUnreadGraceWindow))
     }
 
     func applyLoaded(
@@ -240,6 +244,8 @@ final class InboxStore {
         persistDismissedSecurityAlerts()
         readSecurityAlerts.removeAll()
         persistReadSecurityAlerts()
+        mutedThreads.removeAll()
+        persistMutedThreads()
     }
 
     func updateUnreadCountOnly(from unreadNotifications: [GitHubNotification]) {
@@ -253,14 +259,9 @@ final class InboxStore {
         var didChange = false
 
         for (threadID, notification) in recentInboxReadNotifications {
-            guard let metadata = resolvedMetadata[notification.id],
-                  notification.subjectState != metadata.state || notification.ciStatus != metadata.ciStatus else {
-                continue
-            }
-
+            guard let metadata = resolvedMetadata[notification.id] else { continue }
             var updated = notification
-            updated.subjectState = metadata.state
-            updated.ciStatus = metadata.ciStatus
+            guard updated.apply(metadata) else { continue }
             recentInboxReadNotifications[threadID] = updated
             didChange = true
         }
@@ -279,15 +280,10 @@ final class InboxStore {
         var didChange = false
 
         for index in lastFetchedUnreadNotifications.indices {
-            guard let metadata = resolvedMetadata[lastFetchedUnreadNotifications[index].id],
-                  lastFetchedUnreadNotifications[index].subjectState != metadata.state ||
-                    lastFetchedUnreadNotifications[index].ciStatus != metadata.ciStatus else {
-                continue
+            guard let metadata = resolvedMetadata[lastFetchedUnreadNotifications[index].id] else { continue }
+            if lastFetchedUnreadNotifications[index].apply(metadata) {
+                didChange = true
             }
-
-            lastFetchedUnreadNotifications[index].subjectState = metadata.state
-            lastFetchedUnreadNotifications[index].ciStatus = metadata.ciStatus
-            didChange = true
         }
 
         return didChange
@@ -405,13 +401,14 @@ final class InboxStore {
         _ notificationsByThreadID: [String: GitHubNotification],
         using unreadNotifications: [GitHubNotification],
         projectedNotifications: ([GitHubNotification]) -> [GitHubNotification],
-        now: Date = Date()
+        now: Date = .now
     ) -> [String: GitHubNotification] {
         let cutoff = now.addingTimeInterval(-Self.recentInboxReadRetentionInterval)
         let unreadByThreadID = unreadNotifications.reduce(into: [String: GitHubNotification]()) { result, notification in
             guard notification.isUnread else { return }
             if let existing = result[notification.threadId] {
-                if notification.updatedAt >= existing.updatedAt || notification.isUnread {
+                if notification.updatedAt > existing.updatedAt ||
+                    (notification.updatedAt == existing.updatedAt && notification.id > existing.id) {
                     result[notification.threadId] = notification
                 }
             } else {
@@ -452,10 +449,20 @@ final class InboxStore {
         decoder.dateDecodingStrategy = .iso8601
 
         guard let persisted = try? decoder.decode([PersistedInboxNotification].self, from: data) else {
+            userDefaults.removeObject(forKey: recentInboxReadsStorageKey)
             return [:]
         }
 
-        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.threadId, $0.notification) })
+        return persisted.reduce(into: [:]) { notifications, stored in
+            guard !stored.threadId.isEmpty else { return }
+            let notification = stored.notification
+            if let existing = notifications[stored.threadId],
+               existing.updatedAt > notification.updatedAt ||
+                (existing.updatedAt == notification.updatedAt && existing.id >= notification.id) {
+                return
+            }
+            notifications[stored.threadId] = notification
+        }
     }
 
     private static func loadDismissedSecurityAlerts(from userDefaults: UserDefaults) -> [String: Date] {
@@ -467,10 +474,14 @@ final class InboxStore {
         decoder.dateDecodingStrategy = .iso8601
 
         guard let persisted = try? decoder.decode([PersistedDismissedSecurityAlert].self, from: data) else {
+            userDefaults.removeObject(forKey: dismissedSecurityAlertsStorageKey)
             return [:]
         }
 
-        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0.updatedAt) })
+        return persisted.reduce(into: [:]) { alerts, stored in
+            guard !stored.id.isEmpty else { return }
+            alerts[stored.id] = max(alerts[stored.id] ?? .distantPast, stored.updatedAt)
+        }
     }
 
     private static func loadReadSecurityAlerts(from userDefaults: UserDefaults) -> [String: Date] {
@@ -482,10 +493,14 @@ final class InboxStore {
         decoder.dateDecodingStrategy = .iso8601
 
         guard let persisted = try? decoder.decode([PersistedDismissedSecurityAlert].self, from: data) else {
+            userDefaults.removeObject(forKey: readSecurityAlertsStorageKey)
             return [:]
         }
 
-        return Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0.updatedAt) })
+        return persisted.reduce(into: [:]) { alerts, stored in
+            guard !stored.id.isEmpty else { return }
+            alerts[stored.id] = max(alerts[stored.id] ?? .distantPast, stored.updatedAt)
+        }
     }
 
     private func persistRecentInboxReadNotifications() {
@@ -495,8 +510,10 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let persisted = recentInboxReadNotifications.values.map(PersistedInboxNotification.init(notification:))
+        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        let persisted = recentInboxReadNotifications.values
+            .sorted { $0.threadId < $1.threadId }
+            .map(PersistedInboxNotification.init(notification:))
         guard let data = try? encoder.encode(persisted) else { return }
         userDefaults.set(data, forKey: Self.recentInboxReadsStorageKey)
     }
@@ -508,8 +525,8 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let persisted = dismissedSecurityAlerts.map { id, updatedAt in
+        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        let persisted = dismissedSecurityAlerts.sorted { $0.key < $1.key }.map { id, updatedAt in
             PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
         }
         guard let data = try? encoder.encode(persisted) else { return }
@@ -523,8 +540,8 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let persisted = readSecurityAlerts.map { id, updatedAt in
+        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        let persisted = readSecurityAlerts.sorted { $0.key < $1.key }.map { id, updatedAt in
             PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
         }
         guard let data = try? encoder.encode(persisted) else { return }
@@ -534,7 +551,8 @@ final class InboxStore {
     // MARK: - Muted threads
 
     func muteThread(_ threadId: String) {
-        mutedThreads[threadId] = Date()
+        guard !threadId.isEmpty else { return }
+        mutedThreads[threadId] = .now
         // Cap size by removing oldest entries
         if mutedThreads.count > Self.mutedThreadsLimit {
             let sorted = mutedThreads.sorted { $0.value < $1.value }
@@ -579,15 +597,37 @@ final class InboxStore {
     }
 
     private static func loadMutedThreads(from userDefaults: UserDefaults) -> [String: Date] {
-        guard let data = userDefaults.data(forKey: mutedThreadsStorageKey),
-              let persisted = try? JSONDecoder().decode([String: Date].self, from: data) else {
+        guard let data = userDefaults.data(forKey: mutedThreadsStorageKey) else {
             return [:]
         }
-        return persisted
+        guard let persisted = try? JSONDecoder().decode([String: Date].self, from: data) else {
+            userDefaults.removeObject(forKey: mutedThreadsStorageKey)
+            return [:]
+        }
+        return Dictionary(
+            uniqueKeysWithValues: persisted
+                .filter { !$0.key.isEmpty }
+                .sorted { $0.value > $1.value }
+                .prefix(mutedThreadsLimit)
+                .map { ($0.key, $0.value) }
+        )
     }
 
     private func persistMutedThreads() {
+        guard !mutedThreads.isEmpty else {
+            userDefaults.removeObject(forKey: Self.mutedThreadsStorageKey)
+            return
+        }
         guard let data = try? JSONEncoder().encode(mutedThreads) else { return }
         userDefaults.set(data, forKey: Self.mutedThreadsStorageKey)
+    }
+
+    private static var preciseDateEncodingStrategy: JSONEncoder.DateEncodingStrategy {
+        .custom { date, encoder in
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var container = encoder.singleValueContainer()
+            try container.encode(formatter.string(from: date))
+        }
     }
 }

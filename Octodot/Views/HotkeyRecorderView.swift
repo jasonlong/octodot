@@ -19,8 +19,12 @@ struct HotkeyRecorderView: NSViewRepresentable {
         nsView.onChange = { newShortcut in
             shortcut = newShortcut
         }
-        nsView.shortcut = shortcut
-        nsView.colorScheme = colorScheme
+        if nsView.shortcut != shortcut {
+            nsView.shortcut = shortcut
+        }
+        if nsView.colorScheme != colorScheme {
+            nsView.colorScheme = colorScheme
+        }
     }
 }
 
@@ -28,6 +32,7 @@ final class RecorderField: NSView {
     var onChange: ((AppPreferences.GlobalShortcut) -> Void)?
     var shortcut = AppPreferences.GlobalShortcut.commandQuote {
         didSet {
+            guard shortcut != oldValue else { return }
             updateAppearance()
         }
     }
@@ -50,6 +55,7 @@ final class RecorderField: NSView {
     private let textField = NSTextField(labelWithString: "")
     private var isRecording = false {
         didSet {
+            guard isRecording != oldValue else { return }
             updateAppearance()
         }
     }
@@ -66,17 +72,38 @@ final class RecorderField: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
+    override func becomeFirstResponder() -> Bool {
+        let didBecomeFirstResponder = super.becomeFirstResponder()
+        if didBecomeFirstResponder {
+            updateAppearance()
+        }
+        return didBecomeFirstResponder
+    }
+
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        guard window?.makeFirstResponder(self) == true else { return }
         isRecording = true
     }
 
     override func resignFirstResponder() -> Bool {
-        isRecording = false
-        return super.resignFirstResponder()
+        let didResignFirstResponder = super.resignFirstResponder()
+        if didResignFirstResponder {
+            isRecording = false
+            updateAppearance()
+        }
+        return didResignFirstResponder
     }
 
     override func keyDown(with event: NSEvent) {
+        guard isRecording else {
+            if [36, 49, 76].contains(event.keyCode) {
+                isRecording = true
+            } else {
+                super.keyDown(with: event)
+            }
+            return
+        }
+
         if event.keyCode == 53 {
             isRecording = false
             window?.makeFirstResponder(nil)
@@ -97,6 +124,12 @@ final class RecorderField: NSView {
         window?.makeFirstResponder(nil)
     }
 
+    override func accessibilityPerformPress() -> Bool {
+        guard window?.makeFirstResponder(self) == true else { return false }
+        isRecording = true
+        return true
+    }
+
     private func setup() {
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -105,7 +138,13 @@ final class RecorderField: NSView {
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.alignment = .center
         textField.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        textField.setAccessibilityElement(false)
         addSubview(textField)
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Global shortcut")
+        setAccessibilityHelp("Press to record a new shortcut. Escape cancels recording.")
 
         NSLayoutConstraint.activate([
             textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -122,11 +161,16 @@ final class RecorderField: NSView {
     private func updateAppearance() {
         let backgroundColor: NSColor
         let borderColor: NSColor
+        let isFocused = window?.firstResponder === self
 
         if isRecording {
             backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14)
             borderColor = NSColor.controlAccentColor
             textField.stringValue = "Type shortcut"
+        } else if isFocused {
+            backgroundColor = NSColor.keyboardFocusIndicatorColor.withAlphaComponent(0.08)
+            borderColor = NSColor.keyboardFocusIndicatorColor
+            textField.stringValue = shortcut.displayText
         } else {
             backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.08)
             borderColor = NSColor.separatorColor.withAlphaComponent(0.7)
@@ -136,5 +180,6 @@ final class RecorderField: NSView {
         layer?.backgroundColor = backgroundColor.cgColor
         layer?.borderColor = borderColor.cgColor
         textField.textColor = isRecording ? NSColor.controlAccentColor : NSColor.labelColor
+        setAccessibilityValue(isRecording ? "Recording" : shortcut.displayText)
     }
 }

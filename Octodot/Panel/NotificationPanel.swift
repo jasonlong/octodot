@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class NotificationPanel: NSPanel {
     private let appState: AppState
 
@@ -16,6 +17,7 @@ final class NotificationPanel: NSPanel {
 
         isFloatingPanel = true
         level = .statusBar
+        title = "Octodot Notifications"
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isMovableByWindowBackground = false
@@ -25,6 +27,7 @@ final class NotificationPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
 
         let rootView = PanelRootView(
             appState: appState,
@@ -40,7 +43,7 @@ final class NotificationPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {
         if appState.isSearchActive {
@@ -59,7 +62,11 @@ final class NotificationPanel: NSPanel {
     }
 
     override func close() {
-        appState.flushPendingActions()
+        let shouldFlush = isVisible || appState.isPanelVisible
+        appState.isSearchActive = false
+        if shouldFlush {
+            appState.flushPendingActions()
+        }
         super.close()
         appState.isPanelVisible = false
     }

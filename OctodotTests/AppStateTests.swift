@@ -1220,6 +1220,59 @@ struct AppStateTests {
         #expect(state.notifications[0].isUnread == false)
     }
 
+    @Test func markReadUpdatesEveryVisibleSnapshotOfSharedThread() async {
+        let notifications = Self.makeSharedThreadNotifications()
+        let (state, session) = Self.makeAuthedState(
+            notifications: notifications,
+            results: [
+                .success((
+                    Data(),
+                    Self.httpResponse(
+                        url: "https://api.github.com/notifications/threads/shared-thread",
+                        statusCode: 205
+                    )
+                )),
+            ]
+        )
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+        state.selectNotification(id: "shared-old")
+
+        state.markRead()
+
+        #expect(state.notifications.allSatisfy { !$0.isUnread })
+        await Self.waitUntil {
+            await session.recordedRequests().count == 1
+        }
+        #expect(state.notifications.allSatisfy { !$0.isUnread })
+    }
+
+    @Test func pendingMarkReadDoesNotMaskNewerActivityArrivingAfterActionStarted() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notifications = Self.makeSharedThreadNotifications()
+        let newer = notifications[0]
+        let older = notifications[1]
+        var store = ThreadActionStore(userDefaults: defaults)
+
+        _ = store.start(.markRead, notification: older, originalServerIndex: 0)
+        let projected = store.projectedNotifications(from: [newer, older])
+
+        #expect(projected.first(where: { $0.id == newer.id })?.isUnread == true)
+        #expect(projected.first(where: { $0.id == older.id })?.isUnread == false)
+    }
+
+    @Test func staleFailureCannotClearNewerPendingActionForSameThread() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notifications = Self.makeSharedThreadNotifications()
+        var store = ThreadActionStore(userDefaults: defaults)
+        let first = store.start(.done, notification: notifications[0], originalServerIndex: 0)
+        let second = store.start(.markRead, notification: notifications[1], originalServerIndex: 1)
+
+        _ = store.handleFailure(first)
+
+        #expect(store.pendingAction(for: first.notification.threadId)?.requestID == second.requestID)
+    }
+
     @Test func refreshKeepsCommittedMarkReadUntilServerCatchesUp() async {
         let (state, session) = Self.makeAuthedState(
             results: [
@@ -1560,6 +1613,109 @@ struct AppStateTests {
 
         #expect(state.notifications.count == 1)
         #expect(state.notifications.first?.id == "new")
+    }
+
+    @Test func unreadFeedStillAppliesWhenRecentInboxRefreshFails() async {
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "fresh"),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200
+                )
+            )),
+            .failure(GitHubAPIClient.APIError.forbidden),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.groupByRepo = false
+        state.inboxMode = .inbox
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.notifications.map(\.id) == ["fresh"])
+        #expect(state.errorMessage == nil)
+        #expect(state.warningMessage?.contains("Unable to refresh recent inbox") == true)
+    }
+
+    @Test func unauthorizedNotificationRefreshSignsOutAndClearsLoadingState() async {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                Self.httpResponse(url: "https://api.github.com/notifications", statusCode: 401)
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_expired", session: session, useGraphQLForSubjectMetadata: false)
+        var tokenDeletionCount = 0
+        let state = AppState(
+            notifications: Self.makeNotifications(2),
+            authStatus: .signedIn(username: "octodot"),
+            apiClient: client,
+            userDefaults: defaults,
+            tokenDeleter: { tokenDeletionCount += 1 }
+        )
+
+        await state.loadNotifications(force: true)
+
+        #expect(state.authStatus == .signedOut)
+        #expect(state.isLoading == false)
+        #expect(state.notifications.isEmpty)
+        #expect(tokenDeletionCount == 1)
+    }
+
+    @Test func signingOutWhileLoadIsInFlightCannotLeaveLoadingStateStuck() async {
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.singleNotificationPayload(id: "stale"),
+                response: Self.httpResponse(url: "https://api.github.com/notifications", statusCode: 200),
+                delayNanoseconds: 100_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+
+        let loadTask = Task { await state.loadNotifications(force: true) }
+        await Self.waitUntil(intervalNanoseconds: 1_000_000) {
+            await MainActor.run { state.isLoading }
+        }
+        #expect(state.isLoading)
+
+        state.signOut()
+        await loadTask.value
+
+        #expect(state.authStatus == .signedOut)
+        #expect(state.isLoading == false)
+        #expect(state.notifications.isEmpty)
+    }
+
+    @Test func cancelledBackgroundCountRefreshCannotMutateSignedOutState() async {
+        let sleeper = BackgroundRefreshSleeper()
+        let session = DelayedStubNetworkSession(results: [
+            .success(
+                payload: Self.singleNotificationPayload(id: "stale"),
+                response: Self.httpResponse(url: "https://api.github.com/notifications", statusCode: 200),
+                delayNanoseconds: 100_000_000
+            ),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(
+            0,
+            apiClient: client,
+            backgroundRefreshEnabled: true,
+            sleepHandler: { nanoseconds in
+                await sleeper.sleep(nanoseconds: nanoseconds)
+            }
+        )
+
+        await Self.settleTasks()
+        state.signOut()
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(state.authStatus == .signedOut)
+        #expect(state.unreadNotificationCount == 0)
+        #expect(state.notifications.isEmpty)
     }
 
     // MARK: - Done (remove + advance)
@@ -3107,6 +3263,63 @@ struct AppStateTests {
 
     // MARK: - Muted threads
 
+    @Test func recentInboxSinceDateNeverMovesIntoTheFuture() {
+        let now = Date.now
+        var futureUnread = Self.makeNotification(id: 42)
+        futureUnread = GitHubNotification(
+            id: futureUnread.id,
+            threadId: futureUnread.threadId,
+            title: futureUnread.title,
+            repository: futureUnread.repository,
+            reason: futureUnread.reason,
+            type: futureUnread.type,
+            updatedAt: now.addingTimeInterval(24 * 60 * 60),
+            isUnread: true,
+            url: futureUnread.url,
+            subjectURL: futureUnread.subjectURL,
+            subjectState: futureUnread.subjectState
+        )
+        let store = InboxStore(userDefaults: Self.makeIsolatedUserDefaults(), initialNotifications: [])
+
+        #expect(store.recentInboxSinceDate(relativeTo: [futureUnread], now: now) == now)
+    }
+
+    @Test func newestUnreadSnapshotControlsRecentReadPruningForSharedThread() {
+        let now = Date.now
+        let makeShared: (String, TimeInterval, Bool) -> GitHubNotification = { id, offset, isUnread in
+            GitHubNotification(
+                id: id,
+                threadId: "shared-pruning-thread",
+                title: id,
+                repository: "acme/alpha",
+                reason: .reviewRequested,
+                type: .pullRequest,
+                updatedAt: now.addingTimeInterval(offset),
+                isUnread: isUnread,
+                url: URL(string: "https://github.com/acme/alpha/pull/1")!,
+                subjectURL: nil,
+                subjectState: .open
+            )
+        }
+        let newerUnread = makeShared("newer", 0, true)
+        let olderUnread = makeShared("older", -120, true)
+        let recentRead = makeShared("recent-read", -60, false)
+        let store = InboxStore(userDefaults: Self.makeIsolatedUserDefaults(), initialNotifications: [])
+
+        store.recordRecentReadNotification(
+            recentRead,
+            unreadNotifications: [newerUnread, olderUnread],
+            projectedNotifications: { $0 }
+        )
+        let historyAfterUnreadDisappears = store.mergedInboxNotifications(
+            unreadNotifications: [],
+            recentInboxNotifications: [],
+            projectedNotifications: { $0 }
+        )
+
+        #expect(historyAfterUnreadDisappears.isEmpty)
+    }
+
     @Test func mutedThreadsPersistAcrossSessions() async {
         let defaults = Self.makeIsolatedUserDefaults()
         let notifications = [
@@ -3174,6 +3387,17 @@ struct AppStateTests {
 
         #expect(inboxStore.isThreadMuted("thread-0") == false)
         #expect(inboxStore.isThreadMuted("thread-200") == true)
+    }
+
+    @Test func clearingSessionStateRemovesPersistedMutedThreads() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let inboxStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+        inboxStore.muteThread("account-specific-thread")
+
+        inboxStore.clearSessionState()
+
+        let relaunchedStore = InboxStore(userDefaults: defaults, initialNotifications: [])
+        #expect(relaunchedStore.isThreadMuted("account-specific-thread") == false)
     }
 
     @Test func mutedThreadDoesNotCountAsUnread() async {
@@ -3296,6 +3520,14 @@ struct AppStateTests {
 
         state.toggleChecked(id: firstId)
         #expect(state.checkedThreadIDs == [lastId])
+    }
+
+    @Test func toggleCheckedIgnoresIDsOutsideVisibleProjection() {
+        let (state, _) = Self.makeAuthedState(count: 3)
+
+        state.toggleChecked(id: "not-visible")
+
+        #expect(state.checkedThreadIDs.isEmpty)
     }
 
     @Test func bulkDoneRemovesAllCheckedRowsAndClearsChecks() async {
@@ -3458,6 +3690,109 @@ struct AppStateTests {
         state.groupByRepo = false
 
         #expect(state.filteredNotifications.isEmpty)
+    }
+
+    @Test func duplicatePersistedCommittedActionsDoNotCrashRelaunch() throws {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let notification = Self.makeNotification(id: 0)
+        let formatter = ISO8601DateFormatter()
+        let action: [String: Any] = [
+            "kind": "done",
+            "threadId": notification.threadId,
+            "updatedAt": formatter.string(from: notification.updatedAt),
+            "activityIdentities": [notification.activityIdentity],
+        ]
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: [action, action]),
+            forKey: ThreadActionStore.committedThreadActionsStorageKey
+        )
+
+        let state = AppState(
+            notifications: [notification],
+            authStatus: .signedOut,
+            userDefaults: defaults
+        )
+
+        #expect(state.filteredNotifications.isEmpty)
+    }
+
+    @Test func persistedMarkReadRetainsSubsecondReconciliationCutoff() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let base = Self.makeNotification(id: 0)
+        let notification = GitHubNotification(
+            id: base.id,
+            threadId: base.threadId,
+            title: base.title,
+            repository: base.repository,
+            reason: base.reason,
+            type: base.type,
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000.789),
+            isUnread: true,
+            url: base.url,
+            subjectURL: base.subjectURL,
+            subjectState: base.subjectState
+        )
+        var firstStore = ThreadActionStore(userDefaults: defaults)
+        var serverNotifications = [notification]
+        let pending = firstStore.start(.markRead, notification: notification, originalServerIndex: 0)
+        firstStore.handleSuccess(pending, serverNotifications: &serverNotifications)
+
+        let relaunchedStore = ThreadActionStore(userDefaults: defaults)
+        let projected = relaunchedStore.projectedNotifications(from: [notification])
+
+        #expect(projected.first?.isUnread == false)
+    }
+
+    @Test func duplicatePersistedRecentReadsKeepOneNewestSnapshot() throws {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let older = Self.makeNotification(id: 1, isUnread: false)
+        let newer = Self.makeNotification(id: 0, isUnread: false)
+        let formatter = ISO8601DateFormatter()
+        func payload(for notification: GitHubNotification) -> [String: Any] {
+            [
+                "id": notification.id,
+                "threadId": "shared-persisted-thread",
+                "title": notification.title,
+                "repository": notification.repository,
+                "reason": notification.reason.rawValue,
+                "type": notification.type.rawValue,
+                "updatedAt": formatter.string(from: notification.updatedAt),
+                "isUnread": false,
+                "url": notification.url.absoluteString,
+                "subjectState": notification.subjectState.rawValue,
+                "graphQLNodeID": "node-\(notification.id)",
+                "source": notification.source.rawValue,
+            ]
+        }
+        defaults.set(
+            try JSONSerialization.data(withJSONObject: [payload(for: older), payload(for: newer)]),
+            forKey: "AppState.recentInboxReads.v1"
+        )
+
+        let state = AppState(notifications: [], userDefaults: defaults)
+        state.groupByRepo = false
+
+        #expect(state.filteredNotifications.map(\.id) == [newer.id])
+        #expect(state.filteredNotifications.first?.graphQLNodeID == "node-\(newer.id)")
+    }
+
+    @Test func malformedPersistedStoreDataIsQuarantined() {
+        let defaults = Self.makeIsolatedUserDefaults()
+        let malformed = Data("not-json".utf8)
+        let keys = [
+            ThreadActionStore.committedThreadActionsStorageKey,
+            "AppState.recentInboxReads.v1",
+            "AppState.dismissedSecurityAlerts.v1",
+            "AppState.readSecurityAlerts.v1",
+            "AppState.mutedThreads.v1",
+        ]
+        for key in keys {
+            defaults.set(malformed, forKey: key)
+        }
+
+        _ = AppState(notifications: [], userDefaults: defaults)
+
+        #expect(keys.allSatisfy { defaults.object(forKey: $0) == nil })
     }
 
     @Test func bulkDoneGroupsSharedThreadActivitiesAndPersistsEveryIdentity() async {

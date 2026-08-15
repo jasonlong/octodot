@@ -1,11 +1,13 @@
 import SwiftUI
 
 struct SettingsView: View {
-    enum Tab: String, Hashable {
+    enum Tab: String, CaseIterable, Hashable, Identifiable {
         case general
         case shortcuts
         case account
         case about
+
+        var id: Self { self }
 
         var title: String {
             switch self {
@@ -62,12 +64,7 @@ private struct SettingsTabBar: View {
         HStack(spacing: 12) {
             Spacer()
 
-            ForEach([
-                SettingsView.Tab.general,
-                .shortcuts,
-                .account,
-                .about
-            ], id: \.self) { tab in
+            ForEach(SettingsView.Tab.allCases) { tab in
                 SettingsTabItem(
                     tab: tab,
                     isSelected: selection == tab
@@ -84,6 +81,8 @@ private struct SettingsTabBar: View {
         .padding(.top, 12)
         .padding(.bottom, 10)
         .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Settings categories")
     }
 }
 
@@ -104,7 +103,6 @@ private struct SettingsTabItem: View {
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(SettingsTabButtonStyle(isSelected: isSelected))
-        .focusEffectDisabled()
         .accessibilityElement()
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -156,11 +154,13 @@ private struct AccountSettingsPane: View {
                     Text(errorMessage)
                         .font(.footnote)
                         .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Sign-in failed: \(errorMessage)")
                 }
 
                 HStack {
                     Button(isSaving ? "Saving…" : (appState.isSignedIn ? "Update Token" : "Sign In"), action: submit)
-                        .disabled(tokenInput.isEmpty || isSaving)
+                        .disabled(isTokenEmpty || isSaving)
 
                     if appState.isSignedIn {
                         Button("Sign Out", role: .destructive) {
@@ -168,6 +168,7 @@ private struct AccountSettingsPane: View {
                             tokenInput = ""
                             errorMessage = nil
                         }
+                        .disabled(isSaving)
                     }
                 }
             }
@@ -184,13 +185,19 @@ private struct AccountSettingsPane: View {
         }
     }
 
+    private var isTokenEmpty: Bool {
+        tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func submit() {
+        let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
         isSaving = true
         errorMessage = nil
 
         Task {
             do {
-                try await appState.submitToken(tokenInput)
+                try await appState.submitToken(token)
                 isSaving = false
                 tokenInput = ""
             } catch {
@@ -221,6 +228,14 @@ private struct GeneralSettingsPane: View {
 
             Section("Startup") {
                 Toggle("Launch at login", isOn: $preferences.launchAtLogin)
+
+                if let errorMessage = preferences.launchAtLoginErrorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Launch at Login: \(errorMessage)")
+                }
             }
         }
         .formStyle(.grouped)
@@ -239,7 +254,7 @@ private struct ShortcutsSettingsPane: View {
         let standard: String
     }
 
-    private let bindingRows: [BindingRow] = [
+    private static let bindingRows: [BindingRow] = [
         .init(id: "move", action: "Move selection", vim: "j / k", standard: "Up / Down"),
         .init(id: "bulk-toggle", action: "Select for bulk actions", vim: "x", standard: "—"),
         .init(id: "page-down", action: "Page down", vim: "ctrl-f / space", standard: "Page Down"),
@@ -291,7 +306,7 @@ private struct ShortcutsSettingsPane: View {
                             tableHeader("Standard")
                         }
 
-                        ForEach(bindingRows) { row in
+                        ForEach(Self.bindingRows) { row in
                             Divider()
                                 .gridCellColumns(3)
 
@@ -352,6 +367,7 @@ private struct AboutSettingsPane: View {
                     Image(nsImage: icon)
                         .resizable()
                         .frame(width: 96, height: 96)
+                        .accessibilityHidden(true)
                 }
 
                 VStack(spacing: 4) {
@@ -379,16 +395,23 @@ private struct AboutSettingsPane: View {
                         .frame(width: 180)
                     }
                     .disabled(updateChecker.isChecking)
+                    .accessibilityLabel(updateChecker.isChecking ? "Checking for updates" : "Check for Updates")
 
                     Group {
-                        if let version = updateChecker.availableVersion {
+                        if case .failed(let message) = updateChecker.installState {
+                            Text(message)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if let version = updateChecker.availableVersion {
                             Text("v\(version) is available")
                                 .foregroundStyle(.green)
                         } else if updateChecker.showingUpToDate {
                             Text("You're up to date")
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text(" ")
+                            Color.clear
+                                .frame(height: 15)
+                                .accessibilityHidden(true)
                         }
                     }
                     .font(.system(size: 12))

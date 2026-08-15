@@ -6,7 +6,7 @@ private let defaultBackgroundRefreshFallbackNanoseconds: UInt64 = 60_000_000_000
 
 private let defaultSleepHandler: AppState.SleepHandler = { nanoseconds in
     guard nanoseconds > 0 else { return }
-    try? await Task.sleep(nanoseconds: nanoseconds)
+    try? await Task.sleep(for: .nanoseconds(nanoseconds))
 }
 
 @MainActor
@@ -69,6 +69,8 @@ final class AppState {
         didSet {
             guard isPanelVisible != oldValue, !isPanelVisible else { return }
             actionToasts.removeAll()
+            cancelSecurityAlertsRefresh()
+            cancelSubjectStateResolution()
         }
     }
     var isSearchActive: Bool = false
@@ -115,6 +117,7 @@ final class AppState {
     private var shouldRefreshVisibleCIMetadataAfterNextRebuild = false
     private var lastActionDebugThreadID: String?
     private var lastActionDebugKind: String?
+    private var activeAuthRequestID = UUID()
     private var activeLoadRequestID = UUID()
     private let inboxStore: InboxStore
     private var apiClient: GitHubAPIClient?
@@ -142,7 +145,7 @@ final class AppState {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return notifications }
         return notifications.filter {
-            $0.title.localizedCaseInsensitiveContains(query) || $0.repository.localizedCaseInsensitiveContains(query)
+            $0.title.localizedStandardContains(query) || $0.repository.localizedStandardContains(query)
         }
     }
 
@@ -219,24 +222,26 @@ final class AppState {
 
         if let bootstrapToken {
             let client = apiClientFactory(bootstrapToken)
+            let requestID = UUID()
+            self.activeAuthRequestID = requestID
             self.apiClient = client
             self.authStatus = .signedIn(username: "")
             self.shouldSelectTopItemOnNextLoad = true
-            Task { await validateAndLoad(client: client) }
+            Task { [weak self] in
+                await self?.validateAndLoad(client: client, requestID: requestID)
+            }
         }
 
-        startBackgroundRefreshIfNeeded()
+        if bootstrapToken == nil {
+            startBackgroundRefreshIfNeeded()
+        }
     }
 
     convenience init(
         userDefaults: UserDefaults = .standard,
-        bootstrapToken: String? = KeychainHelper.loadToken()
+        bootstrapToken: String? = KeychainHelper.loadToken(),
+        useMockData: Bool = false
     ) {
-        #if DEBUG
-        let useMockData = bootstrapToken == nil
-        #else
-        let useMockData = false
-        #endif
         self.init(
             notifications: useMockData ? MockData.generateNotifications() : [],
             authStatus: useMockData ? .signedIn(username: "demo") : .signedOut,
@@ -253,8 +258,19 @@ final class AppState {
     }
 
     func submitToken(_ token: String) async throws {
+        let requestID = UUID()
+        activeAuthRequestID = requestID
+        activeLoadRequestID = UUID()
+        isLoading = false
         let client = apiClientFactory(token)
-        let username = try await client.validateToken()
+        let username: String
+        do {
+            username = try await client.validateToken()
+        } catch {
+            guard requestID == activeAuthRequestID else { return }
+            throw error
+        }
+        guard requestID == activeAuthRequestID else { return }
         try tokenSaver(token)
         errorMessage = nil
         warningMessage = nil
@@ -288,32 +304,37 @@ final class AppState {
         scheduleVisibleSubjectStateResolutionIfNeeded()
     }
 
-    private func validateAndLoad(client: GitHubAPIClient) async {
+    private func validateAndLoad(client: GitHubAPIClient, requestID: UUID) async {
         do {
             let username = try await client.validateToken()
+            guard requestID == activeAuthRequestID else { return }
             self.authStatus = .signedIn(username: username)
             self.apiClient = client
             await loadNotifications(force: true)
+            guard requestID == activeAuthRequestID else { return }
             startBackgroundRefreshIfNeeded()
         } catch {
+            guard requestID == activeAuthRequestID else { return }
             cancelBackgroundRefresh()
             cancelSecurityAlertsRefresh()
 
-            if case GitHubAPIClient.APIError.unauthorized = error {
-                self.authStatus = .signedOut
-                self.apiClient = nil
-                self.threadActions.clearCommittedActions()
-                tokenDeleter()
-                rebuildDerivedState()
+            if Self.isUnauthorized(error) {
+                signOut()
             } else {
                 self.authStatus = .signedIn(username: "")
                 self.apiClient = client
                 self.errorMessage = error.localizedDescription
+                startBackgroundRefreshIfNeeded()
             }
         }
     }
 
     func signIn(token: String, username: String) {
+        let isSwitchingAccounts = signedInUsername.map {
+            $0.caseInsensitiveCompare(username) != .orderedSame
+        } ?? false
+        let authRequestID = UUID()
+        activeAuthRequestID = authRequestID
         cancelBackgroundRefresh()
         cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
@@ -321,15 +342,30 @@ final class AppState {
         activeLoadRequestID = UUID()
         shouldSelectTopItemOnNextLoad = true
         warningMessage = nil
+        if isSwitchingAccounts {
+            serverNotifications = []
+            serverRecentInboxNotifications = []
+            serverSecurityAlerts = []
+            repositoryOrderAnchor = []
+            inboxStore.clearSessionState()
+            threadActions.clearCommittedActions()
+            actionToasts.removeAll()
+            searchQuery = ""
+            isSearchActive = false
+            clearSelection()
+            rebuildDerivedState()
+        }
         apiClient = apiClientFactory(token)
         authStatus = .signedIn(username: username)
-        Task {
-            await loadNotifications(force: true)
-            startBackgroundRefreshIfNeeded()
+        Task { [weak self] in
+            await self?.loadNotifications(force: true)
+            guard let self, authRequestID == self.activeAuthRequestID else { return }
+            self.startBackgroundRefreshIfNeeded()
         }
     }
 
     func signOut() {
+        activeAuthRequestID = UUID()
         cancelBackgroundRefresh()
         cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
@@ -338,6 +374,7 @@ final class AppState {
         tokenDeleter()
         apiClient = nil
         authStatus = .signedOut
+        isLoading = false
         serverNotifications = []
         serverRecentInboxNotifications = []
         serverSecurityAlerts = []
@@ -346,6 +383,7 @@ final class AppState {
         threadActions.clearCommittedActions()
         errorMessage = nil
         warningMessage = nil
+        actionToasts.removeAll()
         searchQuery = ""
         isSearchActive = false
         clearSelection()
@@ -358,6 +396,7 @@ final class AppState {
 
     private func loadNotifications(policy: RefreshPolicy) async {
         guard let client = apiClient else { return }
+        let authRequestID = activeAuthRequestID
         let requestID = UUID()
         activeLoadRequestID = requestID
         cancelSecurityAlertsRefresh()
@@ -365,20 +404,32 @@ final class AppState {
         isLoading = true
         warningMessage = nil
         do {
-            async let unreadFetch = client.fetchNotifications(all: false, force: policy.forceUnread)
-            let fetched = try await unreadFetch
+            let fetched = try await client.fetchNotifications(all: false, force: policy.forceUnread)
             let fetchedRecentInbox: [GitHubNotification]
+            var recentInboxWarningMessage: String?
             let shouldFetchRecentInbox = inboxMode == .inbox
             if shouldFetchRecentInbox {
-                fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
-                    since: inboxStore.recentInboxSinceDate(relativeTo: fetched),
-                    force: policy.forceRecentInbox,
-                    maxPages: InboxStore.inboxRecentReadMaxPages
-                )
+                do {
+                    fetchedRecentInbox = try await client.fetchRecentInboxNotifications(
+                        since: inboxStore.recentInboxSinceDate(relativeTo: fetched),
+                        force: policy.forceRecentInbox,
+                        maxPages: InboxStore.inboxRecentReadMaxPages
+                    )
+                } catch {
+                    guard requestID == activeLoadRequestID,
+                          authRequestID == activeAuthRequestID else { return }
+                    if Self.isUnauthorized(error) {
+                        signOut()
+                        return
+                    }
+                    fetchedRecentInbox = serverRecentInboxNotifications
+                    recentInboxWarningMessage = "Unable to refresh recent inbox: \(error.localizedDescription)"
+                }
             } else {
                 fetchedRecentInbox = []
             }
-            guard requestID == activeLoadRequestID else { return }
+            guard requestID == activeLoadRequestID,
+                  authRequestID == activeAuthRequestID else { return }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox,
@@ -387,6 +438,7 @@ final class AppState {
             resetSelectionToTopOnNextLoadIfNeeded()
             isLoading = false
             errorMessage = nil
+            warningMessage = recentInboxWarningMessage
             shouldRefreshVisibleCIMetadataAfterNextRebuild = true
             rebuildDerivedState()
             scheduleSecurityAlertsRefreshIfNeeded(
@@ -404,7 +456,12 @@ final class AppState {
             )
             logLastActionSnapshot(context: "after-load")
         } catch {
-            guard requestID == activeLoadRequestID else { return }
+            guard requestID == activeLoadRequestID,
+                  authRequestID == activeAuthRequestID else { return }
+            if Self.isUnauthorized(error) {
+                signOut()
+                return
+            }
             isLoading = false
             errorMessage = error.localizedDescription
             logLastActionSnapshot(context: "load-failed")
@@ -610,10 +667,7 @@ final class AppState {
 
         let toast = ActionToast(message: message)
         actionToasts.append(toast)
-        let toastID = toast.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.actionToasts.removeAll { $0.id == toastID }
-        }
+        scheduleToastRemoval(id: toast.id)
     }
 
     #if DEBUG
@@ -632,12 +686,20 @@ final class AppState {
         debugToastCounter += 1
         let toast = ActionToast(message: message)
         actionToasts.append(toast)
-        let toastID = toast.id
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.actionToasts.removeAll { $0.id == toastID }
-        }
+        scheduleToastRemoval(id: toast.id)
     }
     #endif
+
+    private func scheduleToastRemoval(id: UUID) {
+        Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            self?.actionToasts.removeAll { $0.id == id }
+        }
+    }
 
     private static func toastIdentifier(for notification: GitHubNotification) -> String {
         if let reference = notification.displayReferenceNumber {
@@ -715,6 +777,7 @@ final class AppState {
     }
 
     func toggleChecked(id: String) {
+        guard filteredNotifications.contains(where: { $0.id == id }) else { return }
         if checkedThreadIDs.contains(id) {
             checkedThreadIDs.remove(id)
         } else {
@@ -736,6 +799,42 @@ final class AppState {
 
         guard let client = apiClient else { return }
         dispatchQueuedActions(using: client)
+    }
+
+    var hasPendingThreadActions: Bool {
+        threadActions.hasPendingActions
+    }
+
+    /// Dispatches any debounced thread actions and gives in-flight requests a bounded
+    /// opportunity to finish before the process exits.
+    ///
+    /// The injected sleeper keeps the timeout path deterministic in tests. Production
+    /// callers should use the default monotonic task sleep.
+    func drainPendingActions(
+        timeoutNanoseconds: UInt64,
+        pollIntervalNanoseconds: UInt64 = 25_000_000,
+        terminationSleepHandler: @escaping SleepHandler = defaultSleepHandler
+    ) async -> Bool {
+        flushPendingActions()
+
+        guard threadActions.hasPendingActions else { return true }
+        guard timeoutNanoseconds > 0 else { return false }
+
+        let pollInterval = max(1, min(pollIntervalNanoseconds, timeoutNanoseconds))
+        var remainingNanoseconds = timeoutNanoseconds
+
+        while threadActions.hasPendingActions {
+            guard !Task.isCancelled else { return false }
+
+            let sleepNanoseconds = min(pollInterval, remainingNanoseconds)
+            await terminationSleepHandler(sleepNanoseconds)
+
+            guard threadActions.hasPendingActions else { return true }
+            guard remainingNanoseconds > sleepNanoseconds else { return false }
+            remainingNanoseconds -= sleepNanoseconds
+        }
+
+        return true
     }
 
     private func rebuildDerivedState() {
@@ -945,10 +1044,15 @@ final class AppState {
         lastActionDebugKind = kind.rawValue
 
         let originalServerIndex = serverNotifications.firstIndex(where: { $0.id == target.id }) ?? serverNotifications.count
+        let projectionCutoff = serverNotifications
+            .filter { $0.threadId == target.threadId }
+            .map(\.updatedAt)
+            .max() ?? target.updatedAt
         let pending = threadActions.start(
             kind,
             notification: target,
             activityIdentities: activityIdentities,
+            projectionCutoff: projectionCutoff,
             originalServerIndex: originalServerIndex
         )
 
@@ -1030,7 +1134,6 @@ final class AppState {
     private func executePendingAction(client: GitHubAPIClient, pending: ThreadActionStore.PendingAction) async {
         guard var current = threadActions.pendingAction(for: pending.notification.threadId),
               current.requestID == pending.requestID else {
-            actionTasks[pending.notification.threadId] = nil
             return
         }
 
@@ -1049,9 +1152,12 @@ final class AppState {
                     try await client.markAsDone(notification: pending.notification)
                 } catch {
                     if Task.isCancelled || error is CancellationError { return }
+                    if Self.isUnauthorized(error) {
+                        signOut()
+                        return
+                    }
                     guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                           latest.requestID == pending.requestID else {
-                        actionTasks[pending.notification.threadId] = nil
                         return
                     }
 
@@ -1062,7 +1168,6 @@ final class AppState {
 
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                   latest.requestID == pending.requestID else {
-                actionTasks[pending.notification.threadId] = nil
                 return
             }
 
@@ -1071,7 +1176,11 @@ final class AppState {
             if Task.isCancelled || error is CancellationError { return }
             guard let latest = threadActions.pendingAction(for: pending.notification.threadId),
                   latest.requestID == pending.requestID else {
-                actionTasks[pending.notification.threadId] = nil
+                return
+            }
+
+            if Self.isUnauthorized(error) {
+                signOut()
                 return
             }
 
@@ -1244,18 +1353,10 @@ final class AppState {
         var didChange = false
 
         for index in notifications.indices {
-            guard let metadata = resolvedMetadata[notifications[index].id],
-                  notifications[index].subjectState != metadata.state ||
-                    notifications[index].ciStatus != metadata.ciStatus else {
-                continue
+            guard let metadata = resolvedMetadata[notifications[index].id] else { continue }
+            if notifications[index].apply(metadata) {
+                didChange = true
             }
-
-            notifications[index].subjectState = metadata.state
-            notifications[index].ciStatus = metadata.ciStatus
-            if let nodeID = metadata.nodeID {
-                notifications[index].graphQLNodeID = nodeID
-            }
-            didChange = true
         }
 
         return didChange
@@ -1269,17 +1370,9 @@ final class AppState {
         var didChange = false
 
         for (threadID, notification) in notificationsByThreadID {
-            guard let metadata = resolvedMetadata[notification.id],
-                  notification.subjectState != metadata.state || notification.ciStatus != metadata.ciStatus else {
-                continue
-            }
-
+            guard let metadata = resolvedMetadata[notification.id] else { continue }
             var updated = notification
-            updated.subjectState = metadata.state
-            updated.ciStatus = metadata.ciStatus
-            if let nodeID = metadata.nodeID {
-                updated.graphQLNodeID = nodeID
-            }
+            guard updated.apply(metadata) else { continue }
             notificationsByThreadID[threadID] = updated
             didChange = true
         }
@@ -1370,14 +1463,12 @@ final class AppState {
         guard apiClient != nil else { return }
         guard backgroundRefreshTask == nil else { return }
 
-        backgroundRefreshTask = Task { [weak self] in
-            guard let self else { return }
-
+        backgroundRefreshTask = Task { [weak self, sleepHandler] in
             while !Task.isCancelled {
-                let delayNanoseconds = await self.backgroundRefreshDelayNanoseconds()
-                await self.sleepHandler(delayNanoseconds)
+                guard let delayNanoseconds = await self?.backgroundRefreshDelayNanoseconds() else { return }
+                await sleepHandler(delayNanoseconds)
                 guard !Task.isCancelled else { return }
-                await self.performBackgroundRefresh()
+                await self?.performBackgroundRefresh()
             }
         }
     }
@@ -1407,9 +1498,13 @@ final class AppState {
 
     private func refreshUnreadCountInBackground() async {
         guard let client = apiClient else { return }
+        let authRequestID = activeAuthRequestID
+        let loadRequestID = activeLoadRequestID
 
         do {
             let fetched = try await client.fetchNotifications(all: false, force: false)
+            guard authRequestID == activeAuthRequestID,
+                  loadRequestID == activeLoadRequestID else { return }
             inboxStore.updateUnreadCountOnly(from: fetched)
             // Apply thread action projections so committed done/unsubscribe
             // actions are excluded from the count, matching what the panel shows.
@@ -1418,7 +1513,12 @@ final class AppState {
             )
             unreadNotificationCount = projected.filter(\.isUnread).count
         } catch {
-            // Ignore background-only refresh failures while the heavier inbox feed is hidden.
+            guard authRequestID == activeAuthRequestID,
+                  loadRequestID == activeLoadRequestID else { return }
+            if Self.isUnauthorized(error) {
+                signOut()
+            }
+            // Other background-only failures stay silent while the heavier inbox feed is hidden.
         }
     }
 
@@ -1455,6 +1555,13 @@ final class AppState {
                 )
             } catch {
                 DebugTrace.log("security fetch failed error=\(error.localizedDescription)")
+                await MainActor.run {
+                    guard let self, requestID == self.activeLoadRequestID else { return }
+                    self.securityAlertsRefreshTask = nil
+                    if Self.isUnauthorized(error) {
+                        self.signOut()
+                    }
+                }
                 return
             }
 
@@ -1539,6 +1646,13 @@ final class AppState {
 
     private func persistGroupByRepo() {
         userDefaults.set(groupByRepo, forKey: Self.groupByRepoStorageKey)
+    }
+
+    private static func isUnauthorized(_ error: Error) -> Bool {
+        if case GitHubAPIClient.APIError.unauthorized = error {
+            return true
+        }
+        return false
     }
 
     private var signedInUsername: String? {

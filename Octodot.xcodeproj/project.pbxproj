@@ -31,6 +31,7 @@
 		BB000000000000000000002B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002C /* SettingsView.swift */; };
 		BB000000000000000000002D /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002E /* HotkeyRecorderView.swift */; };
 		BB0000000000000000000030 /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* InboxStore.swift */; };
+		BB0000000000000000000037 /* PersistenceCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000037 /* PersistenceCoding.swift */; };
 		BB0000000000000000000032 /* SemanticVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000032 /* SemanticVersion.swift */; };
 		BB0000000000000000000033 /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* UpdateChecker.swift */; };
 		BB0000000000000000000036 /* UpdateInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000036 /* UpdateInstaller.swift */; };
@@ -80,6 +81,7 @@
 		AA000000000000000000002D /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		AA000000000000000000002E /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000030 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
+		AA0000000000000000000037 /* PersistenceCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceCoding.swift; sourceTree = "<group>"; };
 		AA0000000000000000000032 /* SemanticVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVersion.swift; sourceTree = "<group>"; };
 		AA0000000000000000000033 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
 		AA0000000000000000000036 /* UpdateInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateInstaller.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 				AA000000000000000000002B /* AppPreferences.swift */,
 				AA0000000000000000000003 /* AppState.swift */,
 				AA0000000000000000000030 /* InboxStore.swift */,
+				AA0000000000000000000037 /* PersistenceCoding.swift */,
 				AA0000000000000000000032 /* SemanticVersion.swift */,
 				AA0000000000000000000029 /* ThreadActionStore.swift */,
 				AA0000000000000000000033 /* UpdateChecker.swift */,
@@ -346,6 +349,7 @@
 				BB000000000000000000002A /* AppPreferences.swift in Sources */,
 				BB0000000000000000000003 /* AppState.swift in Sources */,
 				BB0000000000000000000030 /* InboxStore.swift in Sources */,
+				BB0000000000000000000037 /* PersistenceCoding.swift in Sources */,
 				BB0000000000000000000028 /* ThreadActionStore.swift in Sources */,
 				BB0000000000000000000004 /* StatusItemController.swift in Sources */,
 				BB0000000000000000000005 /* NotificationPanel.swift in Sources */,
@@ -451,7 +455,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				OCTODOT_BUILD_NUMBER = 1;
-				OCTODOT_MARKETING_VERSION = 0.5.8;
+				OCTODOT_MARKETING_VERSION = 0.5.9;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
@@ -508,7 +512,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MTL_FAST_MATH = YES;
 				OCTODOT_BUILD_NUMBER = 1;
-				OCTODOT_MARKETING_VERSION = 0.5.8;
+				OCTODOT_MARKETING_VERSION = 0.5.9;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";

@@ -51,6 +51,64 @@ struct ThreadActionStore {
         let activityIdentities: [String]
     }
 
+    /// Shared dismissal semantics for thread done/unsubscribe projections.
+    private struct DismissalRule {
+        let representedIdentities: Set<String>
+        let threadId: String
+        let updatedAt: Date
+        let useLegacyThreadFallback: Bool
+
+        init(
+            activityIdentities: [String],
+            threadId: String,
+            updatedAt: Date,
+            useLegacyThreadFallback: Bool
+        ) {
+            self.representedIdentities = Set(activityIdentities)
+            self.threadId = threadId
+            self.updatedAt = updatedAt
+            self.useLegacyThreadFallback = useLegacyThreadFallback
+        }
+
+        /// Evaluates one notification as if it were the only row under consideration.
+        func matchesInIsolation(_ notification: GitHubNotification) -> Bool {
+            if !representedIdentities.isEmpty {
+                if representedIdentities.contains(notification.activityIdentity) {
+                    return true
+                }
+                if notification.threadId == threadId, notification.updatedAt <= updatedAt {
+                    return true
+                }
+                return false
+            }
+
+            guard useLegacyThreadFallback else { return false }
+            return notification.threadId == threadId && notification.updatedAt <= updatedAt
+        }
+
+        /// Applies dismissal to a full notification list, preserving batch-only lone-snapshot removal.
+        func apply(to notifications: inout [GitHubNotification]) {
+            if !representedIdentities.isEmpty {
+                let originalCount = notifications.count
+                notifications.removeAll { representedIdentities.contains($0.activityIdentity) }
+                if notifications.count < originalCount {
+                    return
+                }
+
+                let threadSnapshots = notifications.filter { $0.threadId == threadId }
+                if threadSnapshots.count == 1, threadSnapshots[0].updatedAt <= updatedAt {
+                    notifications.removeAll { $0.id == threadSnapshots[0].id }
+                }
+                return
+            }
+
+            guard useLegacyThreadFallback else { return }
+            notifications.removeAll {
+                $0.threadId == threadId && $0.updatedAt <= updatedAt
+            }
+        }
+    }
+
     private struct PersistedCommittedAction: Codable {
         let kind: ActionKind
         let threadId: String
@@ -63,6 +121,7 @@ struct ThreadActionStore {
 
     private(set) var pendingActions: [String: PendingAction]
     private(set) var committedActions: [String: CommittedAction]
+    private var committedActionsDirty = false
 
     init(userDefaults: UserDefaults) {
         self.userDefaults = userDefaults
@@ -123,7 +182,8 @@ struct ThreadActionStore {
 
     mutating func handleSuccess(
         _ pending: PendingAction,
-        serverNotifications: inout [GitHubNotification]
+        serverNotifications: inout [GitHubNotification],
+        deferPersistence: Bool = false
     ) {
         guard pendingActions[pending.notification.threadId]?.requestID == pending.requestID else {
             return
@@ -143,28 +203,55 @@ struct ThreadActionStore {
                 updatedAt: pending.projectionCutoff,
                 activityIdentities: pending.activityIdentities
             )
-            persistCommittedActions()
 
-        case .done:
+        case .done, .unsubscribe:
             removeActivities(pending.activityIdentities, from: &serverNotifications)
             committedActions[pending.notification.threadId] = CommittedAction(
-                kind: .done,
+                kind: pending.kind,
                 threadId: pending.notification.threadId,
                 updatedAt: pending.notification.updatedAt,
                 activityIdentities: pending.activityIdentities
             )
-            persistCommittedActions()
-
-        case .unsubscribe:
-            removeActivities(pending.activityIdentities, from: &serverNotifications)
-            committedActions[pending.notification.threadId] = CommittedAction(
-                kind: .unsubscribe,
-                threadId: pending.notification.threadId,
-                updatedAt: pending.notification.updatedAt,
-                activityIdentities: pending.activityIdentities
-            )
-            persistCommittedActions()
         }
+
+        markCommittedActionsDirty()
+        if !deferPersistence {
+            flushCommittedActionsIfNeeded()
+        }
+    }
+
+    mutating func flushCommittedActionsIfNeeded() {
+        guard committedActionsDirty else { return }
+        committedActionsDirty = false
+        persistCommittedActions()
+    }
+
+    func isNotificationHiddenByDismissal(_ notification: GitHubNotification) -> Bool {
+        for committed in committedActions.values where committed.kind.hidesNotification {
+            let rule = DismissalRule(
+                activityIdentities: committed.activityIdentities,
+                threadId: committed.threadId,
+                updatedAt: committed.updatedAt,
+                useLegacyThreadFallback: committed.activityIdentities.isEmpty
+            )
+            if rule.matchesInIsolation(notification) {
+                return true
+            }
+        }
+
+        for pending in pendingActions.values where pending.kind.hidesNotification {
+            let rule = DismissalRule(
+                activityIdentities: pending.activityIdentities,
+                threadId: pending.notification.threadId,
+                updatedAt: pending.notification.updatedAt,
+                useLegacyThreadFallback: false
+            )
+            if rule.matchesInIsolation(notification) {
+                return true
+            }
+        }
+
+        return false
     }
 
     mutating func handleFailure(_ pending: PendingAction) -> String {
@@ -187,13 +274,12 @@ struct ThreadActionStore {
                     projected[index].isUnread = false
                 }
             case .done, .unsubscribe:
-                hideDismissedActivities(
+                DismissalRule(
                     activityIdentities: committed.activityIdentities,
                     threadId: committed.threadId,
                     updatedAt: committed.updatedAt,
-                    useLegacyThreadFallback: committed.activityIdentities.isEmpty,
-                    in: &projected
-                )
+                    useLegacyThreadFallback: committed.activityIdentities.isEmpty
+                ).apply(to: &projected)
             }
         }
 
@@ -207,13 +293,12 @@ struct ThreadActionStore {
                 }
 
             case .done, .unsubscribe:
-                hideDismissedActivities(
+                DismissalRule(
                     activityIdentities: pending.activityIdentities,
                     threadId: pending.notification.threadId,
                     updatedAt: pending.notification.updatedAt,
-                    useLegacyThreadFallback: false,
-                    in: &projected
-                )
+                    useLegacyThreadFallback: false
+                ).apply(to: &projected)
             }
         }
 
@@ -252,44 +337,22 @@ struct ThreadActionStore {
                 return fetchedSnapshots.contains { $0.updatedAt <= committed.updatedAt }
             }
         }
-        persistCommittedActions()
+        markCommittedActionsDirty()
+        flushCommittedActionsIfNeeded()
     }
 
     mutating func clearCommittedActions() {
         committedActions.removeAll()
-        persistCommittedActions()
+        markCommittedActionsDirty()
+        flushCommittedActionsIfNeeded()
     }
 
     mutating func cancelAllPendingActions() {
         pendingActions.removeAll()
     }
 
-    private func hideDismissedActivities(
-        activityIdentities: [String],
-        threadId: String,
-        updatedAt: Date,
-        useLegacyThreadFallback: Bool,
-        in notifications: inout [GitHubNotification]
-    ) {
-        if !activityIdentities.isEmpty {
-            let representedIdentities = Set(activityIdentities)
-            let originalCount = notifications.count
-            notifications.removeAll { representedIdentities.contains($0.activityIdentity) }
-            if notifications.count < originalCount {
-                return
-            }
-
-            let threadSnapshots = notifications.filter { $0.threadId == threadId }
-            if threadSnapshots.count == 1, threadSnapshots[0].updatedAt <= updatedAt {
-                notifications.removeAll { $0.id == threadSnapshots[0].id }
-            }
-            return
-        }
-
-        guard useLegacyThreadFallback else { return }
-        notifications.removeAll {
-            $0.threadId == threadId && $0.updatedAt <= updatedAt
-        }
+    private mutating func markCommittedActionsDirty() {
+        committedActionsDirty = true
     }
 
     private func removeActivities(
@@ -352,21 +415,12 @@ struct ThreadActionStore {
             }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        encoder.dateEncodingStrategy = PersistenceCoding.preciseDateEncodingStrategy
 
         guard let data = try? encoder.encode(persisted) else {
             return
         }
 
         userDefaults.set(data, forKey: Self.committedThreadActionsStorageKey)
-    }
-
-    private static var preciseDateEncodingStrategy: JSONEncoder.DateEncodingStrategy {
-        .custom { date, encoder in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            var container = encoder.singleValueContainer()
-            try container.encode(formatter.string(from: date))
-        }
     }
 }

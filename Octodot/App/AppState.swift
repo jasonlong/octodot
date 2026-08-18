@@ -3,6 +3,7 @@ import Observation
 
 private let defaultActionDispatchDelayNanoseconds: UInt64 = 2_500_000_000
 private let defaultBackgroundRefreshFallbackNanoseconds: UInt64 = 60_000_000_000
+private let deferredPersistenceNanoseconds: UInt64 = 100_000_000
 
 private let defaultSleepHandler: AppState.SleepHandler = { nanoseconds in
     guard nanoseconds > 0 else { return }
@@ -109,6 +110,7 @@ final class AppState {
     private var threadActions: ThreadActionStore
     private var actionTasks: [String: Task<Void, Never>] = [:]
     private var batchDispatchTask: Task<Void, Never>?
+    private var committedActionsPersistTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
     private var securityAlertsRefreshTask: Task<Void, Never>?
     private var subjectStateResolutionTask: Task<Void, Never>?
@@ -513,33 +515,8 @@ final class AppState {
     }
 
     func done() {
-        if let batch = checkedNotificationsBatch() {
-            let originalVisibleOrder = filteredNotifications
-            let originalSelectionID = selectedNotificationID
-            var acceptedItems: [GitHubNotification] = []
-            clearChecked()
-
-            for notification in batch where notification.source == .dependabotAlert {
-                dismissSecurityAlert(notification, updatesSelection: false)
-                acceptedItems.append(notification)
-            }
-            for group in groupedThreadNotifications(from: batch) {
-                guard let representative = group.first else { continue }
-                if startThreadAction(
-                    .done,
-                    target: representative,
-                    activityIdentities: group.map(\.activityIdentity),
-                    updatesSelection: false
-                ) {
-                    acceptedItems.append(contentsOf: group)
-                }
-            }
-
-            restoreSelectionAfterBulkMutation(
-                originalSelectionID: originalSelectionID,
-                originalVisibleOrder: originalVisibleOrder
-            )
-            presentActionToast(verb: .done, items: acceptedItems)
+        if checkedNotificationsBatch() != nil {
+            performBulkThreadAction(.done)
             return
         }
         guard let target = selectedNotification else { return }
@@ -556,36 +533,8 @@ final class AppState {
     }
 
     func unsubscribeFromThread() {
-        if let batch = checkedNotificationsBatch() {
-            let originalVisibleOrder = filteredNotifications
-            let originalSelectionID = selectedNotificationID
-            let securityAlerts = batch.filter { $0.source == .dependabotAlert }
-            var unsubscribedItems: [GitHubNotification] = []
-            clearChecked()
-
-            for notification in securityAlerts {
-                dismissSecurityAlert(notification, updatesSelection: false)
-            }
-            for group in groupedThreadNotifications(from: batch) {
-                guard let representative = group.first else { continue }
-                if startThreadAction(
-                    .unsubscribe,
-                    target: representative,
-                    activityIdentities: group.map(\.activityIdentity),
-                    updatesSelection: false
-                ) {
-                    inboxStore.muteThread(representative.threadId)
-                    clampSelection()
-                    unsubscribedItems.append(contentsOf: group)
-                }
-            }
-
-            restoreSelectionAfterBulkMutation(
-                originalSelectionID: originalSelectionID,
-                originalVisibleOrder: originalVisibleOrder
-            )
-            presentActionToast(verb: .unsub, items: unsubscribedItems)
-            presentActionToast(verb: .done, items: securityAlerts)
+        if checkedNotificationsBatch() != nil {
+            performBulkThreadAction(.unsubscribe)
             return
         }
         guard let notification = selectedNotification else { return }
@@ -596,6 +545,67 @@ final class AppState {
             inboxStore.muteThread(notification.threadId)
             clampSelection()
             presentActionToast(verb: .unsub, items: [notification])
+        }
+    }
+
+    private enum BulkThreadActionKind {
+        case done
+        case unsubscribe
+    }
+
+    private func performBulkThreadAction(_ kind: BulkThreadActionKind) {
+        guard let batch = checkedNotificationsBatch() else { return }
+
+        let originalVisibleOrder = filteredNotifications
+        let originalSelectionID = selectedNotificationID
+        var threadItems: [GitHubNotification] = []
+        var securityAlerts: [GitHubNotification] = []
+        clearChecked()
+
+        switch kind {
+        case .done:
+            for notification in batch where notification.source == .dependabotAlert {
+                dismissSecurityAlert(notification, updatesSelection: false)
+                threadItems.append(notification)
+            }
+        case .unsubscribe:
+            securityAlerts = batch.filter { $0.source == .dependabotAlert }
+            for notification in securityAlerts {
+                dismissSecurityAlert(notification, updatesSelection: false)
+            }
+        }
+
+        let actionKind: ThreadActionStore.ActionKind = kind == .done ? .done : .unsubscribe
+        for group in groupedThreadNotifications(from: batch) {
+            guard let representative = group.first else { continue }
+            if startThreadAction(
+                actionKind,
+                target: representative,
+                activityIdentities: group.map(\.activityIdentity),
+                updatesSelection: false
+            ) {
+                if kind == .unsubscribe {
+                    inboxStore.muteThread(representative.threadId)
+                }
+                threadItems.append(contentsOf: group)
+            }
+        }
+
+        if kind == .unsubscribe {
+            clampSelection()
+        }
+
+        restoreSelectionAfterBulkMutation(
+            originalSelectionID: originalSelectionID,
+            originalVisibleOrder: originalVisibleOrder
+        )
+
+        switch kind {
+        case .done:
+            presentActionToast(verb: .done, items: threadItems)
+        case .unsubscribe:
+            presentActionToast(verb: .unsub, items: threadItems)
+            presentActionToast(verb: .done, items: securityAlerts)
         }
     }
 
@@ -793,6 +803,34 @@ final class AppState {
         rebuildDerivedState()
     }
 
+    private func schedulePersistenceFlush() {
+        committedActionsPersistTask?.cancel()
+        committedActionsPersistTask = nil
+        if threadActions.hasPendingActions {
+            committedActionsPersistTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .nanoseconds(deferredPersistenceNanoseconds))
+                guard !Task.isCancelled else { return }
+                self?.flushCommittedActionsPersistence()
+            }
+        } else {
+            threadActions.flushCommittedActionsIfNeeded()
+        }
+    }
+
+    private func flushCommittedActionsPersistence() {
+        committedActionsPersistTask?.cancel()
+        committedActionsPersistTask = nil
+        threadActions.flushCommittedActionsIfNeeded()
+    }
+
+    private func projectThreadActions(from notifications: [GitHubNotification]) -> [GitHubNotification] {
+        threadActions.projectedNotifications(from: notifications)
+    }
+
+    private func isThreadActionNotificationVisible(_ notification: GitHubNotification) -> Bool {
+        !threadActions.isNotificationHiddenByDismissal(notification)
+    }
+
     func flushPendingActions() {
         batchDispatchTask?.cancel()
         batchDispatchTask = nil
@@ -817,7 +855,10 @@ final class AppState {
     ) async -> Bool {
         flushPendingActions()
 
-        guard threadActions.hasPendingActions else { return true }
+        guard threadActions.hasPendingActions else {
+            flushCommittedActionsPersistence()
+            return true
+        }
         guard timeoutNanoseconds > 0 else { return false }
 
         let pollInterval = max(1, min(pollIntervalNanoseconds, timeoutNanoseconds))
@@ -829,22 +870,30 @@ final class AppState {
             let sleepNanoseconds = min(pollInterval, remainingNanoseconds)
             await terminationSleepHandler(sleepNanoseconds)
 
-            guard threadActions.hasPendingActions else { return true }
-            guard remainingNanoseconds > sleepNanoseconds else { return false }
+            guard threadActions.hasPendingActions else {
+                flushCommittedActionsPersistence()
+                return true
+            }
+            guard remainingNanoseconds > sleepNanoseconds else {
+                flushCommittedActionsPersistence()
+                return false
+            }
             remainingNanoseconds -= sleepNanoseconds
         }
 
+        flushCommittedActionsPersistence()
         return true
     }
 
     private func rebuildDerivedState() {
-        let projectedUnread = threadActions.projectedNotifications(from: serverNotifications)
-        let projectedRecentInbox = threadActions.projectedNotifications(from: serverRecentInboxNotifications)
+        let projectedUnread = projectThreadActions(from: serverNotifications)
+        let projectedRecentInbox = projectThreadActions(from: serverRecentInboxNotifications)
         let projectedSecurityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
         let modeFiltered = filteredNotificationsForCurrentMode(
             unreadNotifications: projectedUnread,
             recentInboxNotifications: projectedRecentInbox,
-            securityAlerts: projectedSecurityAlerts
+            securityAlerts: projectedSecurityAlerts,
+            isNotificationVisible: isThreadActionNotificationVisible
         )
         let repoOrderSource = groupByRepo ? sortedByRecency(serverNotificationsForCurrentMode()) : []
         notifications = orderedNotifications(
@@ -894,7 +943,8 @@ final class AppState {
     private func filteredNotificationsForCurrentMode(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
-        securityAlerts: [GitHubNotification]
+        securityAlerts: [GitHubNotification],
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) -> [GitHubNotification] {
         switch inboxMode {
         case .unread:
@@ -903,7 +953,8 @@ final class AppState {
             let merged = inboxStore.mergedInboxNotifications(
                 unreadNotifications: unreadNotifications,
                 recentInboxNotifications: recentInboxNotifications,
-                projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
+                projectNotifications: projectThreadActions(from:),
+                isNotificationVisible: isThreadActionNotificationVisible
             )
             return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
         }
@@ -917,7 +968,8 @@ final class AppState {
             let merged = inboxStore.mergedInboxNotifications(
                 unreadNotifications: serverNotifications,
                 recentInboxNotifications: serverRecentInboxNotifications,
-                projectedNotifications: { $0 }
+                projectNotifications: { $0 },
+                isNotificationVisible: isThreadActionNotificationVisible
             )
             let securityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
             return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
@@ -1190,7 +1242,12 @@ final class AppState {
 
     private func handlePendingActionSuccess(_ pending: ThreadActionStore.PendingAction) {
         actionTasks[pending.notification.threadId] = nil
-        threadActions.handleSuccess(pending, serverNotifications: &serverNotifications)
+        threadActions.handleSuccess(
+            pending,
+            serverNotifications: &serverNotifications,
+            deferPersistence: true
+        )
+        schedulePersistenceFlush()
         switch pending.kind {
         case .markRead:
             var readNotification = pending.notification
@@ -1198,7 +1255,7 @@ final class AppState {
             inboxStore.recordRecentReadNotification(
                 readNotification,
                 unreadNotifications: serverNotifications.filter(\.isUnread),
-                projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
+                isNotificationVisible: isThreadActionNotificationVisible
             )
         case .done, .unsubscribe:
             inboxStore.removeRecentReadNotification(threadId: pending.notification.threadId)
@@ -1509,7 +1566,7 @@ final class AppState {
             // Apply thread action projections so committed done/unsubscribe
             // actions are excluded from the count, matching what the panel shows.
             let projected = inboxStore.filterMutedThreads(
-                threadActions.projectedNotifications(from: fetched)
+                projectThreadActions(from: fetched)
             )
             unreadNotificationCount = projected.filter(\.isUnread).count
         } catch {
@@ -1588,12 +1645,13 @@ final class AppState {
         serverNotifications = unreadNotifications
         // Filter out threads with committed done/unsubscribe actions so they
         // don't linger in the recent inbox read list after the server confirms removal.
-        let projectedRecentInbox = threadActions.projectedNotifications(from: recentInboxNotifications)
+        let projectedRecentInbox = projectThreadActions(from: recentInboxNotifications)
         let loadedState = inboxStore.applyLoaded(
             unreadNotifications: unreadNotifications,
             recentInboxNotifications: projectedRecentInbox,
             projectedSecurityAlerts: securityAlerts,
-            projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
+            projectNotifications: projectThreadActions(from:),
+            isNotificationVisible: isThreadActionNotificationVisible
         )
         serverRecentInboxNotifications = loadedState.recentInboxNotifications
         serverSecurityAlerts = securityAlerts
@@ -1615,7 +1673,8 @@ final class AppState {
         let inboxNotifications = inboxStore.mergedInboxNotifications(
             unreadNotifications: unreadNotifications,
             recentInboxNotifications: recentInboxNotifications,
-            projectedNotifications: { self.threadActions.projectedNotifications(from: $0) }
+            projectNotifications: projectThreadActions(from:),
+            isNotificationVisible: isThreadActionNotificationVisible
         )
         return Array(Set(inboxNotifications.map(\.repository))).sorted()
     }

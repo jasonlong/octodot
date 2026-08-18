@@ -131,12 +131,13 @@ final class InboxStore {
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
         projectedSecurityAlerts: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        projectNotifications: @escaping ([GitHubNotification]) -> [GitHubNotification],
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) -> LoadedState {
         recordRecentInboxReadTransitions(
             from: lastFetchedUnreadNotifications,
             to: unreadNotifications,
-            projectedNotifications: projectedNotifications
+            isNotificationVisible: isNotificationVisible
         )
         let prunedRecentInboxNotifications = pruneServerRecentInboxNotifications(
             recentInboxNotifications,
@@ -148,7 +149,7 @@ final class InboxStore {
         reconcileReadSecurityAlerts(with: projectedSecurityAlerts)
         pruneRecentInboxReadNotifications(
             using: unreadNotifications,
-            projectedNotifications: projectedNotifications
+            isNotificationVisible: isNotificationVisible
         )
         return LoadedState(
             recentInboxNotifications: prunedRecentInboxNotifications,
@@ -159,14 +160,15 @@ final class InboxStore {
     func mergedInboxNotifications(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        projectNotifications: @escaping ([GitHubNotification]) -> [GitHubNotification],
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) -> [GitHubNotification] {
         let recentReads = prunedRecentInboxReadNotifications(
             using: unreadNotifications,
-            projectedNotifications: projectedNotifications
+            isNotificationVisible: isNotificationVisible
         )
         let unreadThreadIDs = Set(unreadNotifications.map(\.threadId))
-        let serverRecentReads = projectedNotifications(
+        let serverRecentReads = projectNotifications(
             recentInboxNotifications.filter { notification in
                 !notification.isUnread && !unreadThreadIDs.contains(notification.threadId)
             }
@@ -182,7 +184,7 @@ final class InboxStore {
     func recordRecentReadNotification(
         _ notification: GitHubNotification,
         unreadNotifications: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) {
         var snapshot = notification
         snapshot.isUnread = false
@@ -193,7 +195,7 @@ final class InboxStore {
         recentInboxReadNotifications[snapshot.threadId] = snapshot
         pruneRecentInboxReadNotifications(
             using: unreadNotifications,
-            projectedNotifications: projectedNotifications
+            isNotificationVisible: isNotificationVisible
         )
     }
 
@@ -320,7 +322,7 @@ final class InboxStore {
     private func recordRecentInboxReadTransitions(
         from previousUnread: [GitHubNotification],
         to currentUnread: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) {
         guard !previousUnread.isEmpty else { return }
 
@@ -340,25 +342,25 @@ final class InboxStore {
             if currentUnreadThreadIDs.contains(notification.threadId) {
                 continue
             }
-            guard !projectedNotifications([notification]).isEmpty else {
+            guard isNotificationVisible(notification) else {
                 continue
             }
             recordRecentReadNotification(
                 notification,
                 unreadNotifications: currentUnread,
-                projectedNotifications: projectedNotifications
+                isNotificationVisible: isNotificationVisible
             )
         }
     }
 
     private func pruneRecentInboxReadNotifications(
         using unreadNotifications: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) {
         recentInboxReadNotifications = prunedRecentInboxReadNotifications(
             recentInboxReadNotifications,
             using: unreadNotifications,
-            projectedNotifications: projectedNotifications
+            isNotificationVisible: isNotificationVisible
         )
         persistRecentInboxReadNotifications()
     }
@@ -386,13 +388,13 @@ final class InboxStore {
 
     private func prunedRecentInboxReadNotifications(
         using unreadNotifications: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification]
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) -> [GitHubNotification] {
         Array(
             prunedRecentInboxReadNotifications(
                 recentInboxReadNotifications,
                 using: unreadNotifications,
-                projectedNotifications: projectedNotifications
+                isNotificationVisible: isNotificationVisible
             ).values
         )
     }
@@ -400,7 +402,7 @@ final class InboxStore {
     private func prunedRecentInboxReadNotifications(
         _ notificationsByThreadID: [String: GitHubNotification],
         using unreadNotifications: [GitHubNotification],
-        projectedNotifications: ([GitHubNotification]) -> [GitHubNotification],
+        isNotificationVisible: @escaping (GitHubNotification) -> Bool,
         now: Date = .now
     ) -> [String: GitHubNotification] {
         let cutoff = now.addingTimeInterval(-Self.recentInboxReadRetentionInterval)
@@ -417,7 +419,7 @@ final class InboxStore {
         }
         var pruned = notificationsByThreadID.filter { threadId, notification in
             guard notification.updatedAt >= cutoff else { return false }
-            guard !projectedNotifications([notification]).isEmpty else { return false }
+            guard isNotificationVisible(notification) else { return false }
             if let unreadNotification = unreadByThreadID[threadId],
                unreadNotification.updatedAt >= notification.updatedAt {
                 return false
@@ -510,7 +512,7 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        encoder.dateEncodingStrategy = PersistenceCoding.preciseDateEncodingStrategy
         let persisted = recentInboxReadNotifications.values
             .sorted { $0.threadId < $1.threadId }
             .map(PersistedInboxNotification.init(notification:))
@@ -525,7 +527,7 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        encoder.dateEncodingStrategy = PersistenceCoding.preciseDateEncodingStrategy
         let persisted = dismissedSecurityAlerts.sorted { $0.key < $1.key }.map { id, updatedAt in
             PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
         }
@@ -540,7 +542,7 @@ final class InboxStore {
         }
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = Self.preciseDateEncodingStrategy
+        encoder.dateEncodingStrategy = PersistenceCoding.preciseDateEncodingStrategy
         let persisted = readSecurityAlerts.sorted { $0.key < $1.key }.map { id, updatedAt in
             PersistedDismissedSecurityAlert(id: id, updatedAt: updatedAt)
         }
@@ -620,14 +622,5 @@ final class InboxStore {
         }
         guard let data = try? JSONEncoder().encode(mutedThreads) else { return }
         userDefaults.set(data, forKey: Self.mutedThreadsStorageKey)
-    }
-
-    private static var preciseDateEncodingStrategy: JSONEncoder.DateEncodingStrategy {
-        .custom { date, encoder in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            var container = encoder.singleValueContainer()
-            try container.encode(formatter.string(from: date))
-        }
     }
 }

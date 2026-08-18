@@ -3309,12 +3309,13 @@ struct AppStateTests {
         store.recordRecentReadNotification(
             recentRead,
             unreadNotifications: [newerUnread, olderUnread],
-            projectedNotifications: { $0 }
+            isNotificationVisible: { _ in true }
         )
         let historyAfterUnreadDisappears = store.mergedInboxNotifications(
             unreadNotifications: [],
             recentInboxNotifications: [],
-            projectedNotifications: { $0 }
+            projectNotifications: { $0 },
+            isNotificationVisible: { _ in true }
         )
 
         #expect(historyAfterUnreadDisappears.isEmpty)

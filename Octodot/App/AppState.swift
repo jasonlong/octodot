@@ -372,6 +372,8 @@ final class AppState {
         cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
+        committedActionsPersistTask?.cancel()
+        committedActionsPersistTask = nil
         activeLoadRequestID = UUID()
         tokenDeleter()
         apiClient = nil
@@ -396,6 +398,15 @@ final class AppState {
         await loadNotifications(policy: .uniform(force: force))
     }
 
+    private func abandonLoadIfSuperseded(requestID: UUID, authRequestID: UUID) -> Bool {
+        guard requestID == activeLoadRequestID,
+              authRequestID == activeAuthRequestID else {
+            isLoading = false
+            return true
+        }
+        return false
+    }
+
     private func loadNotifications(policy: RefreshPolicy) async {
         guard let client = apiClient else { return }
         let authRequestID = activeAuthRequestID
@@ -418,8 +429,9 @@ final class AppState {
                         maxPages: InboxStore.inboxRecentReadMaxPages
                     )
                 } catch {
-                    guard requestID == activeLoadRequestID,
-                          authRequestID == activeAuthRequestID else { return }
+                    if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+                        return
+                    }
                     if Self.isUnauthorized(error) {
                         signOut()
                         return
@@ -430,8 +442,9 @@ final class AppState {
             } else {
                 fetchedRecentInbox = []
             }
-            guard requestID == activeLoadRequestID,
-                  authRequestID == activeAuthRequestID else { return }
+            if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+                return
+            }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
                 recentInboxNotifications: fetchedRecentInbox,
@@ -458,8 +471,9 @@ final class AppState {
             )
             logLastActionSnapshot(context: "after-load")
         } catch {
-            guard requestID == activeLoadRequestID,
-                  authRequestID == activeAuthRequestID else { return }
+            if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+                return
+            }
             if Self.isUnauthorized(error) {
                 signOut()
                 return

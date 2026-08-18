@@ -1677,7 +1677,7 @@ struct AppStateTests {
         state.inboxMode = .unread
 
         let loadTask = Task { await state.loadNotifications(force: true) }
-        await Self.waitUntil(intervalNanoseconds: 1_000_000) {
+        await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
             await MainActor.run { state.isLoading }
         }
         #expect(state.isLoading)

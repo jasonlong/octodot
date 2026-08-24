@@ -61,3 +61,46 @@ actor DelayedStubNetworkSession: NetworkSession {
         }
     }
 }
+
+actor SuspendedStubNetworkSession: NetworkSession {
+    private let payload: Data
+    private let response: HTTPURLResponse
+    private var requestStarted = false
+    private var responseReleased = false
+    private var requestStartedContinuations: [CheckedContinuation<Void, Never>] = []
+    private var responseContinuation: CheckedContinuation<Void, Never>?
+
+    init(payload: Data, response: HTTPURLResponse) {
+        self.payload = payload
+        self.response = response
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        requestStarted = true
+        let continuations = requestStartedContinuations
+        requestStartedContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+
+        if !responseReleased {
+            await withCheckedContinuation { continuation in
+                responseContinuation = continuation
+            }
+        }
+
+        return (payload, response)
+    }
+
+    func waitUntilRequestStarted() async {
+        guard !requestStarted else { return }
+
+        await withCheckedContinuation { continuation in
+            requestStartedContinuations.append(continuation)
+        }
+    }
+
+    func releaseResponse() {
+        responseReleased = true
+        responseContinuation?.resume()
+        responseContinuation = nil
+    }
+}

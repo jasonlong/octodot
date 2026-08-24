@@ -1665,24 +1665,20 @@ struct AppStateTests {
     }
 
     @Test func signingOutWhileLoadIsInFlightCannotLeaveLoadingStateStuck() async {
-        let session = DelayedStubNetworkSession(results: [
-            .success(
-                payload: Self.singleNotificationPayload(id: "stale"),
-                response: Self.httpResponse(url: "https://api.github.com/notifications", statusCode: 200),
-                delayNanoseconds: 100_000_000
-            ),
-        ])
+        let session = SuspendedStubNetworkSession(
+            payload: Self.singleNotificationPayload(id: "stale"),
+            response: Self.httpResponse(url: "https://api.github.com/notifications", statusCode: 200)
+        )
         let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = Self.makeState(0, apiClient: client)
         state.inboxMode = .unread
 
         let loadTask = Task { await state.loadNotifications(force: true) }
-        await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
-            await MainActor.run { state.isLoading }
-        }
+        await session.waitUntilRequestStarted()
         #expect(state.isLoading)
 
         state.signOut()
+        await session.releaseResponse()
         await loadTask.value
 
         #expect(state.authStatus == .signedOut)

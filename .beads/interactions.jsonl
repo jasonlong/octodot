@@ -1,0 +1,1 @@
+{"id":"int-cbcf9c9c0e2182236849f13115a880e6","kind":"field_change","created_at":"2026-08-24T13:40:14.919589Z","actor":"Jason Long","issue_id":"octodot-44v","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Implemented opener avatar metadata, row rendering, persistence, accessibility, and REST/GraphQL coverage; all tests pass."}}

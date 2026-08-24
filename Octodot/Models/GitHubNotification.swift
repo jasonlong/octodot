@@ -15,6 +15,9 @@ struct GitHubNotification: Identifiable, Hashable {
     var subjectState: SubjectState
     var ciStatus: CIStatus?
     var graphQLNodeID: String?
+    var openerLogin: String?
+    var openerAvatarURL: URL?
+    var hasResolvedOpener = false
     var source: Source = .thread
 
     var iconName: String {
@@ -96,15 +99,24 @@ struct GitHubNotification: Identifiable, Hashable {
     @discardableResult
     mutating func apply(_ metadata: SubjectMetadata) -> Bool {
         let resolvedNodeID = metadata.nodeID ?? graphQLNodeID
+        let resolvedOpenerLogin = metadata.openerLogin ?? openerLogin
+        let resolvedOpenerAvatarURL = metadata.openerAvatarURL ?? openerAvatarURL
+        let resolvedOpenerState = hasResolvedOpener || metadata.hasResolvedOpener
         guard subjectState != metadata.state ||
                 ciStatus != metadata.ciStatus ||
-                graphQLNodeID != resolvedNodeID else {
+                graphQLNodeID != resolvedNodeID ||
+                openerLogin != resolvedOpenerLogin ||
+                openerAvatarURL != resolvedOpenerAvatarURL ||
+                hasResolvedOpener != resolvedOpenerState else {
             return false
         }
 
         subjectState = metadata.state
         ciStatus = metadata.ciStatus
         graphQLNodeID = resolvedNodeID
+        openerLogin = resolvedOpenerLogin
+        openerAvatarURL = resolvedOpenerAvatarURL
+        hasResolvedOpener = resolvedOpenerState
         return true
     }
 
@@ -113,9 +125,9 @@ struct GitHubNotification: Identifiable, Hashable {
 
         switch type {
         case .pullRequest:
-            return subjectState == .unknown || (subjectState == .open && ciStatus == nil)
+            return !hasResolvedOpener || subjectState == .unknown || (subjectState == .open && ciStatus == nil)
         case .issue:
-            return subjectState == .unknown
+            return !hasResolvedOpener || subjectState == .unknown
         case .release, .discussion, .commit, .securityAlert:
             return false
         }
@@ -158,6 +170,9 @@ struct GitHubNotification: Identifiable, Hashable {
         var state: SubjectState
         var ciStatus: CIStatus?
         var nodeID: String? = nil
+        var openerLogin: String? = nil
+        var openerAvatarURL: URL? = nil
+        var hasResolvedOpener = false
     }
 
     enum Source: String, Hashable, Codable {

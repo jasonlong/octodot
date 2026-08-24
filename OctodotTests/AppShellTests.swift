@@ -677,6 +677,27 @@ struct AppShellTests {
         #expect(NotificationRowView.relativeTimeText(from: now.addingTimeInterval(-172_800), now: now) == "2d")
     }
 
+    @Test func issueMetadataResolutionRunsOnceWhenOpenerIsUnavailable() {
+        var issue = GitHubNotification(
+            id: "42",
+            threadId: "42",
+            title: "Issue",
+            repository: "acme/test",
+            reason: .subscribed,
+            type: .issue,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/issues/42")!,
+            subjectURL: "https://api.github.com/repos/acme/test/issues/42",
+            subjectState: .open
+        )
+
+        #expect(issue.needsSubjectMetadataResolution)
+        let didApply = issue.apply(.init(state: .open, ciStatus: nil, hasResolvedOpener: true))
+        #expect(didApply)
+        #expect(issue.needsSubjectMetadataResolution == false)
+    }
+
     @Test func notificationDisplayReferenceNumberParsesPullRequestsAndIssues() {
         let pullRequest = AppStateTests.makeNotification(id: 1234, repo: "planetscale/app-bb")
         let issue = GitHubNotification(

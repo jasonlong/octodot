@@ -3762,6 +3762,9 @@ struct AppStateTests {
                 "url": notification.url.absoluteString,
                 "subjectState": notification.subjectState.rawValue,
                 "graphQLNodeID": "node-\(notification.id)",
+                "openerLogin": "octocat-\(notification.id)",
+                "openerAvatarURL": "https://avatars.githubusercontent.com/u/\(notification.id)",
+                "hasResolvedOpener": true,
                 "source": notification.source.rawValue,
             ]
         }
@@ -3775,6 +3778,9 @@ struct AppStateTests {
 
         #expect(state.filteredNotifications.map(\.id) == [newer.id])
         #expect(state.filteredNotifications.first?.graphQLNodeID == "node-\(newer.id)")
+        #expect(state.filteredNotifications.first?.openerLogin == "octocat-\(newer.id)")
+        #expect(state.filteredNotifications.first?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/\(newer.id)")
+        #expect(state.filteredNotifications.first?.hasResolvedOpener == true)
     }
 
     @Test func malformedPersistedStoreDataIsQuarantined() {

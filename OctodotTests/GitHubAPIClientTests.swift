@@ -101,7 +101,7 @@ struct GitHubAPIClientTests {
 
             try? await Task.sleep(nanoseconds: subjectDelayNanoseconds)
             return (
-                #"{"state":"open"}"#.data(using: .utf8)!,
+                #"{"state":"open","user":{"login":"octocat","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4"}}"#.data(using: .utf8)!,
                 HTTPURLResponse(
                     url: url,
                     statusCode: 200,
@@ -755,7 +755,7 @@ struct GitHubAPIClientTests {
                 )!
             )),
             .success((
-                #"{"state":"open"}"#.data(using: .utf8)!,
+                #"{"state":"open","user":{"login":"octocat","avatar_url":"https://avatars.githubusercontent.com/u/1?v=4"}}"#.data(using: .utf8)!,
                 HTTPURLResponse(
                     url: URL(string: "https://api.github.com/repos/acme/test/pulls/1")!,
                     statusCode: 200,
@@ -786,7 +786,13 @@ struct GitHubAPIClientTests {
 
         #expect(initial.first?.subjectState == .unknown)
         #expect(resolvedMetadata["1"]?.state == .open)
+        #expect(resolvedMetadata["1"]?.openerLogin == "octocat")
+        #expect(resolvedMetadata["1"]?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/1?v=4")
+        #expect(resolvedMetadata["1"]?.hasResolvedOpener == true)
         #expect(refreshed.first?.subjectState == .open)
+        #expect(refreshed.first?.openerLogin == "octocat")
+        #expect(refreshed.first?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/1?v=4")
+        #expect(refreshed.first?.hasResolvedOpener == true)
         #expect(requests.count == 3)
     }
 
@@ -1160,6 +1166,8 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .open)
         #expect(resolvedMetadata["2"]?.state == .open)
         #expect(resolvedMetadata["4"]?.state == .open)
+        #expect(resolvedMetadata["1"]?.openerLogin == "octocat")
+        #expect(resolvedMetadata["4"]?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/1?v=4")
         #expect(resolvedMetadata["3"] == nil)
         #expect(resolvedMetadata["5"] == nil)
     }
@@ -1296,6 +1304,10 @@ struct GitHubAPIClientTests {
                 "state": "OPEN",
                 "isDraft": true,
                 "mergedAt": null,
+                "author": {
+                  "login": "hubot",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/2?v=4"
+                },
                 "commits": { "nodes": [] }
               }
             }
@@ -1331,8 +1343,72 @@ struct GitHubAPIClientTests {
 
         #expect(resolvedMetadata["1"]?.state == .draft)
         #expect(resolvedMetadata["1"]?.nodeID == "PR_node_1")
+        #expect(resolvedMetadata["1"]?.openerLogin == "hubot")
+        #expect(resolvedMetadata["1"]?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/2?v=4")
+        #expect(resolvedMetadata["1"]?.hasResolvedOpener == true)
         #expect(requests.count == 2)
         #expect(requests[1].url?.path == "/graphql")
+        let queryBody = requests[1].httpBody.flatMap { String(data: $0, encoding: .utf8) }
+        #expect(queryBody?.contains("author") == true)
+        #expect(queryBody?.contains("avatarUrl") == true)
+    }
+
+    @Test func resolveSubjectMetadataIncludesGraphQLIssueOpener() async throws {
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "42",
+                unread: true,
+                subjectType: "Issue",
+                subjectURL: "https://api.github.com/repos/acme/test/issues/42"
+            )
+        ]).data(using: .utf8)!
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "issue": {
+                "id": "I_node_42",
+                "state": "OPEN",
+                "stateReason": null,
+                "author": {
+                  "login": "monalisa",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/3?v=4"
+                }
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+                )!
+            )),
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        let metadata = await client.resolveSubjectMetadata(for: notifications)["42"]
+
+        #expect(metadata?.state == .open)
+        #expect(metadata?.nodeID == "I_node_42")
+        #expect(metadata?.openerLogin == "monalisa")
+        #expect(metadata?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/3?v=4")
+        #expect(metadata?.hasResolvedOpener == true)
     }
 
     @Test func resolveSubjectMetadataRecordsNonFatalWarningWhenSubjectFetchFails() async throws {

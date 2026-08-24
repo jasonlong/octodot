@@ -78,6 +78,26 @@ struct NotificationRowView: View {
                             .accessibilityHidden(true)
                     }
 
+                    if notification.openerLogin != nil || notification.openerAvatarURL != nil {
+                        AsyncImage(url: notification.openerAvatarURL) { phase in
+                            if case .success(let image) = phase {
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            } else {
+                                Circle()
+                                    .fill(.quaternary)
+                            }
+                        }
+                        .frame(width: 14, height: 14)
+                        .clipShape(Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(.quaternary, lineWidth: 0.5)
+                        }
+                        .accessibilityHidden(true)
+                    }
+
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         Text(Self.relativeTimeText(from: notification.updatedAt, now: context.date))
                             .font(.system(size: 11))
@@ -97,6 +117,9 @@ struct NotificationRowView: View {
         var parts = [notification.title, notification.repository, notification.reason.rawValue]
         if let referenceNumber = notification.displayReferenceNumber {
             parts[1] += referenceNumber
+        }
+        if let openerLogin = notification.openerLogin {
+            parts.append("Opened by \(openerLogin)")
         }
         return parts.joined(separator: ", ")
     }

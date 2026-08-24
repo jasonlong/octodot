@@ -326,6 +326,9 @@ actor GitHubAPIClient {
                previous.updatedAt == notifications[index].updatedAt {
                 notifications[index].subjectState = previous.subjectState
                 notifications[index].ciStatus = previous.ciStatus
+                notifications[index].openerLogin = previous.openerLogin
+                notifications[index].openerAvatarURL = previous.openerAvatarURL
+                notifications[index].hasResolvedOpener = previous.hasResolvedOpener
             }
         }
 
@@ -486,6 +489,8 @@ actor GitHubAPIClient {
             let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
             let resolvedState = subject.resolvedState
+            let openerLogin = subject.user?.login
+            let openerAvatarURL = subject.user?.avatarUrl
             let ciStatusResult: CIStatusFetchResult
             if resolvedState == .open, let headSHA = subject.head?.sha {
                 ciStatusResult = await fetchCIStatus(subjectURL: url, headSHA: headSHA, context: context)
@@ -495,9 +500,27 @@ actor GitHubAPIClient {
 
             switch ciStatusResult {
             case .status(let ciStatus):
-                return .init(metadata: .init(state: resolvedState, ciStatus: ciStatus), hadFailure: false)
+                return .init(
+                    metadata: .init(
+                        state: resolvedState,
+                        ciStatus: ciStatus,
+                        openerLogin: openerLogin,
+                        openerAvatarURL: openerAvatarURL,
+                        hasResolvedOpener: true
+                    ),
+                    hadFailure: false
+                )
             case .degraded:
-                return .init(metadata: .init(state: resolvedState, ciStatus: nil), hadFailure: true)
+                return .init(
+                    metadata: .init(
+                        state: resolvedState,
+                        ciStatus: nil,
+                        openerLogin: openerLogin,
+                        openerAvatarURL: openerAvatarURL,
+                        hasResolvedOpener: true
+                    ),
+                    hadFailure: true
+                )
             }
         } catch {
             DebugTrace.log("subject metadata request failed url=\(apiURL) error=\(error.localizedDescription)")
@@ -630,6 +653,10 @@ actor GitHubAPIClient {
                       state
                       isDraft
                       mergedAt
+                      author {
+                        login
+                        avatarUrl
+                      }
                       commits(last: 1) {
                         nodes {
                           commit {
@@ -649,6 +676,10 @@ actor GitHubAPIClient {
                       id
                       state
                       stateReason
+                      author {
+                        login
+                        avatarUrl
+                      }
                     }
                   }
                 """)
@@ -772,7 +803,15 @@ actor GitHubAPIClient {
             }
         }
 
-        return GitHubNotification.SubjectMetadata(state: state, ciStatus: ciStatus, nodeID: pr["id"] as? String)
+        let author = pr["author"] as? [String: Any]
+        return GitHubNotification.SubjectMetadata(
+            state: state,
+            ciStatus: ciStatus,
+            nodeID: pr["id"] as? String,
+            openerLogin: author?["login"] as? String,
+            openerAvatarURL: (author?["avatarUrl"] as? String).flatMap(URL.init(string:)),
+            hasResolvedOpener: true
+        )
     }
 
     private static func parseIssueMetadata(_ issue: [String: Any]) -> GitHubNotification.SubjectMetadata {
@@ -789,7 +828,15 @@ actor GitHubAPIClient {
             state = .unknown
         }
 
-        return GitHubNotification.SubjectMetadata(state: state, ciStatus: nil, nodeID: issue["id"] as? String)
+        let author = issue["author"] as? [String: Any]
+        return GitHubNotification.SubjectMetadata(
+            state: state,
+            ciStatus: nil,
+            nodeID: issue["id"] as? String,
+            openerLogin: author?["login"] as? String,
+            openerAvatarURL: (author?["avatarUrl"] as? String).flatMap(URL.init(string:)),
+            hasResolvedOpener: true
+        )
     }
 
     private static func fetchDependabotAlertsForRepository(
@@ -1592,12 +1639,18 @@ private struct APISubjectState: Decodable {
         let sha: String
     }
 
+    struct User: Decodable {
+        let login: String
+        let avatarUrl: URL?
+    }
+
     let state: String?
     let merged: Bool?
     let mergedAt: String?
     let draft: Bool?
     let stateReason: String?
     let head: Head?
+    let user: User?
 
     var resolvedState: GitHubNotification.SubjectState {
         if merged == true || mergedAt != nil {

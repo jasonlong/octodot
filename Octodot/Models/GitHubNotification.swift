@@ -10,7 +10,7 @@ struct GitHubNotification: Identifiable, Hashable {
     let type: SubjectType
     let updatedAt: Date
     var isUnread: Bool
-    let url: URL
+    var url: URL
     let subjectURL: String?
     var subjectState: SubjectState
     var ciStatus: CIStatus?
@@ -99,12 +99,14 @@ struct GitHubNotification: Identifiable, Hashable {
     @discardableResult
     mutating func apply(_ metadata: SubjectMetadata) -> Bool {
         let resolvedNodeID = metadata.nodeID ?? graphQLNodeID
+        let resolvedURL = metadata.webURL ?? url
         let resolvedOpenerLogin = metadata.openerLogin ?? openerLogin
         let resolvedOpenerAvatarURL = metadata.openerAvatarURL ?? openerAvatarURL
         let resolvedOpenerState = hasResolvedOpener || metadata.hasResolvedOpener
         guard subjectState != metadata.state ||
                 ciStatus != metadata.ciStatus ||
                 graphQLNodeID != resolvedNodeID ||
+                url != resolvedURL ||
                 openerLogin != resolvedOpenerLogin ||
                 openerAvatarURL != resolvedOpenerAvatarURL ||
                 hasResolvedOpener != resolvedOpenerState else {
@@ -114,6 +116,7 @@ struct GitHubNotification: Identifiable, Hashable {
         subjectState = metadata.state
         ciStatus = metadata.ciStatus
         graphQLNodeID = resolvedNodeID
+        url = resolvedURL
         openerLogin = resolvedOpenerLogin
         openerAvatarURL = resolvedOpenerAvatarURL
         hasResolvedOpener = resolvedOpenerState
@@ -128,7 +131,13 @@ struct GitHubNotification: Identifiable, Hashable {
             return !hasResolvedOpener || subjectState == .unknown || (subjectState == .open && ciStatus == nil)
         case .issue:
             return !hasResolvedOpener || subjectState == .unknown
-        case .release, .discussion, .commit, .securityAlert:
+        case .release:
+            guard let subjectURL,
+                  let apiURL = URL(string: subjectURL) else {
+                return false
+            }
+            return url.lastPathComponent == apiURL.lastPathComponent
+        case .discussion, .commit, .securityAlert:
             return false
         }
     }
@@ -170,6 +179,7 @@ struct GitHubNotification: Identifiable, Hashable {
         var state: SubjectState
         var ciStatus: CIStatus?
         var nodeID: String? = nil
+        var webURL: URL? = nil
         var openerLogin: String? = nil
         var openerAvatarURL: URL? = nil
         var hasResolvedOpener = false

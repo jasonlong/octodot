@@ -324,6 +324,7 @@ actor GitHubAPIClient {
 
             if let previous = previousNotifications[notifications[index].id],
                previous.updatedAt == notifications[index].updatedAt {
+                notifications[index].url = previous.url
                 notifications[index].subjectState = previous.subjectState
                 notifications[index].ciStatus = previous.ciStatus
                 notifications[index].openerLogin = previous.openerLogin
@@ -360,18 +361,29 @@ actor GitHubAPIClient {
 
         var result: SubjectMetadataBatchResult
         if useGraphQLForSubjectMetadata {
+            let graphQLCandidates = candidateNotifications.filter {
+                $0.type == .pullRequest || $0.type == .issue
+            }
+            let restCandidates = candidateNotifications.filter { $0.type == .release }
             result = await Self.fetchSubjectMetadataViaGraphQL(
-                for: candidateNotifications,
+                for: graphQLCandidates,
                 context: context
             )
-            if result.metadataByID.isEmpty && !candidateNotifications.isEmpty {
+            if result.metadataByID.isEmpty && !graphQLCandidates.isEmpty {
                 DebugTrace.log("graphql subject metadata failed, falling back to REST")
                 result = await Self.fetchSubjectMetadata(
-                    for: candidateNotifications,
+                    for: graphQLCandidates,
                     maxConcurrent: maxConcurrentSubjectRequests,
                     context: context
                 )
             }
+            let restResult = await Self.fetchSubjectMetadata(
+                for: restCandidates,
+                maxConcurrent: maxConcurrentSubjectRequests,
+                context: context
+            )
+            result.metadataByID.merge(restResult.metadataByID) { _, restMetadata in restMetadata }
+            result.failureCount += restResult.failureCount
         } else {
             result = await Self.fetchSubjectMetadata(
                 for: candidateNotifications,
@@ -480,7 +492,7 @@ actor GitHubAPIClient {
         context: SubjectRequestContext
     ) async -> SubjectMetadataRequestResult {
         let apiURL = notification.subjectURL ?? ""
-        guard parseSubjectRef(from: notification) != nil,
+        guard let subjectRef = parseSubjectRef(from: notification),
               let url = trustedGitHubAPIURL(from: apiURL) else {
             DebugTrace.log("subject metadata rejected invalid url=\(apiURL)")
             return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
@@ -488,6 +500,19 @@ actor GitHubAPIClient {
         do {
             let data = try await request(url: url, token: context.token, session: context.session)
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
+            if notification.type == .release {
+                guard let releaseURL = trustedReleaseWebURL(
+                    subject.htmlUrl,
+                    tagName: subject.tagName,
+                    subjectRef: subjectRef
+                ) else {
+                    return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
+                }
+                return .init(
+                    metadata: .init(state: .unknown, ciStatus: nil, webURL: releaseURL),
+                    hadFailure: false
+                )
+            }
             let resolvedState = subject.resolvedState
             let openerLogin = subject.user?.login
             let openerAvatarURL = subject.user?.avatarUrl
@@ -578,14 +603,7 @@ actor GitHubAPIClient {
     }
 
     private static func shouldResolveSubjectMetadata(_ notification: GitHubNotification) -> Bool {
-        guard notification.subjectURL != nil else { return false }
-
-        switch notification.type {
-        case .pullRequest, .issue:
-            return true
-        case .release, .discussion, .commit, .securityAlert:
-            return false
-        }
+        notification.needsSubjectMetadataResolution
     }
 
     // MARK: - GraphQL batch subject metadata
@@ -611,6 +629,8 @@ actor GitHubAPIClient {
             expectedSubjectPath = "pulls"
         case .issue:
             expectedSubjectPath = "issues"
+        case .release:
+            expectedSubjectPath = "releases"
         default:
             return nil
         }
@@ -632,6 +652,36 @@ actor GitHubAPIClient {
             type: notification.type,
             number: number
         )
+    }
+
+    private static func trustedReleaseWebURL(
+        _ url: URL?,
+        tagName: String?,
+        subjectRef: SubjectRef
+    ) -> URL? {
+        guard let url,
+              let tagName,
+              !tagName.isEmpty,
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil,
+              url.query == nil,
+              url.fragment == nil else {
+            return nil
+        }
+
+        let path = url.pathComponents
+        guard path.count >= 6,
+              path[1] == subjectRef.owner,
+              path[2] == subjectRef.repo,
+              path[3] == "releases",
+              path[4] == "tag",
+              path.dropFirst(5).joined(separator: "/") == tagName else {
+            return nil
+        }
+        return url
     }
 
     private static func escapeGraphQL(_ value: String) -> String {
@@ -1651,6 +1701,8 @@ private struct APISubjectState: Decodable {
     let stateReason: String?
     let head: Head?
     let user: User?
+    let tagName: String?
+    let htmlUrl: URL?
 
     var resolvedState: GitHubNotification.SubjectState {
         if merged == true || mergedAt != nil {

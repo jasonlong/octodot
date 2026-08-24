@@ -92,7 +92,7 @@ In GitHub:
 
 1. Open the repository.
 2. Go to `Settings` -> `Secrets and variables` -> `Actions`.
-3. Add all seven secrets listed above. `HOMEBREW_TAP_TOKEN` must be able to write repository contents in `jasonlong/homebrew-tap`.
+3. Add all seven secrets listed above. `HOMEBREW_TAP_TOKEN` must be an unexpired token with access to `jasonlong/homebrew-tap` and read/write permission for repository contents. Refresh the secret before the token expires.
 
 ## 8. Trigger a notarized release
 

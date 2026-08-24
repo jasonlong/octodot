@@ -284,11 +284,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out Homebrew tap
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: jasonlong/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          persist-credentials: true
+
       - name: Update Homebrew cask
-        env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          test -n "$TAP_TOKEN"
           VERSION="${RELEASE_TAG#v}"
           URL="https://github.com/jasonlong/octodot/releases/download/v${VERSION}/Octodot-v${VERSION}-macos.zip"
           ARCHIVE="Octodot-${RELEASE_TAG}-macos.zip"
@@ -303,7 +308,6 @@ jobs:
             exit 1
           fi
 
-          git clone https://github.com/jasonlong/homebrew-tap.git tap
           cd tap
 
           cat > Casks/octodot.rb << CASK
@@ -336,5 +340,4 @@ jobs:
             exit 0
           fi
           git commit -m "Update octodot to ${VERSION}"
-          auth_header="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 | tr -d '\n')"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth_header" push
+          git push origin HEAD:main

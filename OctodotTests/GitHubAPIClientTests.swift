@@ -1247,6 +1247,79 @@ struct GitHubAPIClientTests {
         #expect(requests.first?.url?.absoluteString == "https://api.github.com/repos/jasonlong/isometric-contributions/pulls/426")
     }
 
+    @Test func resolveSubjectMetadataUsesReleaseTagURLInsteadOfDatabaseID() async throws {
+        let subjectURL = "https://api.github.com/repos/AprilNEA/OpenLogi/releases/375253675"
+        let payload = Self.notificationsPayload(items: [
+            NotificationFixture(
+                id: "release-thread",
+                unread: true,
+                reason: "subscribed",
+                title: "OpenLogi 0.7.10",
+                subjectType: "Release",
+                subjectURL: subjectURL,
+                repositoryFullName: "AprilNEA/OpenLogi",
+                repositoryHTMLURL: "https://github.com/AprilNEA/OpenLogi"
+            )
+        ]).data(using: .utf8)!
+        let releasePayload = """
+        {
+          "tag_name": "v0.7.10",
+          "html_url": "https://github.com/AprilNEA/OpenLogi/releases/tag/v0.7.10"
+        }
+        """.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                releasePayload,
+                HTTPURLResponse(
+                    url: URL(string: subjectURL)!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                payload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notifications = try await client.fetchNotifications(force: true)
+        var release = try #require(notifications.first)
+
+        #expect(release.url.absoluteString == "https://github.com/AprilNEA/OpenLogi/releases/tag/375253675")
+        #expect(release.needsSubjectMetadataResolution)
+
+        let metadata = await client.resolveSubjectMetadata(for: notifications)
+        let releaseMetadata = try #require(metadata["release-thread"])
+
+        #expect(releaseMetadata.webURL?.absoluteString == "https://github.com/AprilNEA/OpenLogi/releases/tag/v0.7.10")
+        let didApply = release.apply(releaseMetadata)
+        #expect(didApply)
+        #expect(release.url.absoluteString == "https://github.com/AprilNEA/OpenLogi/releases/tag/v0.7.10")
+        #expect(release.needsSubjectMetadataResolution == false)
+        let refreshed = try await client.fetchNotifications(force: true)
+        let requests = await session.recordedRequests()
+        #expect(refreshed.first?.url.absoluteString == "https://github.com/AprilNEA/OpenLogi/releases/tag/v0.7.10")
+        #expect(refreshed.first?.needsSubjectMetadataResolution == false)
+        #expect(requests.count == 3)
+        #expect(requests[1].url?.absoluteString == subjectURL)
+    }
+
     @Test func resolveSubjectMetadataTreatsDraftPullRequestAsDraft() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(

@@ -28,18 +28,23 @@ struct NotificationRowView: View {
                 onToggle: onToggleCheck
             )
 
-            HStack(spacing: 2) {
+            HStack(spacing: 4) {
                 Button("Mark as done", systemImage: "checkmark", action: onDone)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
                     .help("Mark as done")
 
                 Button("Unsubscribe", systemImage: "bell.slash", action: onUnsubscribe)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
                     .help("Unsubscribe")
             }
+            .font(.system(size: 18, weight: .medium))
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
-            .controlSize(.small)
+            .controlSize(.regular)
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 10)
+            .padding(.trailing, 6)
             .opacity(isHovered ? 1 : 0)
             .allowsHitTesting(isHovered)
             .accessibilityHidden(!isHovered)

@@ -10,7 +10,7 @@ The release workflow expects these GitHub Actions secrets:
 - `APPLE_TEAM_ID`
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
-- `HOMEBREW_TAP_TOKEN`
+- `HOMEBREW_TAP_DEPLOY_KEY`
 
 ## 1. Create a Developer ID Application certificate
 
@@ -92,7 +92,12 @@ In GitHub:
 
 1. Open the repository.
 2. Go to `Settings` -> `Secrets and variables` -> `Actions`.
-3. Add all seven secrets listed above. `HOMEBREW_TAP_TOKEN` must be an unexpired token with access to `jasonlong/homebrew-tap` and read/write permission for repository contents. Refresh the secret before the token expires.
+3. Add the six Apple secrets listed above.
+4. Create a dedicated ED25519 SSH key for Homebrew publishing.
+5. Add its public key to `jasonlong/homebrew-tap` under `Settings` -> `Deploy keys`, with `Allow write access` enabled.
+6. Store the private key as the `HOMEBREW_TAP_DEPLOY_KEY` Actions secret in this repository, then delete the local key files.
+
+The deploy key must be unique to `jasonlong/homebrew-tap`. GitHub does not allow the same deploy key to be attached to multiple repositories.
 
 ## 8. Trigger a notarized release
 

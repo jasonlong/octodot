@@ -1329,6 +1329,130 @@ struct AppStateTests {
         #expect(state.notifications.first?.id == "new")
     }
 
+    @Test func identicalOverlappingNonForcedLoadsShareOnePipeline() async {
+        let session = GatedStubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "shared"),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["X-Poll-Interval": "60"]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+
+        let firstLoad = Task { await state.loadNotifications(force: false) }
+        await session.waitUntilRequestCount(1)
+        let secondLoad = Task { await state.loadNotifications(force: false) }
+
+        #expect(await session.recordedRequests().count == 1)
+        await session.releaseRequest(at: 0)
+        await firstLoad.value
+        await secondLoad.value
+
+        #expect(await session.recordedRequests().count == 1)
+        #expect(state.notifications.map(\.id) == ["shared"])
+        #expect(state.isLoading == false)
+    }
+
+    @Test func forcedLoadCancelsSupersededPaginationAndRecentInboxWork() async {
+        let oldPage = Self.notificationsPayload(ids: (0..<100).map { "old-\($0)" })
+        let session = GatedStubNetworkSession(results: [
+            .success((
+                oldPage,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: [
+                        "Link": "<https://api.github.com/notifications?page=2>; rel=\"next\"",
+                        "X-Poll-Interval": "60",
+                    ]
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "new"),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1",
+                    statusCode: 200,
+                    headers: ["X-Poll-Interval": "60"]
+                )
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications?page=1&all=true",
+                    statusCode: 200,
+                    headers: ["X-Poll-Interval": "60"]
+                )
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .inbox
+
+        let supersededLoad = Task { await state.loadNotifications(force: true) }
+        await session.waitUntilRequestCount(1)
+        let currentLoad = Task { await state.loadNotifications(force: true) }
+        await session.waitUntilRequestCount(2)
+
+        await session.releaseRequest(at: 0)
+        await supersededLoad.value
+        #expect(await session.recordedRequests().count == 2)
+        #expect(state.isLoading)
+
+        await session.releaseRequest(at: 1)
+        await session.waitUntilRequestCount(3)
+        let requests = await session.recordedRequests()
+        #expect(requests.count == 3)
+        #expect(requests[2].url?.query?.contains("all=true") == true)
+
+        await session.releaseRequest(at: 2)
+        await currentLoad.value
+        #expect(state.notifications.map(\.id) == ["new"])
+        #expect(state.isLoading == false)
+    }
+
+    @Test func changingInboxModeDoesNotCoalesceDistinctNonForcedLoads() async {
+        let session = GatedStubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "unread-mode"),
+                Self.httpResponse(url: "https://api.github.com/notifications?page=1", statusCode: 200)
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "inbox-mode"),
+                Self.httpResponse(url: "https://api.github.com/notifications?page=1", statusCode: 200)
+            )),
+            .success((
+                Data("[]".utf8),
+                Self.httpResponse(url: "https://api.github.com/notifications?page=1&all=true", statusCode: 200)
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+
+        let unreadLoad = Task { await state.loadNotifications(force: false) }
+        await session.waitUntilRequestCount(1)
+        state.inboxMode = .inbox
+        let inboxLoad = Task { await state.loadNotifications(force: false) }
+        await session.waitUntilRequestCount(2)
+
+        await session.releaseRequest(at: 0)
+        await unreadLoad.value
+        #expect(await session.recordedRequests().count == 2)
+
+        await session.releaseRequest(at: 1)
+        await session.waitUntilRequestCount(3)
+        await session.releaseRequest(at: 2)
+        await inboxLoad.value
+
+        #expect(await session.recordedRequests().count == 3)
+        #expect(state.notifications.map(\.id) == ["inbox-mode"])
+    }
+
     @Test func unreadFeedStillAppliesWhenRecentInboxRefreshFails() async {
         let session = StubNetworkSession(results: [
             .success((

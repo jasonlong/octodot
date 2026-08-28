@@ -120,6 +120,7 @@ actor GitHubAPIClient {
         force: Bool,
         maxPages: Int?
     ) async throws -> [GitHubNotification] {
+        try Task.checkCancellation()
         let cachedFeed = feedCache(for: scope)
         var shouldUseConditionalRequest = !force &&
             cachedFeed.hasFetchedSuccessfully &&
@@ -152,6 +153,7 @@ actor GitHubAPIClient {
         var currentURL: URL? = notificationsURL(all: all, page: page, since: since)
 
         while let requestURL = currentURL {
+            try Task.checkCancellation()
             guard Self.isTrustedGitHubAPIURL(requestURL) else {
                 throw APIError.untrustedGitHubAPIURL
             }
@@ -164,6 +166,7 @@ actor GitHubAPIClient {
             }
 
             let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
             guard requestGeneration == credentialGeneration else {
                 throw APIError.staleCredentialResponse
             }
@@ -191,6 +194,7 @@ actor GitHubAPIClient {
                     lastModifiedFromResponse = nil
                     page = 1
                     currentURL = notificationsURL(all: all, page: 1, since: since)
+                    try Task.checkCancellation()
                     continue
                 }
 
@@ -207,6 +211,7 @@ actor GitHubAPIClient {
 
                 if let nextPageURL = try nextPageURL(from: httpResponse),
                    page < maximumPages {
+                    try Task.checkCancellation()
                     currentURL = nextPageURL
                     page += 1
                     continue
@@ -214,6 +219,7 @@ actor GitHubAPIClient {
 
                 if pageItems.count == notificationsPerPage,
                    page < maximumPages {
+                    try Task.checkCancellation()
                     page += 1
                     currentURL = notificationsURL(all: all, page: page, since: since)
                     continue
@@ -243,6 +249,7 @@ actor GitHubAPIClient {
             }
         }
 
+        try Task.checkCancellation()
         var seenNotificationIDs = Set<String>()
         var notifications = apiItems
             .compactMap { $0.toModel() }
@@ -335,7 +342,8 @@ actor GitHubAPIClient {
         }
 
         guard requestGeneration == credentialGeneration,
-              requestID == latestSubjectMetadataRequestID else { return [:] }
+              requestID == latestSubjectMetadataRequestID,
+              !Task.isCancelled else { return [:] }
 
         if result.failureCount > 0 {
             nonFatalWarningMessage = Self.subjectMetadataWarningMessage
@@ -405,6 +413,10 @@ actor GitHubAPIClient {
             }
 
             while let (id, metadata) = await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 batchResult.metadataByID[id] = metadata.metadata
                 if metadata.hadFailure {
                     batchResult.failureCount += 1
@@ -707,6 +719,7 @@ actor GitHubAPIClient {
 
         do {
             let (data, response) = try await context.session.data(for: req)
+            try Task.checkCancellation()
             let httpResponse = try validatedGitHubAPIResponse(response)
             let status = httpResponse.statusCode
             guard (200...299).contains(status) else {
@@ -1167,6 +1180,7 @@ actor GitHubAPIClient {
 
         let req = makeRequest(url: url, token: token)
         let (data, response) = try await session.data(for: req)
+        try Task.checkCancellation()
         let httpResponse = try validatedGitHubAPIResponse(response)
         let status = httpResponse.statusCode
 

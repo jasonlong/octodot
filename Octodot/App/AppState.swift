@@ -29,7 +29,7 @@ final class AppState {
         case signedIn(username: String)
     }
 
-    private struct RefreshPolicy {
+    private struct RefreshPolicy: Equatable {
         let forceUnread: Bool
         let forceRecentInbox: Bool
 
@@ -59,6 +59,16 @@ final class AppState {
             case .inbox: "Inbox"
             case .unread: "Unread"
             }
+        }
+    }
+
+    private struct NotificationLoadKey: Equatable {
+        let policy: RefreshPolicy
+        let inboxMode: InboxMode
+        let authRequestID: UUID
+
+        var canCoalesce: Bool {
+            !policy.forceUnread && !policy.forceRecentInbox
         }
     }
 
@@ -107,6 +117,8 @@ final class AppState {
     private var batchDispatchTask: Task<Void, Never>?
     private var committedActionsPersistTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var notificationLoadTask: Task<Void, Never>?
+    private var notificationLoadKey: NotificationLoadKey?
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
@@ -259,8 +271,7 @@ final class AppState {
     func submitToken(_ token: String) async throws {
         let requestID = UUID()
         activeAuthRequestID = requestID
-        activeLoadRequestID = UUID()
-        isLoading = false
+        cancelNotificationLoad()
         let client = apiClientFactory(token)
         let username: String
         do {
@@ -336,7 +347,7 @@ final class AppState {
         cancelBackgroundRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
-        activeLoadRequestID = UUID()
+        cancelNotificationLoad()
         shouldSelectTopItemOnNextLoad = true
         warningMessage = nil
         if isSwitchingAccounts {
@@ -367,7 +378,7 @@ final class AppState {
         cancelAllPendingActions()
         committedActionsPersistTask?.cancel()
         committedActionsPersistTask = nil
-        activeLoadRequestID = UUID()
+        cancelNotificationLoad()
         tokenDeleter()
         apiClient = nil
         authStatus = .signedOut
@@ -390,25 +401,65 @@ final class AppState {
         await loadNotifications(policy: .uniform(force: force))
     }
 
-    private func abandonLoadIfSuperseded(requestID: UUID, authRequestID: UUID) -> Bool {
-        guard requestID == activeLoadRequestID,
-              authRequestID == activeAuthRequestID else {
-            isLoading = false
-            return true
-        }
-        return false
+    private func shouldAbandonLoad(requestID: UUID, authRequestID: UUID) -> Bool {
+        Task.isCancelled ||
+            requestID != activeLoadRequestID ||
+            authRequestID != activeAuthRequestID
     }
 
     private func loadNotifications(policy: RefreshPolicy) async {
         guard let client = apiClient else { return }
         let authRequestID = activeAuthRequestID
+        let loadKey = NotificationLoadKey(
+            policy: policy,
+            inboxMode: inboxMode,
+            authRequestID: authRequestID
+        )
+
+        if loadKey.canCoalesce,
+           notificationLoadKey == loadKey,
+           let notificationLoadTask {
+            await notificationLoadTask.value
+            return
+        }
+
+        notificationLoadTask?.cancel()
         let requestID = UUID()
         activeLoadRequestID = requestID
         cancelSubjectStateResolution()
         isLoading = true
         warningMessage = nil
+
+        let loadTask = Task { [weak self, client] in
+            guard let self else { return }
+            await self.performNotificationLoad(
+                client: client,
+                policy: policy,
+                requestID: requestID,
+                authRequestID: authRequestID
+            )
+        }
+        notificationLoadTask = loadTask
+        notificationLoadKey = loadKey
+        await loadTask.value
+
+        if requestID == activeLoadRequestID {
+            notificationLoadTask = nil
+            notificationLoadKey = nil
+        }
+    }
+
+    private func performNotificationLoad(
+        client: GitHubAPIClient,
+        policy: RefreshPolicy,
+        requestID: UUID,
+        authRequestID: UUID
+    ) async {
         do {
             let fetched = try await client.fetchNotifications(all: false, force: policy.forceUnread)
+            if shouldAbandonLoad(requestID: requestID, authRequestID: authRequestID) {
+                return
+            }
             let fetchedRecentInbox: [GitHubNotification]
             var recentInboxWarningMessage: String?
             let shouldFetchRecentInbox = inboxMode == .inbox
@@ -420,7 +471,7 @@ final class AppState {
                         maxPages: InboxStore.inboxRecentReadMaxPages
                     )
                 } catch {
-                    if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+                    if shouldAbandonLoad(requestID: requestID, authRequestID: authRequestID) {
                         return
                     }
                     if Self.isUnauthorized(error) {
@@ -433,7 +484,7 @@ final class AppState {
             } else {
                 fetchedRecentInbox = []
             }
-            if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+            if shouldAbandonLoad(requestID: requestID, authRequestID: authRequestID) {
                 return
             }
             applyLoadedNotifications(
@@ -453,7 +504,7 @@ final class AppState {
             )
             logLastActionSnapshot(context: "after-load")
         } catch {
-            if abandonLoadIfSuperseded(requestID: requestID, authRequestID: authRequestID) {
+            if shouldAbandonLoad(requestID: requestID, authRequestID: authRequestID) {
                 return
             }
             if Self.isUnauthorized(error) {
@@ -464,6 +515,14 @@ final class AppState {
             errorMessage = error.localizedDescription
             logLastActionSnapshot(context: "load-failed")
         }
+    }
+
+    private func cancelNotificationLoad() {
+        notificationLoadTask?.cancel()
+        notificationLoadTask = nil
+        notificationLoadKey = nil
+        activeLoadRequestID = UUID()
+        isLoading = false
     }
 
     func moveDown() {

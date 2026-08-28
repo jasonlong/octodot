@@ -104,3 +104,59 @@ actor SuspendedStubNetworkSession: NetworkSession {
         responseContinuation = nil
     }
 }
+
+actor GatedStubNetworkSession: NetworkSession {
+    private var results: [Result<(Data, HTTPURLResponse), Error>]
+    private var requests: [URLRequest] = []
+    private var releasedRequestIndices: Set<Int> = []
+    private var releaseContinuations: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var requestCountContinuations: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    init(results: [Result<(Data, HTTPURLResponse), Error>]) {
+        self.results = results
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let requestIndex = requests.count
+        requests.append(request)
+        resumeSatisfiedRequestCountContinuations()
+
+        if !releasedRequestIndices.contains(requestIndex) {
+            await withCheckedContinuation { continuation in
+                releaseContinuations[requestIndex] = continuation
+            }
+        }
+
+        guard results.indices.contains(requestIndex) else {
+            throw StubNetworkSession.StubError.missingResponse
+        }
+        switch results[requestIndex] {
+        case .success(let response):
+            return response
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func waitUntilRequestCount(_ count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { continuation in
+            requestCountContinuations.append((count, continuation))
+        }
+    }
+
+    func releaseRequest(at index: Int) {
+        releasedRequestIndices.insert(index)
+        releaseContinuations.removeValue(forKey: index)?.resume()
+    }
+
+    func recordedRequests() -> [URLRequest] {
+        requests
+    }
+
+    private func resumeSatisfiedRequestCountContinuations() {
+        let satisfied = requestCountContinuations.filter { requests.count >= $0.count }
+        requestCountContinuations.removeAll { requests.count >= $0.count }
+        satisfied.forEach { $0.continuation.resume() }
+    }
+}

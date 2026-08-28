@@ -10,6 +10,8 @@ struct NotificationRowView: View {
     let onActivate: () -> Void
 
     @State private var isHovered = false
+    @State private var isDoneButtonHovered = false
+    @State private var isUnsubscribeButtonHovered = false
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -30,21 +32,30 @@ struct NotificationRowView: View {
 
             HStack(spacing: 4) {
                 Button("Mark as done", systemImage: "checkmark", action: onDone)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isDoneButtonHovered ? Color.primary.opacity(0.08) : Color.clear)
+                    }
                     .contentShape(Rectangle())
+                    .onHover { isDoneButtonHovered = $0 }
                     .help("Mark as done")
 
                 Button("Unsubscribe", systemImage: "bell.slash", action: onUnsubscribe)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isUnsubscribeButtonHovered ? Color.primary.opacity(0.08) : Color.clear)
+                    }
                     .contentShape(Rectangle())
+                    .onHover { isUnsubscribeButtonHovered = $0 }
                     .help("Unsubscribe")
             }
-            .font(.system(size: 18, weight: .medium))
+            .font(.system(size: 14, weight: .medium))
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
-            .controlSize(.regular)
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 6)
+            .padding(.trailing, 8)
             .opacity(isHovered ? 1 : 0)
             .allowsHitTesting(isHovered)
             .accessibilityHidden(!isHovered)
@@ -55,6 +66,10 @@ struct NotificationRowView: View {
         .onHover { hovered in
             if hovered != isHovered {
                 isHovered = hovered
+            }
+            if !hovered {
+                isDoneButtonHovered = false
+                isUnsubscribeButtonHovered = false
             }
         }
     }

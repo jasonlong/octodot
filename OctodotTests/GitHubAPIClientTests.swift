@@ -764,11 +764,77 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.openerLogin == "octocat")
         #expect(resolvedMetadata["1"]?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/1?v=4")
         #expect(resolvedMetadata["1"]?.hasResolvedOpener == true)
+        #expect(resolvedMetadata["1"]?.hasResolvedCIStatus == true)
         #expect(refreshed.first?.subjectState == .open)
         #expect(refreshed.first?.openerLogin == "octocat")
         #expect(refreshed.first?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/1?v=4")
         #expect(refreshed.first?.hasResolvedOpener == true)
+        #expect(refreshed.first?.hasResolvedCIStatus == true)
         #expect(requests.count == 3)
+    }
+
+    @Test func resolvedAbsentCIIsSkippedUntilForcedRefresh() async {
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "pullRequest": {
+                "id": "PR_node_42",
+                "state": "OPEN",
+                "isDraft": false,
+                "mergedAt": null,
+                "author": null,
+                "commits": {
+                  "nodes": [
+                    { "commit": { "statusCheckRollup": null } }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: URL(string: "https://api.github.com/graphql")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: [:]
+        )!
+        let session = StubNetworkSession(results: [
+            .success((graphQLPayload, response)),
+            .success((graphQLPayload, response)),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        var notification = GitHubNotification(
+            id: "42",
+            threadId: "42",
+            title: "Pull request",
+            repository: "acme/test",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/42")!,
+            subjectURL: "https://api.github.com/repos/acme/test/pulls/42",
+            subjectState: .unknown
+        )
+
+        let initialMetadata = await client.resolveSubjectMetadata(for: [notification])
+        let didApplyInitialMetadata = notification.apply(initialMetadata["42"]!)
+        #expect(didApplyInitialMetadata)
+        #expect(notification.ciStatus == nil)
+        #expect(notification.hasResolvedCIStatus)
+
+        let repeatedMetadata = await client.resolveSubjectMetadata(for: [notification])
+        #expect(repeatedMetadata.isEmpty)
+        #expect(await session.recordedRequests().count == 1)
+
+        let forcedMetadata = await client.resolveSubjectMetadata(
+            for: [notification],
+            forceOpenPullRequestRefresh: true
+        )
+        #expect(forcedMetadata["42"]?.hasResolvedCIStatus == true)
+        #expect(await session.recordedRequests().count == 2)
     }
 
     @Test func fetchNotificationsMaintainsSeparateCachesForUnreadAndAllModes() async throws {
@@ -1394,6 +1460,7 @@ struct GitHubAPIClientTests {
 
         #expect(resolvedMetadata["1"]?.state == .open)
         #expect(resolvedMetadata["1"]?.ciStatus == nil)
+        #expect(resolvedMetadata["1"]?.hasResolvedCIStatus == false)
         #expect(warning == GitHubAPIClient.subjectMetadataWarningMessage)
     }
 

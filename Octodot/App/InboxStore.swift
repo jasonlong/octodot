@@ -29,6 +29,7 @@ final class InboxStore {
         let subjectURL: String?
         let subjectState: GitHubNotification.SubjectState
         let ciStatus: GitHubNotification.CIStatus?
+        let hasResolvedCIStatus: Bool
         let graphQLNodeID: String?
         let openerLogin: String?
         let openerAvatarURL: URL?
@@ -48,6 +49,7 @@ final class InboxStore {
             self.subjectURL = notification.subjectURL
             self.subjectState = notification.subjectState
             self.ciStatus = notification.ciStatus
+            self.hasResolvedCIStatus = notification.hasResolvedCIStatus
             self.graphQLNodeID = notification.graphQLNodeID
             self.openerLogin = notification.openerLogin
             self.openerAvatarURL = notification.openerAvatarURL
@@ -69,6 +71,7 @@ final class InboxStore {
             subjectURL = try container.decodeIfPresent(String.self, forKey: .subjectURL)
             subjectState = try container.decode(GitHubNotification.SubjectState.self, forKey: .subjectState)
             ciStatus = try container.decodeIfPresent(GitHubNotification.CIStatus.self, forKey: .ciStatus)
+            hasResolvedCIStatus = try container.decodeIfPresent(Bool.self, forKey: .hasResolvedCIStatus) ?? false
             graphQLNodeID = try container.decodeIfPresent(String.self, forKey: .graphQLNodeID)
             openerLogin = try container.decodeIfPresent(String.self, forKey: .openerLogin)
             openerAvatarURL = try container.decodeIfPresent(URL.self, forKey: .openerAvatarURL)
@@ -90,6 +93,7 @@ final class InboxStore {
                 subjectURL: subjectURL,
                 subjectState: subjectState,
                 ciStatus: ciStatus,
+                hasResolvedCIStatus: hasResolvedCIStatus,
                 graphQLNodeID: graphQLNodeID,
                 openerLogin: openerLogin,
                 openerAvatarURL: openerAvatarURL,

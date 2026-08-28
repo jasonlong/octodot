@@ -698,6 +698,46 @@ struct AppShellTests {
         #expect(issue.needsSubjectMetadataResolution == false)
     }
 
+    @Test func pullRequestWithoutCIRunsMetadataResolutionOncePerFreshnessWindow() {
+        var pullRequest = GitHubNotification(
+            id: "42",
+            threadId: "42",
+            title: "Pull request",
+            repository: "acme/test",
+            reason: .reviewRequested,
+            type: .pullRequest,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/pull/42")!,
+            subjectURL: "https://api.github.com/repos/acme/test/pulls/42",
+            subjectState: .open
+        )
+
+        #expect(pullRequest.needsSubjectMetadataResolution)
+        let didApply = pullRequest.apply(
+            .init(
+                state: .open,
+                ciStatus: nil,
+                hasResolvedCIStatus: true,
+                hasResolvedOpener: true
+            )
+        )
+        #expect(didApply)
+        #expect(pullRequest.ciStatus == nil)
+        #expect(pullRequest.hasResolvedCIStatus)
+        #expect(pullRequest.needsSubjectMetadataResolution == false)
+
+        _ = pullRequest.apply(
+            .init(
+                state: .open,
+                ciStatus: nil,
+                hasResolvedCIStatus: false,
+                hasResolvedOpener: true
+            )
+        )
+        #expect(pullRequest.needsSubjectMetadataResolution)
+    }
+
     @Test func notificationDisplayReferenceNumberParsesPullRequestsAndIssues() {
         let pullRequest = AppStateTests.makeNotification(id: 1234, repo: "planetscale/app-bb")
         let issue = GitHubNotification(

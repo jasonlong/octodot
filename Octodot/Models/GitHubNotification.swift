@@ -14,6 +14,7 @@ struct GitHubNotification: Identifiable, Hashable {
     let subjectURL: String?
     var subjectState: SubjectState
     var ciStatus: CIStatus?
+    var hasResolvedCIStatus = false
     var graphQLNodeID: String?
     var openerLogin: String?
     var openerAvatarURL: URL?
@@ -109,6 +110,7 @@ struct GitHubNotification: Identifiable, Hashable {
         let resolvedOpenerState = hasResolvedOpener || metadata.hasResolvedOpener
         guard subjectState != metadata.state ||
                 ciStatus != metadata.ciStatus ||
+                hasResolvedCIStatus != metadata.hasResolvedCIStatus ||
                 graphQLNodeID != resolvedNodeID ||
                 url != resolvedURL ||
                 openerLogin != resolvedOpenerLogin ||
@@ -119,6 +121,7 @@ struct GitHubNotification: Identifiable, Hashable {
 
         subjectState = metadata.state
         ciStatus = metadata.ciStatus
+        hasResolvedCIStatus = metadata.hasResolvedCIStatus
         graphQLNodeID = resolvedNodeID
         url = resolvedURL
         openerLogin = resolvedOpenerLogin
@@ -132,7 +135,7 @@ struct GitHubNotification: Identifiable, Hashable {
 
         switch type {
         case .pullRequest:
-            return !hasResolvedOpener || subjectState == .unknown || (subjectState == .open && ciStatus == nil)
+            return !hasResolvedOpener || subjectState == .unknown || (subjectState == .open && !hasResolvedCIStatus)
         case .issue:
             return !hasResolvedOpener || subjectState == .unknown
         case .release:
@@ -182,6 +185,7 @@ struct GitHubNotification: Identifiable, Hashable {
     struct SubjectMetadata: Hashable {
         var state: SubjectState
         var ciStatus: CIStatus?
+        var hasResolvedCIStatus = false
         var nodeID: String? = nil
         var webURL: URL? = nil
         var openerLogin: String? = nil

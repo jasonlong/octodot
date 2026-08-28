@@ -110,6 +110,8 @@ final class AppState {
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
+    private var forcedVisibleSubjectStateRefreshIDs: Set<String> = []
+    // Each successful feed load starts a new freshness window for visible open PR metadata.
     private var shouldRefreshVisibleCIMetadataAfterNextRebuild = false
     private var lastActionDebugThreadID: String?
     private var lastActionDebugKind: String?
@@ -1267,6 +1269,7 @@ final class AppState {
         subjectStateResolutionTask = nil
         pendingVisibleSubjectStateIDs = []
         visibleSubjectStateInFlightIDs = []
+        forcedVisibleSubjectStateRefreshIDs = []
     }
 
     private func scheduleVisibleSubjectStateResolutionIfNeeded() {
@@ -1286,12 +1289,16 @@ final class AppState {
 
         pendingVisibleSubjectStateIDs.removeAll { candidateIDs.contains($0) }
         visibleSubjectStateInFlightIDs.formUnion(candidateIDs)
+        let forceOpenPullRequestRefresh = !forcedVisibleSubjectStateRefreshIDs.isDisjoint(with: candidateIDs)
         let candidates = candidateIDs.compactMap { candidateID in
             filteredNotifications.first(where: { $0.id == candidateID })
         }
 
-        subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs] in
-            let resolvedMetadata = await client.resolveSubjectMetadata(for: candidates)
+        subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs, forceOpenPullRequestRefresh] in
+            let resolvedMetadata = await client.resolveSubjectMetadata(
+                for: candidates,
+                forceOpenPullRequestRefresh: forceOpenPullRequestRefresh
+            )
             let warningMessage = await client.takeNonFatalWarningMessage()
             guard !Task.isCancelled else { return }
             self?.applyResolvedSubjectMetadata(
@@ -1309,6 +1316,7 @@ final class AppState {
     ) {
         subjectStateResolutionTask = nil
         visibleSubjectStateInFlightIDs.subtract(expectedIDs)
+        forcedVisibleSubjectStateRefreshIDs.subtract(expectedIDs)
         self.warningMessage = warningMessage
 
         let unreadChanged = applyResolvedSubjectMetadata(resolvedMetadata, to: &serverNotifications)
@@ -1371,6 +1379,11 @@ final class AppState {
 
             guard shouldQueue else { continue }
             let id = notification.id
+            if forceOpenPRRefresh,
+               notification.type == .pullRequest,
+               notification.subjectState == .open {
+                forcedVisibleSubjectStateRefreshIDs.insert(id)
+            }
             guard !pendingVisibleSubjectStateIDs.contains(id),
                   !visibleSubjectStateInFlightIDs.contains(id) else {
                 continue

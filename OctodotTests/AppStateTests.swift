@@ -1080,6 +1080,52 @@ struct AppStateTests {
         #expect(state.notifications[0].subjectState == .open)
     }
 
+    @Test func resolvedAbsentCISurvivesRebuildAndRefreshesOnNextFeedLoad() async {
+        let feedPayload = Self.singleNotificationPayload(
+            id: "7",
+            subjectURL: "https://api.github.com/repos/acme/alpha/pulls/7"
+        )
+        let feedResponse = Self.httpResponse(
+            url: "https://api.github.com/notifications?page=1",
+            statusCode: 200,
+            headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+        )
+        let subjectPayload = #"{"state":"open","user":null}"#.data(using: .utf8)!
+        let subjectResponse = Self.httpResponse(
+            url: "https://api.github.com/repos/acme/alpha/pulls/7",
+            statusCode: 200
+        )
+        let session = StubNetworkSession(results: [
+            .success((feedPayload, feedResponse)),
+            .success((subjectPayload, subjectResponse)),
+            .success((feedPayload, feedResponse)),
+            .success((subjectPayload, subjectResponse)),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.hasResolvedCIStatus == true
+            }
+        }
+        #expect(await session.recordedRequests().count == 2)
+
+        state.notificationBecameVisible(id: "7")
+        state.groupByRepo.toggle()
+        await Self.settleTasks()
+        #expect(await session.recordedRequests().count == 2)
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await session.recordedRequests().count == 4
+        }
+        #expect(state.notifications.first?.hasResolvedCIStatus == true)
+    }
+
     @Test func visibleReadNotificationAlsoResolvesSubjectState() async {
         let session = DelayedStubNetworkSession(results: [
             .success(
@@ -3425,6 +3471,7 @@ struct AppStateTests {
                 "isUnread": false,
                 "url": notification.url.absoluteString,
                 "subjectState": notification.subjectState.rawValue,
+                "hasResolvedCIStatus": true,
                 "graphQLNodeID": "node-\(notification.id)",
                 "openerLogin": "octocat-\(notification.id)",
                 "openerAvatarURL": "https://avatars.githubusercontent.com/u/\(notification.id)",
@@ -3445,6 +3492,7 @@ struct AppStateTests {
         #expect(state.filteredNotifications.first?.openerLogin == "octocat-\(newer.id)")
         #expect(state.filteredNotifications.first?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/\(newer.id)")
         #expect(state.filteredNotifications.first?.hasResolvedOpener == true)
+        #expect(state.filteredNotifications.first?.hasResolvedCIStatus == true)
     }
 
     @Test func malformedPersistedStoreDataIsQuarantined() {

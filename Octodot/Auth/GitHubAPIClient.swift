@@ -257,6 +257,7 @@ actor GitHubAPIClient {
                 notifications[index].url = previous.url
                 notifications[index].subjectState = previous.subjectState
                 notifications[index].ciStatus = previous.ciStatus
+                notifications[index].hasResolvedCIStatus = previous.hasResolvedCIStatus
                 notifications[index].openerLogin = previous.openerLogin
                 notifications[index].openerAvatarURL = previous.openerAvatarURL
                 notifications[index].hasResolvedOpener = previous.hasResolvedOpener
@@ -275,13 +276,20 @@ actor GitHubAPIClient {
     }
 
     func resolveSubjectMetadata(
-        for notifications: [GitHubNotification]
+        for notifications: [GitHubNotification],
+        forceOpenPullRequestRefresh: Bool = false
     ) async -> [String: GitHubNotification.SubjectMetadata] {
         let requestID = UUID()
         latestSubjectMetadataRequestID = requestID
         nonFatalWarningMessage = nil
         let pendingSubjectNotifications = notifications
-            .filter(Self.shouldResolveSubjectMetadata)
+            .filter {
+                Self.shouldResolveSubjectMetadata($0) || (
+                    forceOpenPullRequestRefresh &&
+                    $0.type == .pullRequest &&
+                    $0.subjectState == .open
+                )
+            }
             .prefix(maxSubjectResolutionBatchSize)
         let candidateNotifications = Array(pendingSubjectNotifications)
         guard !candidateNotifications.isEmpty else { return [:] }
@@ -459,6 +467,7 @@ actor GitHubAPIClient {
                     metadata: .init(
                         state: resolvedState,
                         ciStatus: ciStatus,
+                        hasResolvedCIStatus: notification.type == .pullRequest,
                         openerLogin: openerLogin,
                         openerAvatarURL: openerAvatarURL,
                         hasResolvedOpener: true
@@ -470,6 +479,7 @@ actor GitHubAPIClient {
                     metadata: .init(
                         state: resolvedState,
                         ciStatus: nil,
+                        hasResolvedCIStatus: false,
                         openerLogin: openerLogin,
                         openerAvatarURL: openerAvatarURL,
                         hasResolvedOpener: true
@@ -787,6 +797,7 @@ actor GitHubAPIClient {
         return GitHubNotification.SubjectMetadata(
             state: state,
             ciStatus: ciStatus,
+            hasResolvedCIStatus: true,
             nodeID: pr["id"] as? String,
             openerLogin: author?["login"] as? String,
             openerAvatarURL: (author?["avatarUrl"] as? String).flatMap(URL.init(string:)),

@@ -30,10 +30,7 @@ actor GitHubAPIClient {
     private let defaultPollInterval: TimeInterval = 60
     private let maximumPollInterval: TimeInterval = 60 * 60
     private let defaultRecentInboxMaxPages = 2
-    private let defaultSecurityRefreshInterval: TimeInterval = 5 * 60
-    private let defaultSecurityLookbackInterval: TimeInterval = 14 * 24 * 60 * 60
     private let maxConcurrentSubjectRequests: Int
-    private let maxConcurrentSecurityRequests: Int
     private let maxSubjectResolutionBatchSize = 40
     private static let requiredClassicTokenScopes: Set<String> = ["notifications", "repo"]
     private let session: any NetworkSession
@@ -56,17 +53,9 @@ actor GitHubAPIClient {
         var nextNotificationsRefreshAt = Date.distantPast
     }
 
-    private struct SecurityAlertsCache {
-        var alerts: [GitHubNotification] = []
-        var sourceSignature = ""
-        var nextRefreshAt = Date.distantPast
-    }
-
     private var cachedFeeds: [FeedScope: FeedCache] = [:]
     private var latestFeedRequestIDs: [FeedScope: UUID] = [:]
     private var latestSubjectMetadataRequestID = UUID()
-    private var latestSecurityRequestID = UUID()
-    private var cachedDependabotAlerts = SecurityAlertsCache()
     private var nonFatalWarningMessage: String?
 
     private struct SubjectRequestContext: Sendable {
@@ -80,13 +69,11 @@ actor GitHubAPIClient {
         token: String,
         session: any NetworkSession = URLSession.shared,
         maxConcurrentSubjectRequests: Int = 6,
-        maxConcurrentSecurityRequests: Int = 4,
         useGraphQLForSubjectMetadata: Bool = true
     ) {
         self.token = Self.sanitizedToken(token)
         self.session = session
         self.maxConcurrentSubjectRequests = max(1, maxConcurrentSubjectRequests)
-        self.maxConcurrentSecurityRequests = max(1, maxConcurrentSecurityRequests)
         self.useGraphQLForSubjectMetadata = useGraphQLForSubjectMetadata
     }
 
@@ -96,8 +83,6 @@ actor GitHubAPIClient {
         cachedFeeds.removeAll()
         invalidateFeedRequests(FeedScope.allCases)
         latestSubjectMetadataRequestID = UUID()
-        latestSecurityRequestID = UUID()
-        cachedDependabotAlerts = SecurityAlertsCache()
         nonFatalWarningMessage = nil
     }
 
@@ -125,61 +110,6 @@ actor GitHubAPIClient {
             force: force,
             maxPages: maxPages ?? defaultRecentInboxMaxPages
         )
-    }
-
-    func fetchDependabotAlerts(
-        repositoryNames: [String],
-        currentUsername _: String?,
-        force: Bool = false
-    ) async throws -> [GitHubNotification] {
-        let repositories = Array(Set(repositoryNames)).sorted()
-        let signature = repositories.joined(separator: ",")
-
-        if !force,
-           cachedDependabotAlerts.sourceSignature == signature,
-           Date() < cachedDependabotAlerts.nextRefreshAt {
-            return cachedDependabotAlerts.alerts
-        }
-
-        guard !repositories.isEmpty else {
-            latestSecurityRequestID = UUID()
-            cachedDependabotAlerts = SecurityAlertsCache()
-            return []
-        }
-
-        DebugTrace.log(
-            "security fetch start repos=\(repositories.joined(separator: ",")) force=\(force)"
-        )
-
-        let requestGeneration = credentialGeneration
-        let requestID = UUID()
-        latestSecurityRequestID = requestID
-        let context = SubjectRequestContext(token: token, session: session)
-        let alerts = try await Self.fetchDependabotAlertsForRepositories(
-            repositories,
-            maxConcurrent: maxConcurrentSecurityRequests,
-            context: context
-        )
-        guard requestGeneration == credentialGeneration else {
-            throw APIError.staleCredentialResponse
-        }
-
-        let deduped = Self.sortedAndDedupedAlerts(alerts)
-        let recentAlerts = Self.recentAlerts(
-            from: deduped,
-            lookbackInterval: defaultSecurityLookbackInterval
-        )
-        if requestID == latestSecurityRequestID {
-            cachedDependabotAlerts = SecurityAlertsCache(
-                alerts: recentAlerts,
-                sourceSignature: signature,
-                nextRefreshAt: Date().addingTimeInterval(defaultSecurityRefreshInterval)
-            )
-        }
-        DebugTrace.log(
-            "security fetch complete raw=\(deduped.count) recent=\(recentAlerts.count) top=\(Self.topIDs(in: recentAlerts))"
-        )
-        return recentAlerts
     }
 
     private func fetchNotifications(
@@ -889,84 +819,6 @@ actor GitHubAPIClient {
         )
     }
 
-    private static func fetchDependabotAlertsForRepository(
-        _ repositoryFullName: String,
-        context: SubjectRequestContext
-    ) async throws -> [GitHubNotification] {
-        guard let parts = Self.repositoryComponents(from: repositoryFullName) else { return [] }
-        let endpoint = URL(string: "https://api.github.com")!
-            .appendingPathComponent("repos")
-            .appendingPathComponent(parts.owner)
-            .appendingPathComponent(parts.repository)
-            .appendingPathComponent("dependabot")
-            .appendingPathComponent("alerts")
-        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
-        components.queryItems = Self.dependabotAlertsQueryItems
-        let url = components.url!
-        let data = try await request(url: url, token: context.token, session: context.session)
-        let alerts = try JSONDecoder.github.decode([APIDependabotAlert].self, from: data)
-        return alerts.compactMap {
-            $0.toModel(
-                fallbackRepositoryFullName: repositoryFullName,
-                fallbackRepositoryHTMLURL: "https://github.com/\(parts.owner)/\(parts.repository)"
-            )
-        }
-    }
-
-    private static func fetchDependabotAlertsForRepositories(
-        _ repositories: [String],
-        maxConcurrent: Int,
-        context: SubjectRequestContext
-    ) async throws -> [GitHubNotification] {
-        let concurrencyLimit = max(1, min(maxConcurrent, repositories.count))
-        var iterator = repositories.makeIterator()
-        var collectedAlerts: [GitHubNotification] = []
-
-        try await withThrowingTaskGroup(of: [GitHubNotification].self) { group in
-            for _ in 0..<concurrencyLimit {
-                guard let repository = iterator.next() else { break }
-                group.addTask {
-                    try await fetchDependabotAlertsForRepositoryIgnoringUnsupported(
-                        repository,
-                        context: context
-                    )
-                }
-            }
-
-            while let nextAlerts = try await group.next() {
-                collectedAlerts.append(contentsOf: nextAlerts)
-
-                guard let repository = iterator.next() else { continue }
-                group.addTask {
-                    try await fetchDependabotAlertsForRepositoryIgnoringUnsupported(
-                        repository,
-                        context: context
-                    )
-                }
-            }
-        }
-
-        return collectedAlerts
-    }
-
-    private static func fetchDependabotAlertsForRepositoryIgnoringUnsupported(
-        _ repositoryFullName: String,
-        context: SubjectRequestContext
-    ) async throws -> [GitHubNotification] {
-        do {
-            return try await fetchDependabotAlertsForRepository(
-                repositoryFullName,
-                context: context
-            )
-        } catch APIError.forbidden {
-            DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=forbidden")
-            return []
-        } catch APIError.httpError(let status) where status == 404 {
-            DebugTrace.log("security fetch skipped repo=\(repositoryFullName) reason=http-\(status)")
-            return []
-        }
-    }
-
     // MARK: - Mark as read
 
     func markAsRead(threadId: String) async throws {
@@ -1483,34 +1335,6 @@ actor GitHubAPIClient {
         return nil
     }
 
-    private static let dependabotAlertsQueryItems = [
-        URLQueryItem(name: "state", value: "open"),
-        URLQueryItem(name: "sort", value: "updated"),
-        URLQueryItem(name: "direction", value: "desc"),
-        URLQueryItem(name: "per_page", value: "100"),
-    ]
-
-    private static func sortedAndDedupedAlerts(_ alerts: [GitHubNotification]) -> [GitHubNotification] {
-        let deduped = Dictionary(alerts.map { ($0.id, $0) }, uniquingKeysWith: { lhs, rhs in
-            lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
-        })
-        return deduped.values.sorted { lhs, rhs in
-            if lhs.updatedAt != rhs.updatedAt {
-                return lhs.updatedAt > rhs.updatedAt
-            }
-            return lhs.id > rhs.id
-        }
-    }
-
-    private static func recentAlerts(
-        from alerts: [GitHubNotification],
-        lookbackInterval: TimeInterval,
-        now: Date = Date()
-    ) -> [GitHubNotification] {
-        let cutoff = now.addingTimeInterval(-lookbackInterval)
-        return alerts.filter { $0.updatedAt >= cutoff }
-    }
-
     // MARK: - Error
 
     enum APIError: LocalizedError {
@@ -1568,12 +1392,15 @@ private struct APINotification: Decodable {
     }
 
     func toModel() -> GitHubNotification? {
+        guard reason != "security_alert",
+              let type = mapType(subject.type) else {
+            return nil
+        }
         let reason = mapReason(reason)
-        let type = mapType(subject.type, reason: reason)
         guard let date = ISO8601DateFormatter().date(from: updatedAt) else {
             return nil
         }
-        let webURL = buildWebURL(type: type)
+        let webURL = buildWebURL()
 
         return GitHubNotification(
             id: id,
@@ -1590,12 +1417,7 @@ private struct APINotification: Decodable {
         )
     }
 
-    private func buildWebURL(type: GitHubNotification.SubjectType) -> URL {
-        if type == .securityAlert,
-           let advisoryURL = buildSecurityAlertURL() {
-            return advisoryURL
-        }
-
+    private func buildWebURL() -> URL {
         if let apiURLString = subject.url,
            let apiURL = URL(string: apiURLString),
            apiURL.scheme?.lowercased() == "https",
@@ -1613,8 +1435,6 @@ private struct APINotification: Decodable {
                 switch typeSegment {
                 case "pulls": webType = "pull"
                 case "issues": webType = "issues"
-                case "commits": webType = "commit"
-                case "releases": webType = "releases/tag"
                 default: webType = typeSegment
                 }
                 if let url = URL(string: "https://github.com/\(owner)/\(repo)/\(webType)/\(number)") {
@@ -1633,25 +1453,6 @@ private struct APINotification: Decodable {
         return repositoryURL
     }
 
-    private func buildSecurityAlertURL() -> URL? {
-        if let titleToken = subject.title
-            .split(separator: " ")
-            .first(where: { $0.hasPrefix("GHSA-") }),
-           let url = URL(string: "https://github.com/advisories/\(titleToken)") {
-            return url
-        }
-
-        guard let repositoryURL = URL(string: repository.htmlUrl),
-              repositoryURL.scheme?.lowercased() == "https",
-              repositoryURL.host?.lowercased() == "github.com",
-              repositoryURL.user == nil,
-              repositoryURL.password == nil,
-              repositoryURL.port == nil else {
-            return nil
-        }
-        return repositoryURL.appendingPathComponent("security")
-    }
-
     private func mapReason(_ reason: String) -> GitHubNotification.Reason {
         switch reason {
         case "mention": .mentioned
@@ -1667,19 +1468,11 @@ private struct APINotification: Decodable {
         }
     }
 
-    private func mapType(
-        _ type: String,
-        reason: GitHubNotification.Reason
-    ) -> GitHubNotification.SubjectType {
+    private func mapType(_ type: String) -> GitHubNotification.SubjectType? {
         switch type {
         case "PullRequest": .pullRequest
         case "Issue": .issue
-        case "Release": .release
-        case "Discussion": .discussion
-        case "Commit": .commit
-        case "RepositoryVulnerabilityAlert", "RepositoryAdvisory": .securityAlert
-        default:
-            reason == .securityAlert ? .securityAlert : .issue
+        default: nil
         }
     }
 }
@@ -1780,75 +1573,6 @@ private struct APIUser: Decodable {
 
 private struct ThreadSubscriptionRequest: Encodable {
     let ignored: Bool
-}
-
-private struct APIDependabotAlert: Decodable {
-    struct Repository: Decodable {
-        let fullName: String
-        let htmlUrl: String
-    }
-
-    struct Dependency: Decodable {
-        struct Package: Decodable {
-            let name: String?
-        }
-
-        let package: Package?
-    }
-
-    struct SecurityAdvisory: Decodable {
-        let ghsaId: String?
-        let summary: String?
-    }
-
-    let number: Int
-    let htmlUrl: String
-    let updatedAt: String
-    let repository: Repository?
-    let dependency: Dependency?
-    let securityAdvisory: SecurityAdvisory?
-
-    func toModel(
-        fallbackRepositoryFullName: String? = nil,
-        fallbackRepositoryHTMLURL: String? = nil
-    ) -> GitHubNotification? {
-        let repositoryFullName = repository?.fullName ?? fallbackRepositoryFullName
-        let repositoryHTMLURL = repository?.htmlUrl ?? fallbackRepositoryHTMLURL
-        guard let repositoryFullName,
-              let repositoryHTMLURL,
-              let url = URL(string: htmlUrl.isEmpty ? repositoryHTMLURL : htmlUrl),
-              url.scheme?.lowercased() == "https",
-              url.host?.lowercased() == "github.com",
-              url.user == nil,
-              url.password == nil,
-              url.port == nil,
-              let updated = ISO8601DateFormatter().date(from: updatedAt) else {
-            return nil
-        }
-
-        let summary = securityAdvisory?.summary ?? dependency?.package?.name.map { "Dependabot alert for \($0)" } ?? "Dependabot alert"
-        let title: String
-        if let advisoryID = securityAdvisory?.ghsaId, !advisoryID.isEmpty {
-            title = "\(advisoryID) \(summary)"
-        } else {
-            title = summary
-        }
-
-        return GitHubNotification(
-            id: "dependabot:\(repositoryFullName):\(number)",
-            threadId: "dependabot:\(repositoryFullName):\(number)",
-            title: title,
-            repository: repositoryFullName,
-            reason: .securityAlert,
-            type: .securityAlert,
-            updatedAt: updated,
-            isUnread: true,
-            url: url,
-            subjectURL: nil,
-            subjectState: .open,
-            source: .dependabotAlert
-        )
-    }
 }
 
 extension JSONDecoder {

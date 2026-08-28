@@ -20,6 +20,10 @@ struct GitHubNotification: Identifiable, Hashable {
     var hasResolvedOpener = false
     var source: Source = .thread
 
+    var isIssueOrPullRequest: Bool {
+        type == .issue || type == .pullRequest
+    }
+
     var iconName: String {
         switch type {
         case .pullRequest:

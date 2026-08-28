@@ -19,8 +19,8 @@ Current behavior includes:
 - configurable global shortcut
 - Vim-style navigation and commands
 - native settings window for account, appearance, and shortcuts
+- issue and pull request notifications only
 - pull request CI status indicators in the list
-- Dependabot/security alerts layered into `Inbox`
 
 ## Installation
 

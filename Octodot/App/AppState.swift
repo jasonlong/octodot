@@ -32,20 +32,17 @@ final class AppState {
     private struct RefreshPolicy {
         let forceUnread: Bool
         let forceRecentInbox: Bool
-        let forceSecurityAlerts: Bool
 
         static func uniform(force: Bool) -> RefreshPolicy {
             RefreshPolicy(
                 forceUnread: force,
-                forceRecentInbox: force,
-                forceSecurityAlerts: force
+                forceRecentInbox: force
             )
         }
 
         static let panelPresentation = RefreshPolicy(
             forceUnread: false,
-            forceRecentInbox: true,
-            forceSecurityAlerts: false
+            forceRecentInbox: true
         )
     }
 
@@ -70,7 +67,6 @@ final class AppState {
         didSet {
             guard isPanelVisible != oldValue, !isPanelVisible else { return }
             actionToasts.removeAll()
-            cancelSecurityAlertsRefresh()
             cancelSubjectStateResolution()
         }
     }
@@ -101,7 +97,6 @@ final class AppState {
 
     private var serverNotifications: [GitHubNotification] = []
     private var serverRecentInboxNotifications: [GitHubNotification] = []
-    private var serverSecurityAlerts: [GitHubNotification] = []
     private var repositoryOrderAnchor: [String] = []
     private var selectedThreadID: String?
     private var selectedIndexStorage = 0
@@ -112,7 +107,6 @@ final class AppState {
     private var batchDispatchTask: Task<Void, Never>?
     private var committedActionsPersistTask: Task<Void, Never>?
     private var backgroundRefreshTask: Task<Void, Never>?
-    private var securityAlertsRefreshTask: Task<Void, Never>?
     private var subjectStateResolutionTask: Task<Void, Never>?
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
@@ -205,7 +199,8 @@ final class AppState {
     ) {
         self.authStatus = authStatus
         self.apiClient = apiClient
-        self.serverNotifications = notifications
+        let supportedNotifications = Self.issueAndPullRequestNotifications(from: notifications)
+        self.serverNotifications = supportedNotifications
         self.actionDispatchDelayNanoseconds = actionDispatchDelayNanoseconds
         self.backgroundRefreshEnabled = backgroundRefreshEnabled
         self.sleepHandler = sleepHandler
@@ -215,11 +210,11 @@ final class AppState {
         self.tokenDeleter = tokenDeleter
         self.apiClientFactory = apiClientFactory
         self.threadActions = ThreadActionStore(userDefaults: userDefaults)
-        self.inboxStore = InboxStore(userDefaults: userDefaults, initialNotifications: notifications)
+        self.inboxStore = InboxStore(userDefaults: userDefaults, initialNotifications: supportedNotifications)
         self.inboxMode = Self.loadInboxMode(from: userDefaults)
         self.groupByRepo = Self.loadGroupByRepo(from: userDefaults)
-        self.repositoryOrderAnchor = Self.repositoryOrder(from: notifications)
-        self.selectedThreadID = notifications.first?.id
+        self.repositoryOrderAnchor = Self.repositoryOrder(from: supportedNotifications)
+        self.selectedThreadID = supportedNotifications.first?.id
         rebuildDerivedState()
 
         if let bootstrapToken {
@@ -318,7 +313,6 @@ final class AppState {
         } catch {
             guard requestID == activeAuthRequestID else { return }
             cancelBackgroundRefresh()
-            cancelSecurityAlertsRefresh()
 
             if Self.isUnauthorized(error) {
                 signOut()
@@ -338,7 +332,6 @@ final class AppState {
         let authRequestID = UUID()
         activeAuthRequestID = authRequestID
         cancelBackgroundRefresh()
-        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
         activeLoadRequestID = UUID()
@@ -347,7 +340,6 @@ final class AppState {
         if isSwitchingAccounts {
             serverNotifications = []
             serverRecentInboxNotifications = []
-            serverSecurityAlerts = []
             repositoryOrderAnchor = []
             inboxStore.clearSessionState()
             threadActions.clearCommittedActions()
@@ -369,7 +361,6 @@ final class AppState {
     func signOut() {
         activeAuthRequestID = UUID()
         cancelBackgroundRefresh()
-        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         cancelAllPendingActions()
         committedActionsPersistTask?.cancel()
@@ -381,7 +372,6 @@ final class AppState {
         isLoading = false
         serverNotifications = []
         serverRecentInboxNotifications = []
-        serverSecurityAlerts = []
         repositoryOrderAnchor = []
         inboxStore.clearSessionState()
         threadActions.clearCommittedActions()
@@ -412,7 +402,6 @@ final class AppState {
         let authRequestID = activeAuthRequestID
         let requestID = UUID()
         activeLoadRequestID = requestID
-        cancelSecurityAlertsRefresh()
         cancelSubjectStateResolution()
         isLoading = true
         warningMessage = nil
@@ -447,8 +436,7 @@ final class AppState {
             }
             applyLoadedNotifications(
                 unreadNotifications: fetched,
-                recentInboxNotifications: fetchedRecentInbox,
-                securityAlerts: serverSecurityAlerts
+                recentInboxNotifications: fetchedRecentInbox
             )
             resetSelectionToTopOnNextLoadIfNeeded()
             isLoading = false
@@ -456,17 +444,9 @@ final class AppState {
             warningMessage = recentInboxWarningMessage
             shouldRefreshVisibleCIMetadataAfterNextRebuild = true
             rebuildDerivedState()
-            scheduleSecurityAlertsRefreshIfNeeded(
-                requestID: requestID,
-                client: client,
-                unreadNotifications: fetched,
-                recentInboxNotifications: fetchedRecentInbox.isEmpty ? serverRecentInboxNotifications : fetchedRecentInbox,
-                force: policy.forceSecurityAlerts
-            )
             DebugTrace.log(
                 "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
                 "recent.count=\(serverRecentInboxNotifications.count) " +
-                "security.count=\(serverSecurityAlerts.count) " +
                 "visible.count=\(filteredNotifications.count) visible.top=\(Self.topIDs(in: filteredNotifications))"
             )
             logLastActionSnapshot(context: "after-load")
@@ -534,10 +514,7 @@ final class AppState {
             return
         }
         guard let target = selectedNotification else { return }
-        if target.source == .dependabotAlert {
-            dismissSecurityAlert(target)
-            presentActionToast(verb: .done, items: [target])
-        } else if startThreadAction(.done) {
+        if startThreadAction(.done) {
             presentActionToast(verb: .done, items: [target])
         }
     }
@@ -552,10 +529,7 @@ final class AppState {
             return
         }
         guard let notification = selectedNotification else { return }
-        if notification.source == .dependabotAlert {
-            dismissSecurityAlert(notification)
-            presentActionToast(verb: .done, items: [notification])
-        } else if startThreadAction(.unsubscribe) {
+        if startThreadAction(.unsubscribe) {
             inboxStore.muteThread(notification.threadId)
             clampSelection()
             presentActionToast(verb: .unsub, items: [notification])
@@ -573,21 +547,7 @@ final class AppState {
         let originalVisibleOrder = filteredNotifications
         let originalSelectionID = selectedNotificationID
         var threadItems: [GitHubNotification] = []
-        var securityAlerts: [GitHubNotification] = []
         clearChecked()
-
-        switch kind {
-        case .done:
-            for notification in batch where notification.source == .dependabotAlert {
-                dismissSecurityAlert(notification, updatesSelection: false)
-                threadItems.append(notification)
-            }
-        case .unsubscribe:
-            securityAlerts = batch.filter { $0.source == .dependabotAlert }
-            for notification in securityAlerts {
-                dismissSecurityAlert(notification, updatesSelection: false)
-            }
-        }
 
         let actionKind: ThreadActionStore.ActionKind = kind == .done ? .done : .unsubscribe
         for group in groupedThreadNotifications(from: batch) {
@@ -619,7 +579,6 @@ final class AppState {
             presentActionToast(verb: .done, items: threadItems)
         case .unsubscribe:
             presentActionToast(verb: .unsub, items: threadItems)
-            presentActionToast(verb: .done, items: securityAlerts)
         }
     }
 
@@ -642,8 +601,6 @@ final class AppState {
                             target: notification,
                             delayNanosecondsOverride: 0
                         )
-                    } else if notification.source == .dependabotAlert, notification.isUnread {
-                        inboxStore.markSecurityAlertRead(notification)
                     }
                 }
             }
@@ -658,9 +615,6 @@ final class AppState {
         if didOpen {
             if notification.source == .thread, notification.isUnread {
                 startThreadAction(.markRead, delayNanosecondsOverride: 0)
-            } else if notification.source == .dependabotAlert, notification.isUnread {
-                inboxStore.markSecurityAlertRead(notification)
-                clampSelection()
             }
             presentActionToast(verb: .open, items: [notification])
         }
@@ -772,7 +726,7 @@ final class AppState {
         if apiClient != nil {
             Task { await loadNotifications(policy: policy) }
         } else {
-            serverNotifications = MockData.generateNotifications()
+            serverNotifications = Self.issueAndPullRequestNotifications(from: MockData.generateNotifications())
             selectedIndexStorage = 0
             selectedThreadID = serverNotifications.first?.id
             rebuildDerivedState()
@@ -902,12 +856,12 @@ final class AppState {
     private func rebuildDerivedState() {
         let projectedUnread = projectThreadActions(from: serverNotifications)
         let projectedRecentInbox = projectThreadActions(from: serverRecentInboxNotifications)
-        let projectedSecurityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
-        let modeFiltered = filteredNotificationsForCurrentMode(
-            unreadNotifications: projectedUnread,
-            recentInboxNotifications: projectedRecentInbox,
-            securityAlerts: projectedSecurityAlerts,
-            isNotificationVisible: isThreadActionNotificationVisible
+        let modeFiltered = Self.issueAndPullRequestNotifications(
+            from: filteredNotificationsForCurrentMode(
+                unreadNotifications: projectedUnread,
+                recentInboxNotifications: projectedRecentInbox,
+                isNotificationVisible: isThreadActionNotificationVisible
+            )
         )
         let repoOrderSource = groupByRepo ? sortedByRecency(serverNotificationsForCurrentMode()) : []
         notifications = orderedNotifications(
@@ -926,7 +880,6 @@ final class AppState {
                 count += 1
             }
         }
-        // Menubar icon count: thread-only, excludes security alerts and muted threads.
         unreadNotificationCount = inboxStore.filterMutedThreads(projectedUnread).filter(\.isUnread).count
 
         filteredNotifications = Self.applySearchFilter(notifications, query: searchQuery)
@@ -957,7 +910,6 @@ final class AppState {
     private func filteredNotificationsForCurrentMode(
         unreadNotifications: [GitHubNotification],
         recentInboxNotifications: [GitHubNotification],
-        securityAlerts: [GitHubNotification],
         isNotificationVisible: @escaping (GitHubNotification) -> Bool
     ) -> [GitHubNotification] {
         switch inboxMode {
@@ -970,7 +922,7 @@ final class AppState {
                 projectNotifications: projectThreadActions(from:),
                 isNotificationVisible: isThreadActionNotificationVisible
             )
-            return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
+            return merged
         }
     }
 
@@ -979,34 +931,13 @@ final class AppState {
         case .unread:
             return serverNotifications.filter(\.isUnread)
         case .inbox:
-            let merged = inboxStore.mergedInboxNotifications(
+            return inboxStore.mergedInboxNotifications(
                 unreadNotifications: serverNotifications,
                 recentInboxNotifications: serverRecentInboxNotifications,
                 projectNotifications: { $0 },
                 isNotificationVisible: isThreadActionNotificationVisible
             )
-            let securityAlerts = inboxStore.projectedSecurityAlerts(from: serverSecurityAlerts)
-            return merged + dedupedSecurityAlerts(securityAlerts, against: merged)
         }
-    }
-
-    private func dedupedSecurityAlerts(
-        _ securityAlerts: [GitHubNotification],
-        against existingNotifications: [GitHubNotification]
-    ) -> [GitHubNotification] {
-        let existingKeys = Set(existingNotifications.compactMap(Self.securityAlertDedupKey(for:)))
-        return securityAlerts.filter { notification in
-            guard notification.source == .dependabotAlert,
-                  let key = Self.securityAlertDedupKey(for: notification) else {
-                return true
-            }
-            return !existingKeys.contains(key)
-        }
-    }
-
-    private static func securityAlertDedupKey(for notification: GitHubNotification) -> String? {
-        guard notification.type == .securityAlert else { return nil }
-        return "\(notification.repository)|\(notification.title)"
     }
 
     private func orderedNotifications(
@@ -1096,7 +1027,7 @@ final class AppState {
         guard let client = apiClient else { return false }
         guard let target = explicitTarget ?? selectedNotification else { return false }
         guard target.source == .thread else {
-            errorMessage = "Security alerts can only be opened or marked done"
+            errorMessage = "Only GitHub notification threads support this action"
             return false
         }
         guard !threadActions.hasPendingAction(for: target.threadId) else { return false }
@@ -1142,24 +1073,6 @@ final class AppState {
             scheduleBatchDispatch(client: client, delayNanoseconds: delayNanoseconds)
         }
         return true
-    }
-
-    private func dismissSecurityAlert(
-        _ target: GitHubNotification,
-        updatesSelection: Bool = true
-    ) {
-        guard target.source == .dependabotAlert else { return }
-
-        let visibleBeforeMutation = filteredNotifications
-        inboxStore.dismissSecurityAlert(target)
-        errorMessage = nil
-
-        if updatesSelection {
-            let removeIndex = visibleBeforeMutation.firstIndex(where: { $0.id == target.id }) ?? selectedIndexStorage
-            selectedThreadID = selectionAfterRemoving(threadId: target.id, from: visibleBeforeMutation)
-            selectedIndexStorage = min(removeIndex, max(0, visibleBeforeMutation.count - 2))
-        }
-        clampSelection()
     }
 
     private func scheduleBatchDispatch(client: GitHubAPIClient, delayNanoseconds: UInt64) {
@@ -1354,11 +1267,6 @@ final class AppState {
         subjectStateResolutionTask = nil
         pendingVisibleSubjectStateIDs = []
         visibleSubjectStateInFlightIDs = []
-    }
-
-    private func cancelSecurityAlertsRefresh() {
-        securityAlertsRefreshTask?.cancel()
-        securityAlertsRefreshTask = nil
     }
 
     private func scheduleVisibleSubjectStateResolutionIfNeeded() {
@@ -1593,86 +1501,27 @@ final class AppState {
         }
     }
 
-    private func scheduleSecurityAlertsRefreshIfNeeded(
-        requestID: UUID,
-        client: GitHubAPIClient,
-        unreadNotifications: [GitHubNotification],
-        recentInboxNotifications: [GitHubNotification],
-        force: Bool
-    ) {
-        guard inboxMode == .inbox, isPanelVisible else { return }
-
-        let repositoryNames = securityAlertRepositoryCandidates(
-            unreadNotifications: unreadNotifications,
-            recentInboxNotifications: recentInboxNotifications
-        )
-        let currentUsername = signedInUsername
-
-        guard !repositoryNames.isEmpty else {
-            if !serverSecurityAlerts.isEmpty {
-                serverSecurityAlerts = []
-                rebuildDerivedState()
-            }
-            return
-        }
-
-        securityAlertsRefreshTask = Task { [weak self, client, repositoryNames, requestID, force] in
-            let alerts: [GitHubNotification]
-            do {
-                alerts = try await client.fetchDependabotAlerts(
-                    repositoryNames: repositoryNames,
-                    currentUsername: currentUsername,
-                    force: force
-                )
-            } catch {
-                DebugTrace.log("security fetch failed error=\(error.localizedDescription)")
-                await MainActor.run {
-                    guard let self, requestID == self.activeLoadRequestID else { return }
-                    self.securityAlertsRefreshTask = nil
-                    if Self.isUnauthorized(error) {
-                        self.signOut()
-                    }
-                }
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self, requestID == self.activeLoadRequestID else { return }
-                self.securityAlertsRefreshTask = nil
-                guard self.serverSecurityAlerts != alerts else { return }
-                self.serverSecurityAlerts = alerts
-                self.rebuildDerivedState()
-                DebugTrace.log(
-                    "security applied count=\(alerts.count) visible.count=\(self.filteredNotifications.count) " +
-                    "visible.top=\(Self.topIDs(in: self.filteredNotifications))"
-                )
-            }
-        }
-    }
-
     private func applyLoadedNotifications(
         unreadNotifications: [GitHubNotification],
-        recentInboxNotifications: [GitHubNotification],
-        securityAlerts: [GitHubNotification]
+        recentInboxNotifications: [GitHubNotification]
     ) {
-        serverNotifications = unreadNotifications
+        let supportedUnreadNotifications = Self.issueAndPullRequestNotifications(from: unreadNotifications)
+        let supportedRecentInboxNotifications = Self.issueAndPullRequestNotifications(from: recentInboxNotifications)
+        serverNotifications = supportedUnreadNotifications
         // Filter out threads with committed done/unsubscribe actions so they
         // don't linger in the recent inbox read list after the server confirms removal.
-        let projectedRecentInbox = projectThreadActions(from: recentInboxNotifications)
+        let projectedRecentInbox = projectThreadActions(from: supportedRecentInboxNotifications)
         let loadedState = inboxStore.applyLoaded(
-            unreadNotifications: unreadNotifications,
+            unreadNotifications: supportedUnreadNotifications,
             recentInboxNotifications: projectedRecentInbox,
-            projectedSecurityAlerts: securityAlerts,
             projectNotifications: projectThreadActions(from:),
             isNotificationVisible: isThreadActionNotificationVisible
         )
         serverRecentInboxNotifications = loadedState.recentInboxNotifications
-        serverSecurityAlerts = securityAlerts
         unreadNotificationCount = loadedState.unreadCount
-        threadActions.reconcileCommittedActions(with: unreadNotifications)
+        threadActions.reconcileCommittedActions(with: supportedUnreadNotifications)
         inboxStore.reconcileMutedThreadsWithUnread(
-            unreadNotifications,
+            supportedUnreadNotifications,
             committedThreadIDs: Set(threadActions.committedActions.keys)
         )
         if repositoryOrderAnchor.isEmpty {
@@ -1680,17 +1529,10 @@ final class AppState {
         }
     }
 
-    private func securityAlertRepositoryCandidates(
-        unreadNotifications: [GitHubNotification],
-        recentInboxNotifications: [GitHubNotification]
-    ) -> [String] {
-        let inboxNotifications = inboxStore.mergedInboxNotifications(
-            unreadNotifications: unreadNotifications,
-            recentInboxNotifications: recentInboxNotifications,
-            projectNotifications: projectThreadActions(from:),
-            isNotificationVisible: isThreadActionNotificationVisible
-        )
-        return Array(Set(inboxNotifications.map(\.repository))).sorted()
+    private static func issueAndPullRequestNotifications(
+        from notifications: [GitHubNotification]
+    ) -> [GitHubNotification] {
+        notifications.filter(\.isIssueOrPullRequest)
     }
 
     private static func loadInboxMode(from userDefaults: UserDefaults) -> InboxMode {

@@ -599,7 +599,6 @@ struct AppShellTests {
             notifications: [notifications[0], notifications[2], notifications[3]],
             groupByRepo: false
         )
-
         #expect(NotificationListView.shouldRevealDownwardContext(
             previous: previous,
             current: current!,
@@ -628,6 +627,46 @@ struct AppShellTests {
             previousRowFrame: CGRect(x: 0, y: 356, width: 380, height: 44),
             currentRowFrame: CGRect(x: 0, y: 312, width: 380, height: 44),
             viewportHeight: 400
+        ) == false)
+    }
+
+    @Test func notificationListSuppressesScrollAfterPointerActionRemovesRow() {
+        let notifications = AppStateTests.makeNotifications(4)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: false
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: [notifications[0], notifications[2], notifications[3]],
+            groupByRepo: false
+        )
+        let currentAfterRemovingUnselectedRow = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: [notifications[0], notifications[1], notifications[2]],
+            groupByRepo: false
+        )
+
+        #expect(NotificationListView.shouldSuppressScroll(
+            previous: previous,
+            current: current!,
+            pointerActionID: "1"
+        ))
+        #expect(NotificationListView.shouldSuppressScroll(
+            previous: previous,
+            current: current!,
+            pointerActionID: nil
+        ) == false)
+        #expect(NotificationListView.shouldSuppressScroll(
+            previous: previous,
+            current: currentAfterRemovingUnselectedRow!,
+            pointerActionID: "3"
+        ))
+        #expect(NotificationListView.shouldSuppressScroll(
+            previous: previous,
+            current: current!,
+            pointerActionID: "3"
         ) == false)
     }
 

@@ -11,8 +11,8 @@ struct NotificationListView: View {
     let onSelect: (String) -> Void
     let onOpen: (String) -> Void
     let onToggleCheck: (String) -> Void
-    let onDone: (String) -> Void
-    let onUnsubscribe: (String) -> Void
+    let onDone: (String) -> Bool
+    let onUnsubscribe: (String) -> Bool
     let onNotificationVisible: (String) -> Void
 
     enum ListItem: Equatable, Identifiable {
@@ -37,6 +37,7 @@ struct NotificationListView: View {
 
     @State private var knownRowFrames: [String: CGRect] = [:]
     @State private var previousScrollRequest: ScrollRequest?
+    @State private var pendingPointerActionID: String?
 
     private var listItems: [ListItem] {
         Self.listItems(
@@ -78,6 +79,7 @@ struct NotificationListView: View {
                 .task(id: currentScrollRequest) {
                     guard let scrollRequest = currentScrollRequest else {
                         previousScrollRequest = nil
+                        pendingPointerActionID = nil
                         return
                     }
 
@@ -86,6 +88,15 @@ struct NotificationListView: View {
                         knownRowFrames[$0.selectedNotificationID]
                     }
                     previousScrollRequest = scrollRequest
+
+                    if Self.shouldSuppressScroll(
+                        previous: priorRequest,
+                        current: scrollRequest,
+                        pointerActionID: pendingPointerActionID
+                    ) {
+                        pendingPointerActionID = nil
+                        return
+                    }
 
                     await Task.yield()
                     let currentRowFrame = knownRowFrames[scrollRequest.selectedNotificationID]
@@ -127,8 +138,12 @@ struct NotificationListView: View {
                 isSelected: isSelected,
                 isChecked: checkedIDs.contains(notification.id),
                 onToggleCheck: { onToggleCheck(notification.id) },
-                onDone: { onDone(notification.id) },
-                onUnsubscribe: { onUnsubscribe(notification.id) },
+                onDone: {
+                    performPointerAction(id: notification.id, action: onDone)
+                },
+                onUnsubscribe: {
+                    performPointerAction(id: notification.id, action: onUnsubscribe)
+                },
                 onActivate: {
                     Self.handleRowTap(
                         id: notification.id,
@@ -206,6 +221,23 @@ struct NotificationListView: View {
 
         let bottomTolerance = max(12, previousRowFrame.height * 0.5)
         return previousRowFrame.maxY >= viewportHeight - bottomTolerance
+    }
+
+    static func shouldSuppressScroll(
+        previous: ScrollRequest?,
+        current: ScrollRequest,
+        pointerActionID: String?
+    ) -> Bool {
+        guard let pointerActionID else { return false }
+        return previous?.visibleIDs.contains(pointerActionID) == true &&
+            !current.visibleIDs.contains(pointerActionID)
+    }
+
+    private func performPointerAction(id: String, action: (String) -> Bool) {
+        pendingPointerActionID = id
+        if !action(id) {
+            pendingPointerActionID = nil
+        }
     }
 
     static func listItems(

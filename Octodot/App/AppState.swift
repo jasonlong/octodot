@@ -578,15 +578,19 @@ final class AppState {
         performDone(target: target, updatesSelection: true)
     }
 
-    func done(notificationID: String) {
-        guard let target = filteredNotifications.first(where: { $0.id == notificationID }) else { return }
-        performDone(target: target, updatesSelection: selectedNotificationID == notificationID)
+    @discardableResult
+    func done(notificationID: String) -> Bool {
+        guard let target = filteredNotifications.first(where: { $0.id == notificationID }) else { return false }
+        return performDone(target: target, updatesSelection: selectedNotificationID == notificationID)
     }
 
-    private func performDone(target: GitHubNotification, updatesSelection: Bool) {
+    @discardableResult
+    private func performDone(target: GitHubNotification, updatesSelection: Bool) -> Bool {
         if startThreadAction(.done, target: target, updatesSelection: updatesSelection) {
             presentActionToast(verb: .done, items: [target])
+            return true
         }
+        return false
     }
 
     func markRead() {
@@ -602,20 +606,24 @@ final class AppState {
         performUnsubscribe(notification: notification, updatesSelection: true)
     }
 
-    func unsubscribeFromThread(notificationID: String) {
-        guard let notification = filteredNotifications.first(where: { $0.id == notificationID }) else { return }
-        performUnsubscribe(
+    @discardableResult
+    func unsubscribeFromThread(notificationID: String) -> Bool {
+        guard let notification = filteredNotifications.first(where: { $0.id == notificationID }) else { return false }
+        return performUnsubscribe(
             notification: notification,
             updatesSelection: selectedNotificationID == notificationID
         )
     }
 
-    private func performUnsubscribe(notification: GitHubNotification, updatesSelection: Bool) {
+    @discardableResult
+    private func performUnsubscribe(notification: GitHubNotification, updatesSelection: Bool) -> Bool {
         if startThreadAction(.unsubscribe, target: notification, updatesSelection: updatesSelection) {
             inboxStore.muteThread(notification.threadId)
             clampSelection()
             presentActionToast(verb: .unsub, items: [notification])
+            return true
         }
+        return false
     }
 
     private enum BulkThreadActionKind {

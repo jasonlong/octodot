@@ -1294,36 +1294,38 @@ struct AppStateTests {
     }
 
     @Test func newerRefreshResultWinsWhenLoadsCompleteOutOfOrder() async {
-        let session = DelayedStubNetworkSession(results: [
-            .success(
-                payload: Self.singleNotificationPayload(id: "old"),
-                response: Self.httpResponse(
+        let session = GatedStubNetworkSession(results: [
+            .success((
+                Self.singleNotificationPayload(id: "old"),
+                Self.httpResponse(
                     url: "https://api.github.com/notifications?page=1",
                     statusCode: 200,
                     headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
-                ),
-                delayNanoseconds: 80_000_000
-            ),
-            .success(
-                payload: Self.singleNotificationPayload(id: "new"),
-                response: Self.httpResponse(
+                )
+            )),
+            .success((
+                Self.singleNotificationPayload(id: "new"),
+                Self.httpResponse(
                     url: "https://api.github.com/notifications?page=1",
                     statusCode: 200,
                     headers: ["Last-Modified": "Wed, 01 Apr 2026 12:01:00 GMT"]
-                ),
-                delayNanoseconds: 0
-            ),
+                )
+            )),
         ])
         let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
         let state = Self.makeState(0, apiClient: client)
         state.inboxMode = .unread
         state.groupByRepo = false
 
-        async let firstLoad: Void = state.loadNotifications(force: true)
-        try? await Task.sleep(nanoseconds: 5_000_000)
-        async let secondLoad: Void = state.loadNotifications(force: true)
+        let firstLoad = Task { await state.loadNotifications(force: true) }
+        await session.waitUntilRequestCount(1)
+        let secondLoad = Task { await state.loadNotifications(force: true) }
+        await session.waitUntilRequestCount(2)
 
-        _ = await (firstLoad, secondLoad)
+        await session.releaseRequest(at: 1)
+        await secondLoad.value
+        await session.releaseRequest(at: 0)
+        await firstLoad.value
 
         #expect(state.notifications.count == 1)
         #expect(state.notifications.first?.id == "new")
@@ -1590,6 +1592,33 @@ struct AppStateTests {
         state.done()
         // Selection stays at 1 (now pointing to what was item 2)
         #expect(state.selectedIndex == 1)
+    }
+
+    @Test func rowDoneTargetsHoveredNotificationWithoutChangingSelectionOrBulkCheck() async {
+        let (state, session) = Self.makeAuthedState(results: [
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/1",
+                    statusCode: 204
+                )
+            ))
+        ], count: 3)
+        state.groupByRepo = false
+        state.selectNotification(id: "0")
+        state.toggleChecked(id: "2")
+
+        state.done(notificationID: "1")
+
+        #expect(state.filteredNotifications.map(\.id) == ["0", "2"])
+        #expect(state.selectedNotificationID == "0")
+        #expect(state.checkedThreadIDs == ["2"])
+
+        await Self.waitUntil {
+            await session.recordedRequests().contains {
+                $0.httpMethod == "DELETE" && $0.url?.path == "/notifications/threads/1"
+            }
+        }
     }
 
     @Test func doneAtLastItemClampsSelection() {
@@ -1890,6 +1919,43 @@ struct AppStateTests {
             await session.recordedRequests().count == 2
         }
         #expect((await session.recordedRequests()).count == 2)
+    }
+
+    @Test func rowUnsubscribeTargetsHoveredNotificationWithoutChangingSelectionOrBulkCheck() async {
+        let (state, session) = Self.makeAuthedState(results: [
+            .success((
+                #"{"ignored":true}"#.data(using: .utf8)!,
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/1/subscription",
+                    statusCode: 200
+                )
+            )),
+            .success((
+                Data(),
+                Self.httpResponse(
+                    url: "https://api.github.com/notifications/threads/1",
+                    statusCode: 204
+                )
+            ))
+        ], count: 3)
+        state.groupByRepo = false
+        state.selectNotification(id: "0")
+        state.toggleChecked(id: "2")
+
+        state.unsubscribeFromThread(notificationID: "1")
+
+        #expect(state.filteredNotifications.map(\.id) == ["0", "2"])
+        #expect(state.selectedNotificationID == "0")
+        #expect(state.checkedThreadIDs == ["2"])
+
+        await Self.waitUntil {
+            await session.recordedRequests().count == 2
+        }
+        let requests = await session.recordedRequests()
+        #expect(requests.first?.httpMethod == "PUT")
+        #expect(requests.first?.url?.path == "/notifications/threads/1/subscription")
+        #expect(requests.last?.httpMethod == "DELETE")
+        #expect(requests.last?.url?.path == "/notifications/threads/1")
     }
 
     @Test func groupedUnsubscribeDoesNotReorderOtherRepositoryBlocksDuringLocalHide() {

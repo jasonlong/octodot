@@ -148,6 +148,8 @@ struct PanelContentView: View {
                         onSelect: { appState.selectNotification(id: $0) },
                         onOpen: { _ in openSelectedNotificationAndCloseIfNeeded() },
                         onToggleCheck: { appState.toggleChecked(id: $0) },
+                        onDone: { appState.done(notificationID: $0) },
+                        onUnsubscribe: { appState.unsubscribeFromThread(notificationID: $0) },
                         onNotificationVisible: { appState.notificationBecameVisible(id: $0) }
                     )
                 }

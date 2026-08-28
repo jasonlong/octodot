@@ -11,6 +11,8 @@ struct NotificationListView: View {
     let onSelect: (String) -> Void
     let onOpen: (String) -> Void
     let onToggleCheck: (String) -> Void
+    let onDone: (String) -> Void
+    let onUnsubscribe: (String) -> Void
     let onNotificationVisible: (String) -> Void
 
     enum ListItem: Equatable, Identifiable {
@@ -125,6 +127,8 @@ struct NotificationListView: View {
                 isSelected: isSelected,
                 isChecked: checkedIDs.contains(notification.id),
                 onToggleCheck: { onToggleCheck(notification.id) },
+                onDone: { onDone(notification.id) },
+                onUnsubscribe: { onUnsubscribe(notification.id) },
                 onActivate: {
                     Self.handleRowTap(
                         id: notification.id,

@@ -5,7 +5,11 @@ struct NotificationRowView: View {
     let isSelected: Bool
     let isChecked: Bool
     let onToggleCheck: () -> Void
+    let onDone: () -> Void
+    let onUnsubscribe: () -> Void
     let onActivate: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -23,10 +27,31 @@ struct NotificationRowView: View {
                 isChecked: isChecked,
                 onToggle: onToggleCheck
             )
+
+            HStack(spacing: 2) {
+                Button("Mark as done", systemImage: "checkmark", action: onDone)
+                    .help("Mark as done")
+
+                Button("Unsubscribe", systemImage: "bell.slash", action: onUnsubscribe)
+                    .help("Unsubscribe")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 10)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+            .accessibilityHidden(!isHovered)
         }
         .frame(height: 44)
         .background(isSelected ? Color.primary.opacity(0.1) : Color.clear)
-        .overlay(HoverBackground())
+        .overlay(HoverBackground(isHovered: isHovered))
+        .onHover { hovered in
+            if hovered != isHovered {
+                isHovered = hovered
+            }
+        }
     }
 
     private var rowContent: some View {
@@ -108,6 +133,8 @@ struct NotificationRowView: View {
             }
             .frame(minWidth: 58, alignment: .trailing)
             .padding(.trailing, 10)
+            .opacity(isHovered ? 0 : 1)
+            .accessibilityHidden(isHovered)
         }
         .frame(height: 44)
         .contentShape(Rectangle())
@@ -203,12 +230,11 @@ private struct CheckableIconButton: View {
 }
 
 private struct HoverBackground: View {
-    @State private var isHovered = false
+    let isHovered: Bool
 
     var body: some View {
         Rectangle()
             .fill(isHovered ? Color.primary.opacity(0.05) : Color.clear)
             .allowsHitTesting(false)
-            .onHover { isHovered = $0 }
     }
 }

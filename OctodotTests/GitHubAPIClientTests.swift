@@ -39,6 +39,22 @@ struct GitHubAPIClientTests {
         }
     }
 
+    private static func metadataIssue(id: String, number: Int) -> GitHubNotification {
+        GitHubNotification(
+            id: id,
+            threadId: id,
+            title: "Issue \(number)",
+            repository: "acme/test",
+            reason: .subscribed,
+            type: .issue,
+            updatedAt: Date(),
+            isUnread: true,
+            url: URL(string: "https://github.com/acme/test/issues/\(number)")!,
+            subjectURL: "https://api.github.com/repos/acme/test/issues/\(number)",
+            subjectState: .unknown
+        )
+    }
+
     private final class SubjectConcurrencyTrackingSession: @unchecked Sendable, NetworkSession {
         private let notificationsPayload: Data
         private let subjectDelayNanoseconds: UInt64
@@ -1416,6 +1432,170 @@ struct GitHubAPIClientTests {
         #expect(metadata?.openerLogin == "monalisa")
         #expect(metadata?.openerAvatarURL?.absoluteString == "https://avatars.githubusercontent.com/u/3?v=4")
         #expect(metadata?.hasResolvedOpener == true)
+    }
+
+    @Test func resolveSubjectMetadataPreservesPartialGraphQLDataAndFallsBackOnlyUnresolvedAlias() async {
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "issue": {
+                "id": "I_node_1",
+                "state": "OPEN",
+                "stateReason": null,
+                "author": null
+              }
+            },
+            "n1": { "issue": null }
+          },
+          "errors": [
+            { "message": "Issue not found", "path": ["n1", "issue"] }
+          ]
+        }
+        """.data(using: .utf8)!
+        let restPayload = #"{"state":"closed","state_reason":"not_planned","user":{"login":"octocat"}}"#.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                restPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/issues/2")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let metadata = await client.resolveSubjectMetadata(for: [
+            Self.metadataIssue(id: "1", number: 1),
+            Self.metadataIssue(id: "2", number: 2),
+        ])
+        let requests = await session.recordedRequests()
+
+        #expect(metadata["1"]?.state == .open)
+        #expect(metadata["1"]?.nodeID == "I_node_1")
+        #expect(metadata["2"]?.state == .closedNotPlanned)
+        #expect(metadata["2"]?.openerLogin == "octocat")
+        #expect(requests.count == 2)
+        #expect(requests.first?.url?.path == "/graphql")
+        #expect(requests.last?.url?.path == "/repos/acme/test/issues/2")
+        #expect(await client.takeNonFatalWarningMessage() == nil)
+    }
+
+    @Test func resolveSubjectMetadataFallsBackForNullGraphQLRepositoryAlias() async {
+        let graphQLPayload = #"{"data":{"n0":null}}"#.data(using: .utf8)!
+        let restPayload = #"{"state":"open","user":null}"#.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+            .success((
+                restPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/issues/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let metadata = await client.resolveSubjectMetadata(
+            for: [Self.metadataIssue(id: "1", number: 1)]
+        )
+        let requests = await session.recordedRequests()
+
+        #expect(metadata["1"]?.state == .open)
+        #expect(requests.count == 2)
+        #expect(requests.last?.url?.path == "/repos/acme/test/issues/1")
+        #expect(await client.takeNonFatalWarningMessage() == nil)
+    }
+
+    @Test func resolveSubjectMetadataFallsBackAfterTotalGraphQLTransportFailure() async {
+        let restPayload = #"{"state":"closed","state_reason":"completed","user":null}"#.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .failure(GitHubAPIClient.APIError.forbidden),
+            .success((
+                restPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/issues/1")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let metadata = await client.resolveSubjectMetadata(
+            for: [Self.metadataIssue(id: "1", number: 1)]
+        )
+        let requests = await session.recordedRequests()
+
+        #expect(metadata["1"]?.state == .closed)
+        #expect(requests.count == 2)
+        #expect(requests.first?.url?.path == "/graphql")
+        #expect(requests.last?.url?.path == "/repos/acme/test/issues/1")
+        #expect(await client.takeNonFatalWarningMessage() == nil)
+    }
+
+    @Test func resolveSubjectMetadataCancellationDoesNotStartRESTFallback() async {
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "issue": {
+                "id": "I_node_1",
+                "state": "OPEN",
+                "stateReason": null,
+                "author": null
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+        let session = GatedStubNetworkSession(results: [
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+        let notification = Self.metadataIssue(id: "1", number: 1)
+
+        let resolution = Task {
+            await client.resolveSubjectMetadata(for: [notification])
+        }
+        await session.waitUntilRequestCount(1)
+        resolution.cancel()
+        await session.releaseRequest(at: 0)
+        let metadata = await resolution.value
+
+        #expect(metadata.isEmpty)
+        #expect(await session.recordedRequests().count == 1)
+        #expect(await client.takeNonFatalWarningMessage() == nil)
     }
 
     @Test func resolveSubjectMetadataRecordsNonFatalWarningWhenSubjectFetchFails() async throws {

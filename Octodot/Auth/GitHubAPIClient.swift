@@ -314,18 +314,29 @@ actor GitHubAPIClient {
                 $0.type == .pullRequest || $0.type == .issue
             }
             let restCandidates = candidateNotifications.filter { $0.type == .release }
-            result = await Self.fetchSubjectMetadataViaGraphQL(
+            let graphQLResult = await Self.fetchSubjectMetadataViaGraphQL(
                 for: graphQLCandidates,
                 context: context
             )
-            if result.metadataByID.isEmpty && !graphQLCandidates.isEmpty {
-                DebugTrace.log("graphql subject metadata failed, falling back to REST")
-                result = await Self.fetchSubjectMetadata(
-                    for: graphQLCandidates,
-                    maxConcurrent: maxConcurrentSubjectRequests,
-                    context: context
+            guard !Task.isCancelled else { return [:] }
+
+            let unresolvedGraphQLCandidates = graphQLCandidates.filter {
+                graphQLResult.metadataByID[$0.id] == nil
+            }
+            let graphQLFallbackResult = await Self.fetchSubjectMetadata(
+                for: unresolvedGraphQLCandidates,
+                maxConcurrent: maxConcurrentSubjectRequests,
+                context: context
+            )
+            if !unresolvedGraphQLCandidates.isEmpty {
+                DebugTrace.log(
+                    "graphql subject metadata targeted REST fallback count=\(unresolvedGraphQLCandidates.count)"
                 )
             }
+            result = graphQLResult
+            result.metadataByID.merge(graphQLFallbackResult.metadataByID) { _, restMetadata in restMetadata }
+            result.failureCount = graphQLFallbackResult.failureCount
+
             let restResult = await Self.fetchSubjectMetadata(
                 for: restCandidates,
                 maxConcurrent: maxConcurrentSubjectRequests,
@@ -731,12 +742,11 @@ actor GitHubAPIClient {
                 DebugTrace.log("graphql subject metadata parse error")
                 return SubjectMetadataBatchResult()
             }
-            if let errors = json["errors"] as? [Any], !errors.isEmpty {
-                DebugTrace.log("graphql subject metadata returned errors")
-                return SubjectMetadataBatchResult(failureCount: refs.count)
+            let errorCount = (json["errors"] as? [Any])?.count ?? 0
+            if errorCount > 0 {
+                DebugTrace.log("graphql subject metadata returned errors count=\(errorCount)")
             }
-            guard
-                  let dataObj = json["data"] as? [String: Any] else {
+            guard let dataObj = json["data"] as? [String: Any] else {
                 DebugTrace.log("graphql subject metadata parse error")
                 return SubjectMetadataBatchResult()
             }
@@ -751,17 +761,19 @@ actor GitHubAPIClient {
                 let metadata: GitHubNotification.SubjectMetadata
                 switch ref.type {
                 case .pullRequest:
-                    guard let pr = repoObj["pullRequest"] as? [String: Any] else {
+                    guard let pr = repoObj["pullRequest"] as? [String: Any],
+                          let parsedMetadata = parsePullRequestMetadata(pr) else {
                         result.failureCount += 1
                         continue
                     }
-                    metadata = parsePullRequestMetadata(pr)
+                    metadata = parsedMetadata
                 case .issue:
-                    guard let issue = repoObj["issue"] as? [String: Any] else {
+                    guard let issue = repoObj["issue"] as? [String: Any],
+                          let parsedMetadata = parseIssueMetadata(issue) else {
                         result.failureCount += 1
                         continue
                     }
-                    metadata = parseIssueMetadata(issue)
+                    metadata = parsedMetadata
                 default:
                     continue
                 }
@@ -776,9 +788,16 @@ actor GitHubAPIClient {
         }
     }
 
-    private static func parsePullRequestMetadata(_ pr: [String: Any]) -> GitHubNotification.SubjectMetadata {
-        let stateString = pr["state"] as? String ?? ""
-        let isDraft = (pr["isDraft"] as? Bool) ?? (pr["draft"] as? Bool) ?? false
+    private static func parsePullRequestMetadata(
+        _ pr: [String: Any]
+    ) -> GitHubNotification.SubjectMetadata? {
+        guard let nodeID = pr["id"] as? String,
+              !nodeID.isEmpty,
+              let stateString = pr["state"] as? String,
+              let isDraft = (pr["isDraft"] as? Bool) ?? (pr["draft"] as? Bool),
+              ["OPEN", "CLOSED", "MERGED"].contains(stateString) else {
+            return nil
+        }
         let mergedAt = pr["mergedAt"] as? String
 
         let state: GitHubNotification.SubjectState
@@ -815,15 +834,22 @@ actor GitHubAPIClient {
             state: state,
             ciStatus: ciStatus,
             hasResolvedCIStatus: true,
-            nodeID: pr["id"] as? String,
+            nodeID: nodeID,
             openerLogin: author?["login"] as? String,
             openerAvatarURL: (author?["avatarUrl"] as? String).flatMap(URL.init(string:)),
             hasResolvedOpener: true
         )
     }
 
-    private static func parseIssueMetadata(_ issue: [String: Any]) -> GitHubNotification.SubjectMetadata {
-        let stateString = issue["state"] as? String ?? ""
+    private static func parseIssueMetadata(
+        _ issue: [String: Any]
+    ) -> GitHubNotification.SubjectMetadata? {
+        guard let nodeID = issue["id"] as? String,
+              !nodeID.isEmpty,
+              let stateString = issue["state"] as? String,
+              ["OPEN", "CLOSED"].contains(stateString) else {
+            return nil
+        }
         let stateReason = issue["stateReason"] as? String
 
         let state: GitHubNotification.SubjectState
@@ -840,7 +866,7 @@ actor GitHubAPIClient {
         return GitHubNotification.SubjectMetadata(
             state: state,
             ciStatus: nil,
-            nodeID: issue["id"] as? String,
+            nodeID: nodeID,
             openerLogin: author?["login"] as? String,
             openerAvatarURL: (author?["avatarUrl"] as? String).flatMap(URL.init(string:)),
             hasResolvedOpener: true

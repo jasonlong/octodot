@@ -347,6 +347,132 @@ struct GitHubAPIClientTests {
         #expect(requests.last?.value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
     }
 
+    @Test func successfulEmptyFeedIsCachedUntilPollingDeadline() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data("[]".utf8),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "60"]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let initial = try await client.fetchNotifications(force: false)
+        let cached = try await client.fetchNotifications(force: false)
+
+        #expect(initial.isEmpty)
+        #expect(cached.isEmpty)
+        #expect(await session.recordedRequests().count == 1)
+    }
+
+    @Test func forceRefreshBypassesSuccessfulEmptyFeedCache() async throws {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://api.github.com/notifications")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["X-Poll-Interval": "60"]
+        )!
+        let session = StubNetworkSession(results: [
+            .success((Data("[]".utf8), response)),
+            .success((Data("[]".utf8), response)),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        _ = try await client.fetchNotifications(force: false)
+        _ = try await client.fetchNotifications(force: true)
+
+        #expect(await session.recordedRequests().count == 2)
+    }
+
+    @Test func expiredEmptyFeedUsesConditionalRequest() async throws {
+        let session = StubNetworkSession(results: [
+            .success((
+                Data("[]".utf8),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT",
+                        "X-Poll-Interval": "0",
+                    ]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 304,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "60"]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        _ = try await client.fetchNotifications(force: false)
+        let refreshed = try await client.fetchNotifications(force: false)
+        let requests = await session.recordedRequests()
+
+        #expect(refreshed.isEmpty)
+        #expect(requests.count == 2)
+        #expect(requests[1].value(forHTTPHeaderField: "If-Modified-Since") == "Wed, 01 Apr 2026 12:00:00 GMT")
+    }
+
+    @Test func successfulEmptyFeedCachesRemainIsolatedByScope() async throws {
+        let emptyResponse: (String) -> HTTPURLResponse = { url in
+            HTTPURLResponse(
+                url: URL(string: url)!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["X-Poll-Interval": "60"]
+            )!
+        }
+        let session = StubNetworkSession(results: [
+            .success((Data("[]".utf8), emptyResponse("https://api.github.com/notifications?all=false"))),
+            .success((Data("[]".utf8), emptyResponse("https://api.github.com/notifications?all=true"))),
+            .success((Data("[]".utf8), emptyResponse("https://api.github.com/notifications?all=true&since=2026-04-01T12:00:00Z"))),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let since = Date(timeIntervalSince1970: 1_775_044_800)
+
+        _ = try await client.fetchNotifications(all: false)
+        _ = try await client.fetchNotifications(all: true)
+        _ = try await client.fetchRecentInboxNotifications(since: since)
+        _ = try await client.fetchNotifications(all: false)
+        _ = try await client.fetchNotifications(all: true)
+        _ = try await client.fetchRecentInboxNotifications(since: since)
+
+        #expect(await session.recordedRequests().count == 3)
+    }
+
+    @Test func tokenReplacementInvalidatesSuccessfulEmptyFeedCache() async throws {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://api.github.com/notifications")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["X-Poll-Interval": "60"]
+        )!
+        let session = StubNetworkSession(results: [
+            .success((Data("[]".utf8), response)),
+            .success((Data("[]".utf8), response)),
+        ])
+        let client = GitHubAPIClient(token: "old_token", session: session, useGraphQLForSubjectMetadata: false)
+
+        _ = try await client.fetchNotifications()
+        await client.updateToken("new_token")
+        _ = try await client.fetchNotifications()
+        let requests = await session.recordedRequests()
+
+        #expect(requests.count == 2)
+        #expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer old_token")
+        #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer new_token")
+    }
+
     @Test func duplicateNotificationIDsAreDeduplicatedWithoutPoisoningCache() async throws {
         let duplicatePayload = Self.notificationsPayload(items: [
             NotificationFixture(

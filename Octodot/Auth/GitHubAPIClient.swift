@@ -49,6 +49,7 @@ actor GitHubAPIClient {
 
     private struct FeedCache {
         var notifications: [GitHubNotification] = []
+        var hasFetchedSuccessfully = false
         var lastModifiedValue: String?
         var nextNotificationsRefreshAt = Date.distantPast
     }
@@ -120,14 +121,16 @@ actor GitHubAPIClient {
         maxPages: Int?
     ) async throws -> [GitHubNotification] {
         let cachedFeed = feedCache(for: scope)
-        var shouldUseConditionalRequest = !force && cachedFeed.lastModifiedValue != nil
+        var shouldUseConditionalRequest = !force &&
+            cachedFeed.hasFetchedSuccessfully &&
+            cachedFeed.lastModifiedValue != nil
         DebugTrace.log(
             "fetch start scope=\(Self.debugName(for: scope)) force=\(force) " +
             "cached.count=\(cachedFeed.notifications.count) ifModified=\(cachedFeed.lastModifiedValue ?? "nil")"
         )
 
         if !force,
-           !cachedFeed.notifications.isEmpty,
+           cachedFeed.hasFetchedSuccessfully,
            Date() < cachedFeed.nextNotificationsRefreshAt {
             DebugTrace.log(
                 "fetch cache-hit scope=\(Self.debugName(for: scope)) count=\(cachedFeed.notifications.count) " +
@@ -266,6 +269,7 @@ actor GitHubAPIClient {
 
         updateFeedCache(scope, for: requestID) { cache in
             cache.notifications = notifications
+            cache.hasFetchedSuccessfully = true
             cache.lastModifiedValue = lastModifiedFromResponse
         }
         DebugTrace.log(
@@ -1243,6 +1247,7 @@ actor GitHubAPIClient {
             latestFeedRequestIDs[scope] = UUID()
             updateFeedCache(scope) { cache in
                 cache.notifications = []
+                cache.hasFetchedSuccessfully = false
                 cache.nextNotificationsRefreshAt = .distantPast
                 cache.lastModifiedValue = nil
             }

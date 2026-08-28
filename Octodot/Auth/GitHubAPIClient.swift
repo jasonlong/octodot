@@ -21,6 +21,91 @@ extension URLSession: NetworkSession {
     }
 }
 
+private final class GitHubRequestCooldown: @unchecked Sendable {
+    private let defaultDuration: TimeInterval = 60
+    private let maximumDuration: TimeInterval = 60 * 60
+    private let dateProvider: @Sendable () -> Date
+    private let lock = NSLock()
+    private var nextAllowedRequestAt = Date.distantPast
+
+    init(dateProvider: @escaping @Sendable () -> Date) {
+        self.dateProvider = dateProvider
+    }
+
+    func checkRequestAllowed() throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = dateProvider()
+        guard nextAllowedRequestAt > now else { return }
+        throw GitHubAPIClient.APIError.rateLimitCooldown(until: nextAllowedRequestAt)
+    }
+
+    func activeDeadline() -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = dateProvider()
+        return nextAllowedRequestAt > now ? nextAllowedRequestAt : nil
+    }
+
+    func observe(_ response: HTTPURLResponse) {
+        let retryAfter = response.value(forHTTPHeaderField: "Retry-After")
+        let remaining = response.value(forHTTPHeaderField: "X-RateLimit-Remaining")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard response.statusCode == 429 || (
+            response.statusCode == 403 && (retryAfter != nil || remaining == "0")
+        ) else {
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = dateProvider()
+        var deadlines: [Date] = []
+        if let retryAfter,
+           let deadline = retryAfterDeadline(retryAfter, relativeTo: now) {
+            deadlines.append(deadline)
+        }
+        if let reset = response.value(forHTTPHeaderField: "X-RateLimit-Reset"),
+           let deadline = rateLimitResetDeadline(reset, relativeTo: now) {
+            deadlines.append(deadline)
+        }
+
+        let requestedDeadline = deadlines.max() ?? now.addingTimeInterval(defaultDuration)
+        let boundedDeadline = min(
+            requestedDeadline,
+            now.addingTimeInterval(maximumDuration)
+        )
+        nextAllowedRequestAt = max(nextAllowedRequestAt, boundedDeadline)
+    }
+
+    private func retryAfterDeadline(_ rawValue: String, relativeTo now: Date) -> Date? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let seconds = TimeInterval(value), seconds.isFinite, seconds > 0 {
+            return now.addingTimeInterval(seconds)
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: value), date > now else { return nil }
+        return date
+    }
+
+    private func rateLimitResetDeadline(_ rawValue: String, relativeTo now: Date) -> Date? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let seconds = TimeInterval(value),
+              seconds.isFinite else {
+            return nil
+        }
+        let date = Date(timeIntervalSince1970: seconds)
+        return date > now ? date : nil
+    }
+}
+
 actor GitHubAPIClient {
     static let subjectMetadataWarningMessage = "Some pull request status data couldn't be loaded."
 
@@ -34,8 +119,10 @@ actor GitHubAPIClient {
     private let maxSubjectResolutionBatchSize = 40
     private static let requiredClassicTokenScopes: Set<String> = ["notifications", "repo"]
     private let session: any NetworkSession
+    private let dateProvider: @Sendable () -> Date
     private var token: String
     private var credentialGeneration = UUID()
+    private var requestCooldown: GitHubRequestCooldown
 
     private enum FeedScope: CaseIterable {
         case unread
@@ -62,6 +149,7 @@ actor GitHubAPIClient {
     private struct SubjectRequestContext: Sendable {
         let token: String
         let session: any NetworkSession
+        let cooldown: GitHubRequestCooldown
     }
 
     private let useGraphQLForSubjectMetadata: Bool
@@ -70,10 +158,13 @@ actor GitHubAPIClient {
         token: String,
         session: any NetworkSession = URLSession.shared,
         maxConcurrentSubjectRequests: Int = 6,
-        useGraphQLForSubjectMetadata: Bool = true
+        useGraphQLForSubjectMetadata: Bool = true,
+        dateProvider: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.token = Self.sanitizedToken(token)
         self.session = session
+        self.dateProvider = dateProvider
+        self.requestCooldown = GitHubRequestCooldown(dateProvider: dateProvider)
         self.maxConcurrentSubjectRequests = max(1, maxConcurrentSubjectRequests)
         self.useGraphQLForSubjectMetadata = useGraphQLForSubjectMetadata
     }
@@ -85,6 +176,7 @@ actor GitHubAPIClient {
         invalidateFeedRequests(FeedScope.allCases)
         latestSubjectMetadataRequestID = UUID()
         nonFatalWarningMessage = nil
+        requestCooldown = GitHubRequestCooldown(dateProvider: dateProvider)
     }
 
     // MARK: - Fetch notifications
@@ -132,7 +224,7 @@ actor GitHubAPIClient {
 
         if !force,
            cachedFeed.hasFetchedSuccessfully,
-           Date() < cachedFeed.nextNotificationsRefreshAt {
+           dateProvider() < cachedFeed.nextNotificationsRefreshAt {
             DebugTrace.log(
                 "fetch cache-hit scope=\(Self.debugName(for: scope)) count=\(cachedFeed.notifications.count) " +
                 "top=\(Self.topIDs(in: cachedFeed.notifications))"
@@ -143,6 +235,7 @@ actor GitHubAPIClient {
         let requestID = beginFeedRequest(for: scope)
         let requestGeneration = credentialGeneration
         let requestToken = token
+        let operationCooldown = requestCooldown
         var apiItems: [APINotification] = []
         var lastModifiedFromResponse: String?
         var page = 1
@@ -165,12 +258,14 @@ actor GitHubAPIClient {
                 request.setValue(lastModifiedValue, forHTTPHeaderField: "If-Modified-Since")
             }
 
-            let (data, response) = try await session.data(for: request)
-            try Task.checkCancellation()
+            let (data, httpResponse) = try await Self.responseData(
+                for: request,
+                session: session,
+                cooldown: operationCooldown
+            )
             guard requestGeneration == credentialGeneration else {
                 throw APIError.staleCredentialResponse
             }
-            let httpResponse = try Self.validatedGitHubAPIResponse(response)
             let status = httpResponse.statusCode
             DebugTrace.log(
                 "fetch response scope=\(Self.debugName(for: scope)) page=\(page) status=\(status) " +
@@ -305,7 +400,17 @@ actor GitHubAPIClient {
         let candidateNotifications = Array(pendingSubjectNotifications)
         guard !candidateNotifications.isEmpty else { return [:] }
 
-        let context = SubjectRequestContext(token: token, session: session)
+        let operationCooldown = requestCooldown
+        guard operationCooldown.activeDeadline() == nil else {
+            nonFatalWarningMessage = Self.subjectMetadataWarningMessage
+            return [:]
+        }
+
+        let context = SubjectRequestContext(
+            token: token,
+            session: session,
+            cooldown: operationCooldown
+        )
         let requestGeneration = credentialGeneration
 
         var result: SubjectMetadataBatchResult
@@ -323,27 +428,36 @@ actor GitHubAPIClient {
             let unresolvedGraphQLCandidates = graphQLCandidates.filter {
                 graphQLResult.metadataByID[$0.id] == nil
             }
-            let graphQLFallbackResult = await Self.fetchSubjectMetadata(
-                for: unresolvedGraphQLCandidates,
-                maxConcurrent: maxConcurrentSubjectRequests,
-                context: context
-            )
-            if !unresolvedGraphQLCandidates.isEmpty {
-                DebugTrace.log(
-                    "graphql subject metadata targeted REST fallback count=\(unresolvedGraphQLCandidates.count)"
+            if operationCooldown.activeDeadline() != nil {
+                result = graphQLResult
+                result.failureCount = unresolvedGraphQLCandidates.count + restCandidates.count
+            } else {
+                let graphQLFallbackResult = await Self.fetchSubjectMetadata(
+                    for: unresolvedGraphQLCandidates,
+                    maxConcurrent: maxConcurrentSubjectRequests,
+                    context: context
                 )
-            }
-            result = graphQLResult
-            result.metadataByID.merge(graphQLFallbackResult.metadataByID) { _, restMetadata in restMetadata }
-            result.failureCount = graphQLFallbackResult.failureCount
+                if !unresolvedGraphQLCandidates.isEmpty {
+                    DebugTrace.log(
+                        "graphql subject metadata targeted REST fallback count=\(unresolvedGraphQLCandidates.count)"
+                    )
+                }
+                result = graphQLResult
+                result.metadataByID.merge(graphQLFallbackResult.metadataByID) { _, restMetadata in restMetadata }
+                result.failureCount = graphQLFallbackResult.failureCount
 
-            let restResult = await Self.fetchSubjectMetadata(
-                for: restCandidates,
-                maxConcurrent: maxConcurrentSubjectRequests,
-                context: context
-            )
-            result.metadataByID.merge(restResult.metadataByID) { _, restMetadata in restMetadata }
-            result.failureCount += restResult.failureCount
+                if operationCooldown.activeDeadline() != nil {
+                    result.failureCount += restCandidates.count
+                } else {
+                    let restResult = await Self.fetchSubjectMetadata(
+                        for: restCandidates,
+                        maxConcurrent: maxConcurrentSubjectRequests,
+                        context: context
+                    )
+                    result.metadataByID.merge(restResult.metadataByID) { _, restMetadata in restMetadata }
+                    result.failureCount += restResult.failureCount
+                }
+            }
         } else {
             result = await Self.fetchSubjectMetadata(
                 for: candidateNotifications,
@@ -433,6 +547,15 @@ actor GitHubAPIClient {
                     batchResult.failureCount += 1
                 }
 
+                if context.cooldown.activeDeadline() != nil {
+                    while let pendingNotification = iterator.next() {
+                        if pendingNotification.subjectURL != nil {
+                            batchResult.failureCount += 1
+                        }
+                    }
+                    continue
+                }
+
                 guard let notification = iterator.next(),
                       notification.subjectURL != nil else {
                     continue
@@ -463,7 +586,12 @@ actor GitHubAPIClient {
             return .init(metadata: .init(state: .unknown, ciStatus: nil), hadFailure: true)
         }
         do {
-            let data = try await request(url: url, token: context.token, session: context.session)
+            let data = try await request(
+                url: url,
+                token: context.token,
+                session: context.session,
+                cooldown: context.cooldown
+            )
             let subject = try JSONDecoder.github.decode(APISubjectState.self, from: data)
             if notification.type == .release {
                 guard let releaseURL = trustedReleaseWebURL(
@@ -545,7 +673,12 @@ actor GitHubAPIClient {
 
         if let checkRunsURL = checkRunsComponents?.url {
             do {
-                let data = try await request(url: checkRunsURL, token: context.token, session: context.session)
+                let data = try await request(
+                    url: checkRunsURL,
+                    token: context.token,
+                    session: context.session,
+                    cooldown: context.cooldown
+                )
                 let response = try JSONDecoder.github.decode(APICheckRunsResponse.self, from: data)
                 if let status = response.resolvedCIStatus {
                     return .status(status)
@@ -560,7 +693,12 @@ actor GitHubAPIClient {
             .appendingPathComponent(headSHA)
             .appendingPathComponent("status")
         do {
-            let data = try await request(url: combinedStatusURL, token: context.token, session: context.session)
+            let data = try await request(
+                url: combinedStatusURL,
+                token: context.token,
+                session: context.session,
+                cooldown: context.cooldown
+            )
             let response = try JSONDecoder.github.decode(APICombinedStatus.self, from: data)
             return .status(response.resolvedCIStatus)
         } catch {
@@ -729,9 +867,11 @@ actor GitHubAPIClient {
         DebugTrace.log("graphql subject metadata start count=\(refs.count)")
 
         do {
-            let (data, response) = try await context.session.data(for: req)
-            try Task.checkCancellation()
-            let httpResponse = try validatedGitHubAPIResponse(response)
+            let (data, httpResponse) = try await responseData(
+                for: req,
+                session: context.session,
+                cooldown: context.cooldown
+            )
             let status = httpResponse.statusCode
             guard (200...299).contains(status) else {
                 DebugTrace.log("graphql subject metadata http error status=\(status)")
@@ -878,17 +1018,25 @@ actor GitHubAPIClient {
     func markAsRead(threadId: String) async throws {
         let traceID = UUID().uuidString
         let requestGeneration = credentialGeneration
+        let operationCooldown = requestCooldown
         let url = try threadURL(threadId: threadId)
         var req = Self.makeRequest(url: url, token: token)
         req.httpMethod = "PATCH"
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await Self.responseData(
+            for: req,
+            session: session,
+            cooldown: operationCooldown
+        )
         guard requestGeneration == credentialGeneration else {
             throw APIError.staleCredentialResponse
         }
-        let status = try Self.validatedGitHubAPIResponse(response).statusCode
+        let status = response.statusCode
         logActionResponse(traceID: traceID, action: "mark-read", step: "patch-thread", threadId: threadId, request: req, response: response, data: data)
         guard status != 401 else {
             throw APIError.unauthorized
+        }
+        if status == 429 || (status == 403 && Self.isRateLimitedResponse(response)) {
+            throw APIError.rateLimited
         }
         guard (200...299).contains(status) else {
             throw APIError.markReadFailed(status)
@@ -899,17 +1047,25 @@ actor GitHubAPIClient {
     func markAsDone(notification: GitHubNotification) async throws {
         let traceID = UUID().uuidString
         let requestGeneration = credentialGeneration
+        let operationCooldown = requestCooldown
         let url = try threadURL(threadId: notification.threadId)
         var req = Self.makeRequest(url: url, token: token)
         req.httpMethod = "DELETE"
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await Self.responseData(
+            for: req,
+            session: session,
+            cooldown: operationCooldown
+        )
         guard requestGeneration == credentialGeneration else {
             throw APIError.staleCredentialResponse
         }
-        let status = try Self.validatedGitHubAPIResponse(response).statusCode
+        let status = response.statusCode
         logActionResponse(traceID: traceID, action: "done", step: "delete-thread", threadId: notification.threadId, request: req, response: response, data: data)
         guard status != 401 else {
             throw APIError.unauthorized
+        }
+        if status == 429 || (status == 403 && Self.isRateLimitedResponse(response)) {
+            throw APIError.rateLimited
         }
         guard (200...299).contains(status) else {
             throw APIError.httpError(status)
@@ -921,38 +1077,77 @@ actor GitHubAPIClient {
         let traceID = UUID().uuidString
         let requestGeneration = credentialGeneration
         let operationToken = token
+        let operationCooldown = requestCooldown
 
         // Use GraphQL updateSubscription(state: IGNORED) for a true mute.
         // The REST PUT ignored=true endpoint is documented but silently broken.
         if let nodeID = notification.graphQLNodeID {
             // Fast path: node ID was cached during subject metadata resolution
             do {
-                try await ignoreViaGraphQLNodeID(nodeID, token: operationToken, traceID: traceID)
+                try await ignoreViaGraphQLNodeID(
+                    nodeID,
+                    token: operationToken,
+                    cooldown: operationCooldown,
+                    traceID: traceID
+                )
             } catch APIError.unauthorized {
                 throw APIError.unauthorized
+            } catch APIError.rateLimited {
+                throw APIError.rateLimited
+            } catch APIError.rateLimitCooldown(let until) {
+                throw APIError.rateLimitCooldown(until: until)
             } catch {
                 DebugTrace.log("graphql ignore (cached) failed, falling back to REST thread=\(notification.threadId) error=\(error.localizedDescription)")
-                try await ignoreViaREST(threadId: notification.threadId, token: operationToken, traceID: traceID)
+                try await ignoreViaREST(
+                    threadId: notification.threadId,
+                    token: operationToken,
+                    cooldown: operationCooldown,
+                    traceID: traceID
+                )
             }
         } else if let ref = Self.parseSubjectRef(from: notification) {
             // Slow path: fetch node ID then mute
             do {
-                try await ignoreViaGraphQL(ref: ref, token: operationToken, traceID: traceID)
+                try await ignoreViaGraphQL(
+                    ref: ref,
+                    token: operationToken,
+                    cooldown: operationCooldown,
+                    traceID: traceID
+                )
             } catch APIError.unauthorized {
                 throw APIError.unauthorized
+            } catch APIError.rateLimited {
+                throw APIError.rateLimited
+            } catch APIError.rateLimitCooldown(let until) {
+                throw APIError.rateLimitCooldown(until: until)
             } catch {
                 DebugTrace.log("graphql ignore failed, falling back to REST thread=\(notification.threadId) error=\(error.localizedDescription)")
-                try await ignoreViaREST(threadId: notification.threadId, token: operationToken, traceID: traceID)
+                try await ignoreViaREST(
+                    threadId: notification.threadId,
+                    token: operationToken,
+                    cooldown: operationCooldown,
+                    traceID: traceID
+                )
             }
         } else {
-            try await ignoreViaREST(threadId: notification.threadId, token: operationToken, traceID: traceID)
+            try await ignoreViaREST(
+                threadId: notification.threadId,
+                token: operationToken,
+                cooldown: operationCooldown,
+                traceID: traceID
+            )
         }
         guard requestGeneration == credentialGeneration else {
             throw APIError.staleCredentialResponse
         }
     }
 
-    private func ignoreViaGraphQL(ref: SubjectRef, token: String, traceID: String) async throws {
+    private func ignoreViaGraphQL(
+        ref: SubjectRef,
+        token: String,
+        cooldown: GitHubRequestCooldown,
+        traceID: String
+    ) async throws {
         let typeField = ref.type == .pullRequest ? "pullRequest" : "issue"
         let owner = Self.escapeGraphQL(ref.owner)
         let repo = Self.escapeGraphQL(ref.repo)
@@ -968,17 +1163,27 @@ actor GitHubAPIClient {
         }
         """
 
-        let nodeData = try await graphQLRequest(query: nodeQuery, token: token)
+        let nodeData = try await graphQLRequest(query: nodeQuery, token: token, cooldown: cooldown)
         guard let repoObj = nodeData["repository"] as? [String: Any],
               let subjectObj = repoObj[typeField] as? [String: Any],
               let nodeId = subjectObj["id"] as? String else {
             throw APIError.graphQLNodeIDNotFound
         }
 
-        try await ignoreViaGraphQLNodeID(nodeId, token: token, traceID: traceID)
+        try await ignoreViaGraphQLNodeID(
+            nodeId,
+            token: token,
+            cooldown: cooldown,
+            traceID: traceID
+        )
     }
 
-    private func ignoreViaGraphQLNodeID(_ nodeID: String, token: String, traceID: String) async throws {
+    private func ignoreViaGraphQLNodeID(
+        _ nodeID: String,
+        token: String,
+        cooldown: GitHubRequestCooldown,
+        traceID: String
+    ) async throws {
         let mutationQuery = """
         mutation {
           updateSubscription(input: {subscribableId: "\(Self.escapeGraphQL(nodeID))", state: IGNORED}) {
@@ -990,29 +1195,51 @@ actor GitHubAPIClient {
         }
         """
 
-        let mutationData = try await graphQLRequest(query: mutationQuery, token: token)
+        let mutationData = try await graphQLRequest(
+            query: mutationQuery,
+            token: token,
+            cooldown: cooldown
+        )
         DebugTrace.log("graphql ignore success traceID=\(traceID) nodeId=\(nodeID) response=\(mutationData)")
     }
 
-    private func ignoreViaREST(threadId: String, token: String, traceID: String) async throws {
+    private func ignoreViaREST(
+        threadId: String,
+        token: String,
+        cooldown: GitHubRequestCooldown,
+        traceID: String
+    ) async throws {
         let subscriptionURL = try threadURL(threadId: threadId)
             .appendingPathComponent("subscription")
         var subscriptionRequest = Self.makeRequest(url: subscriptionURL, token: token)
         subscriptionRequest.httpMethod = "PUT"
         subscriptionRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         subscriptionRequest.httpBody = try JSONEncoder().encode(ThreadSubscriptionRequest(ignored: true))
-        let (subscriptionData, subscriptionResponse) = try await session.data(for: subscriptionRequest)
-        let subscriptionStatus = try Self.validatedGitHubAPIResponse(subscriptionResponse).statusCode
+        let (subscriptionData, subscriptionResponse) = try await Self.responseData(
+            for: subscriptionRequest,
+            session: session,
+            cooldown: cooldown
+        )
+        let subscriptionStatus = subscriptionResponse.statusCode
         logActionResponse(traceID: traceID, action: "unsubscribe", step: "ignore-thread-rest", threadId: threadId, request: subscriptionRequest, response: subscriptionResponse, data: subscriptionData)
         guard subscriptionStatus != 401 else {
             throw APIError.unauthorized
+        }
+        if subscriptionStatus == 429 || (
+            subscriptionStatus == 403 && Self.isRateLimitedResponse(subscriptionResponse)
+        ) {
+            throw APIError.rateLimited
         }
         guard (200...299).contains(subscriptionStatus) else {
             throw APIError.httpError(subscriptionStatus)
         }
     }
 
-    private func graphQLRequest(query: String, token: String) async throws -> [String: Any] {
+    private func graphQLRequest(
+        query: String,
+        token: String,
+        cooldown: GitHubRequestCooldown
+    ) async throws -> [String: Any] {
         let graphQLURL = URL(string: "https://api.github.com/graphql")!
         var req = URLRequest(url: graphQLURL)
         req.httpMethod = "POST"
@@ -1023,10 +1250,17 @@ actor GitHubAPIClient {
         let body: [String: Any] = ["query": query]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: req)
-        let status = try Self.validatedGitHubAPIResponse(response).statusCode
+        let (data, response) = try await Self.responseData(
+            for: req,
+            session: session,
+            cooldown: cooldown
+        )
+        let status = response.statusCode
         guard status != 401 else {
             throw APIError.unauthorized
+        }
+        if status == 429 || (status == 403 && Self.isRateLimitedResponse(response)) {
+            throw APIError.rateLimited
         }
         guard (200...299).contains(status) else {
             throw APIError.httpError(status)
@@ -1052,12 +1286,16 @@ actor GitHubAPIClient {
     func validateToken() async throws -> String {
         let url = baseURL.appendingPathComponent("user")
         let requestGeneration = credentialGeneration
+        let operationCooldown = requestCooldown
         let request = Self.makeRequest(url: url, token: token)
-        let (data, response) = try await session.data(for: request)
+        let (data, httpResponse) = try await Self.responseData(
+            for: request,
+            session: session,
+            cooldown: operationCooldown
+        )
         guard requestGeneration == credentialGeneration else {
             throw APIError.staleCredentialResponse
         }
-        let httpResponse = try Self.validatedGitHubAPIResponse(response)
         let status = httpResponse.statusCode
 
         switch status {
@@ -1103,10 +1341,14 @@ actor GitHubAPIClient {
     }
 
     func suggestedRefreshDelayNanoseconds() -> UInt64 {
-        let nextRefreshAt = cachedFeeds.values
+        let nextFeedRefreshAt = cachedFeeds.values
             .map(\.nextNotificationsRefreshAt)
             .min() ?? .distantPast
-        let secondsUntilRefresh = nextRefreshAt.timeIntervalSinceNow
+        let nextRefreshAt = max(
+            nextFeedRefreshAt,
+            requestCooldown.activeDeadline() ?? .distantPast
+        )
+        let secondsUntilRefresh = nextRefreshAt.timeIntervalSince(dateProvider())
         let delaySeconds = secondsUntilRefresh > 0 ? secondsUntilRefresh : defaultPollInterval
         return UInt64(delaySeconds * 1_000_000_000)
     }
@@ -1195,19 +1437,36 @@ actor GitHubAPIClient {
         return httpResponse
     }
 
+    private static func responseData(
+        for request: URLRequest,
+        session: any NetworkSession,
+        cooldown: GitHubRequestCooldown
+    ) async throws -> (Data, HTTPURLResponse) {
+        try Task.checkCancellation()
+        try cooldown.checkRequestAllowed()
+        let (data, response) = try await session.data(for: request)
+        let httpResponse = try validatedGitHubAPIResponse(response)
+        cooldown.observe(httpResponse)
+        try Task.checkCancellation()
+        return (data, httpResponse)
+    }
+
     private static func request(
         url: URL,
         token: String,
-        session: any NetworkSession
+        session: any NetworkSession,
+        cooldown: GitHubRequestCooldown
     ) async throws -> Data {
         guard isTrustedGitHubAPIURL(url) else {
             throw APIError.untrustedGitHubAPIURL
         }
 
         let req = makeRequest(url: url, token: token)
-        let (data, response) = try await session.data(for: req)
-        try Task.checkCancellation()
-        let httpResponse = try validatedGitHubAPIResponse(response)
+        let (data, httpResponse) = try await responseData(
+            for: req,
+            session: session,
+            cooldown: cooldown
+        )
         let status = httpResponse.statusCode
 
         switch status {
@@ -1232,17 +1491,18 @@ actor GitHubAPIClient {
         requestID: UUID
     ) {
         guard let response else { return }
+        let now = dateProvider()
 
         updateFeedCache(scope, for: requestID) { cache in
             if let pollInterval = response.value(forHTTPHeaderField: "X-Poll-Interval"),
                let seconds = TimeInterval(pollInterval),
                seconds.isFinite,
                seconds >= 0 {
-                cache.nextNotificationsRefreshAt = Date().addingTimeInterval(
+                cache.nextNotificationsRefreshAt = now.addingTimeInterval(
                     min(seconds, maximumPollInterval)
                 )
             } else {
-                cache.nextNotificationsRefreshAt = Date().addingTimeInterval(defaultPollInterval)
+                cache.nextNotificationsRefreshAt = now.addingTimeInterval(defaultPollInterval)
             }
         }
     }
@@ -1397,6 +1657,7 @@ actor GitHubAPIClient {
         case unauthorized
         case forbidden
         case rateLimited
+        case rateLimitCooldown(until: Date)
         case httpError(Int)
         case markReadFailed(Int)
         case graphQLNodeIDNotFound
@@ -1412,6 +1673,7 @@ actor GitHubAPIClient {
             case .unauthorized: "Token is invalid or expired"
             case .forbidden: "Access forbidden — check token scopes"
             case .rateLimited: "GitHub API rate limit exceeded"
+            case .rateLimitCooldown: "GitHub API rate-limit cooldown is active"
             case .httpError(let code): "GitHub API error (\(code))"
             case .markReadFailed(let code): "Failed to mark as read (\(code))"
             case .graphQLNodeIDNotFound: "Could not resolve subject for subscription update"

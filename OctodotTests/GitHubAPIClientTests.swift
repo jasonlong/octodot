@@ -134,6 +134,27 @@ struct GitHubAPIClientTests {
         }
     }
 
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var currentDate: Date
+
+        init(now: Date) {
+            currentDate = now
+        }
+
+        func now() -> Date {
+            lock.lock()
+            defer { lock.unlock() }
+            return currentDate
+        }
+
+        func advance(by interval: TimeInterval) {
+            lock.lock()
+            currentDate = currentDate.addingTimeInterval(interval)
+            lock.unlock()
+        }
+    }
+
     @Test func validateTokenReturnsUsername() async throws {
         let session = StubNetworkSession(results: [
             .success((
@@ -293,6 +314,258 @@ struct GitHubAPIClientTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test func retryAfterCooldownBlocksManualRefreshUntilExpiry() async throws {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 429,
+                    httpVersion: nil,
+                    headerFields: ["Retry-After": "120"]
+                )!
+            )),
+            .success((
+                Self.notificationsPayload(id: "after-cooldown").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            useGraphQLForSubjectMetadata: false,
+            dateProvider: { clock.now() }
+        )
+
+        do {
+            _ = try await client.fetchNotifications(force: true)
+            Issue.record("Expected the initial response to be rate limited")
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 120_000_000_000)
+
+        do {
+            _ = try await client.fetchNotifications(force: true)
+            Issue.record("Expected manual refresh to honor the active cooldown")
+        } catch GitHubAPIClient.APIError.rateLimitCooldown(let until) {
+            #expect(until == clock.now().addingTimeInterval(120))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(await session.recordedRequests().count == 1)
+
+        clock.advance(by: 120)
+        let notifications = try await client.fetchNotifications(force: true)
+
+        #expect(notifications.map(\.id) == ["after-cooldown"])
+        #expect(await session.recordedRequests().count == 2)
+    }
+
+    @Test func exhausted403UsesLaterRateLimitResetDeadline() async throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestClock(now: start)
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 403,
+                    httpVersion: nil,
+                    headerFields: [
+                        "Retry-After": "30",
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": "2000000120",
+                    ]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            useGraphQLForSubjectMetadata: false,
+            dateProvider: { clock.now() }
+        )
+
+        do {
+            _ = try await client.validateToken()
+            Issue.record("Expected exhausted 403 response to be rate limited")
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 120_000_000_000)
+    }
+
+    @Test func malformedCooldownHeadersUseDefaultAndHostileDurationsAreClamped() async throws {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let rateLimitedResponse: ([String: String]) -> HTTPURLResponse = { headers in
+            HTTPURLResponse(
+                url: URL(string: "https://api.github.com/user")!,
+                statusCode: 429,
+                httpVersion: nil,
+                headerFields: headers
+            )!
+        }
+        let session = StubNetworkSession(results: [
+            .success((Data(), rateLimitedResponse([
+                "Retry-After": "not-a-duration",
+                "X-RateLimit-Reset": "also-invalid",
+            ]))),
+            .success((Data(), rateLimitedResponse(["Retry-After": "999999"]))),
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            useGraphQLForSubjectMetadata: false,
+            dateProvider: { clock.now() }
+        )
+
+        do {
+            _ = try await client.validateToken()
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 60_000_000_000)
+
+        clock.advance(by: 60)
+        do {
+            _ = try await client.validateToken()
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 3_600_000_000_000)
+    }
+
+    @Test func tokenReplacementClearsAccountSpecificCooldown() async throws {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 429,
+                    httpVersion: nil,
+                    headerFields: ["Retry-After": "300"]
+                )!
+            )),
+            .success((
+                Data(#"{"login":"new-account"}"#.utf8),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/user")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(
+            token: "old_token",
+            session: session,
+            useGraphQLForSubjectMetadata: false,
+            dateProvider: { clock.now() }
+        )
+
+        do {
+            _ = try await client.validateToken()
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 300_000_000_000)
+
+        await client.updateToken("new_token")
+        let username = try await client.validateToken()
+        let requests = await session.recordedRequests()
+
+        #expect(username == "new-account")
+        #expect(requests.count == 2)
+        #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer new_token")
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 60_000_000_000)
+    }
+
+    @Test func suggestedRefreshDelayUsesLaterFeedOrCooldownDeadline() async throws {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let session = StubNetworkSession(results: [
+            .success((
+                Self.notificationsPayload(id: "1").data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: ["X-Poll-Interval": "300"]
+                )!
+            )),
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/notifications/threads/1")!,
+                    statusCode: 429,
+                    httpVersion: nil,
+                    headerFields: ["Retry-After": "60"]
+                )!
+            )),
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            useGraphQLForSubjectMetadata: false,
+            dateProvider: { clock.now() }
+        )
+
+        _ = try await client.fetchNotifications(force: true)
+        do {
+            try await client.markAsRead(threadId: "1")
+        } catch GitHubAPIClient.APIError.rateLimited {
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 300_000_000_000)
+        clock.advance(by: 250)
+        #expect(await client.suggestedRefreshDelayNanoseconds() == 50_000_000_000)
+    }
+
+    @Test func metadataRateLimitSkipsRESTFallbackAndSubsequentWork() async throws {
+        let clock = TestClock(now: Date(timeIntervalSince1970: 2_000_000_000))
+        let session = StubNetworkSession(results: [
+            .success((
+                Data(),
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 429,
+                    httpVersion: nil,
+                    headerFields: ["Retry-After": "90"]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(
+            token: "ghp_secret",
+            session: session,
+            dateProvider: { clock.now() }
+        )
+        let notification = Self.metadataIssue(id: "issue-1", number: 1)
+
+        let initial = await client.resolveSubjectMetadata(for: [notification])
+        let deferred = await client.resolveSubjectMetadata(for: [notification])
+
+        #expect(initial.isEmpty)
+        #expect(deferred.isEmpty)
+        #expect(await session.recordedRequests().count == 1)
+        #expect(await client.takeNonFatalWarningMessage() == GitHubAPIClient.subjectMetadataWarningMessage)
     }
 
     @Test func tokenReplacementRejectsInFlightNotificationResponse() async throws {

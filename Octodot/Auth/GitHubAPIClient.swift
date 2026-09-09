@@ -383,7 +383,7 @@ actor GitHubAPIClient {
 
     func resolveSubjectMetadata(
         for notifications: [GitHubNotification],
-        forceOpenPullRequestRefresh: Bool = false
+        forceActivePullRequestRefresh: Bool = false
     ) async -> [String: GitHubNotification.SubjectMetadata] {
         let requestID = UUID()
         latestSubjectMetadataRequestID = requestID
@@ -391,9 +391,7 @@ actor GitHubAPIClient {
         let pendingSubjectNotifications = notifications
             .filter {
                 Self.shouldResolveSubjectMetadata($0) || (
-                    forceOpenPullRequestRefresh &&
-                    $0.type == .pullRequest &&
-                    $0.subjectState == .open
+                    forceActivePullRequestRefresh && $0.isActivePullRequest
                 )
             }
             .prefix(maxSubjectResolutionBatchSize)
@@ -943,12 +941,12 @@ actor GitHubAPIClient {
         let state: GitHubNotification.SubjectState
         if stateString == "MERGED" || mergedAt != nil {
             state = .merged
+        } else if stateString == "CLOSED" {
+            state = .closed
         } else if isDraft {
             state = .draft
         } else if stateString == "OPEN" {
             state = .open
-        } else if stateString == "CLOSED" {
-            state = .closed
         } else {
             state = .unknown
         }
@@ -1819,12 +1817,9 @@ private struct APISubjectState: Decodable {
         if merged == true || mergedAt != nil {
             return .merged
         }
-        if draft == true {
-            return .draft
-        }
         switch state {
         case "open":
-            return .open
+            return draft == true ? .draft : .open
         case "closed":
             return stateReason == "not_planned" ? .closedNotPlanned : .closed
         default:

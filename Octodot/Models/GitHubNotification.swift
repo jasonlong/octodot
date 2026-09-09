@@ -25,6 +25,10 @@ struct GitHubNotification: Identifiable, Hashable {
         type == .issue || type == .pullRequest
     }
 
+    var isActivePullRequest: Bool {
+        type == .pullRequest && (subjectState == .open || subjectState == .draft)
+    }
+
     var iconName: String {
         switch type {
         case .pullRequest:

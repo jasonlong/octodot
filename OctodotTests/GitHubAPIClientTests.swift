@@ -1246,7 +1246,7 @@ struct GitHubAPIClientTests {
 
         let forcedMetadata = await client.resolveSubjectMetadata(
             for: [notification],
-            forceOpenPullRequestRefresh: true
+            forceActivePullRequestRefresh: true
         )
         #expect(forcedMetadata["42"]?.hasResolvedCIStatus == true)
         #expect(await session.recordedRequests().count == 2)
@@ -1581,6 +1581,38 @@ struct GitHubAPIClientTests {
         #expect(resolvedMetadata["1"]?.state == .draft)
     }
 
+    @Test func resolveSubjectMetadataTreatsClosedDraftPullRequestAsClosed() async {
+        let notification = GitHubNotification(
+            id: "8688",
+            threadId: "8688",
+            title: "Closed draft pull request",
+            repository: "acme/test",
+            reason: .author,
+            type: .pullRequest,
+            updatedAt: .now,
+            isUnread: false,
+            url: URL(string: "https://github.com/acme/test/pull/8688")!,
+            subjectURL: "https://api.github.com/repos/acme/test/pulls/8688",
+            subjectState: .unknown
+        )
+        let session = StubNetworkSession(results: [
+            .success((
+                #"{"state":"closed","draft":true,"merged":false,"merged_at":null}"#.data(using: .utf8)!,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/repos/acme/test/pulls/8688")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+
+        let metadata = await client.resolveSubjectMetadata(for: [notification])
+
+        #expect(metadata["8688"]?.state == .closed)
+    }
+
     @Test func resolveSubjectMetadataTreatsGraphQLDraftPullRequestAsDraft() async throws {
         let payload = Self.notificationsPayload(items: [
             NotificationFixture(
@@ -1647,6 +1679,64 @@ struct GitHubAPIClientTests {
         let queryBody = requests[1].httpBody.flatMap { String(data: $0, encoding: .utf8) }
         #expect(queryBody?.contains("author") == true)
         #expect(queryBody?.contains("avatarUrl") == true)
+    }
+
+    @Test func forcedMetadataRefreshTreatsGraphQLClosedDraftPullRequestAsClosed() async {
+        let notification = GitHubNotification(
+            id: "8688",
+            threadId: "8688",
+            title: "Closed draft pull request",
+            repository: "acme/test",
+            reason: .author,
+            type: .pullRequest,
+            updatedAt: .now,
+            isUnread: false,
+            url: URL(string: "https://github.com/acme/test/pull/8688")!,
+            subjectURL: "https://api.github.com/repos/acme/test/pulls/8688",
+            subjectState: .draft,
+            hasResolvedCIStatus: true,
+            openerLogin: "hubot",
+            hasResolvedOpener: true
+        )
+        let graphQLPayload = """
+        {
+          "data": {
+            "n0": {
+              "pullRequest": {
+                "id": "PR_node_8688",
+                "state": "CLOSED",
+                "isDraft": true,
+                "mergedAt": null,
+                "author": {
+                  "login": "hubot",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/2?v=4"
+                },
+                "commits": { "nodes": [] }
+              }
+            }
+          }
+        }
+        """.data(using: .utf8)!
+        let session = StubNetworkSession(results: [
+            .success((
+                graphQLPayload,
+                HTTPURLResponse(
+                    url: URL(string: "https://api.github.com/graphql")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: [:]
+                )!
+            ))
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session)
+
+        let metadata = await client.resolveSubjectMetadata(
+            for: [notification],
+            forceActivePullRequestRefresh: true
+        )
+
+        #expect(metadata["8688"]?.state == .closed)
+        #expect(await session.recordedRequests().count == 1)
     }
 
     @Test func resolveSubjectMetadataIncludesGraphQLIssueOpener() async throws {

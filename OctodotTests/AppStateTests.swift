@@ -1126,6 +1126,48 @@ struct AppStateTests {
         #expect(state.notifications.first?.hasResolvedCIStatus == true)
     }
 
+    @Test func resolvedDraftRefreshesAsClosedOnNextFeedLoad() async {
+        let feedPayload = Self.singleNotificationPayload(
+            id: "8688",
+            subjectURL: "https://api.github.com/repos/acme/alpha/pulls/8688"
+        )
+        let feedResponse = Self.httpResponse(
+            url: "https://api.github.com/notifications?page=1",
+            statusCode: 200,
+            headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+        )
+        let subjectResponse = Self.httpResponse(
+            url: "https://api.github.com/repos/acme/alpha/pulls/8688",
+            statusCode: 200
+        )
+        let session = StubNetworkSession(results: [
+            .success((feedPayload, feedResponse)),
+            .success((#"{"state":"open","draft":true,"user":null}"#.data(using: .utf8)!, subjectResponse)),
+            .success((feedPayload, feedResponse)),
+            .success((#"{"state":"closed","draft":true,"user":null}"#.data(using: .utf8)!, subjectResponse)),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.subjectState == .draft
+            }
+        }
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.subjectState == .closed
+            }
+        }
+
+        #expect(await session.recordedRequests().count == 4)
+    }
+
     @Test func visibleReadNotificationAlsoResolvesSubjectState() async {
         let session = DelayedStubNetworkSession(results: [
             .success(

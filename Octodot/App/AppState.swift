@@ -123,8 +123,8 @@ final class AppState {
     private var pendingVisibleSubjectStateIDs: [String] = []
     private var visibleSubjectStateInFlightIDs: Set<String> = []
     private var forcedVisibleSubjectStateRefreshIDs: Set<String> = []
-    // Each successful feed load starts a new freshness window for visible open PR metadata.
-    private var shouldRefreshVisibleCIMetadataAfterNextRebuild = false
+    // Each successful feed load starts a new freshness window for visible active PR metadata.
+    private var shouldRefreshVisibleActivePullRequestMetadataAfterNextRebuild = false
     private var lastActionDebugThreadID: String?
     private var lastActionDebugKind: String?
     private var activeAuthRequestID = UUID()
@@ -495,7 +495,7 @@ final class AppState {
             isLoading = false
             errorMessage = nil
             warningMessage = recentInboxWarningMessage
-            shouldRefreshVisibleCIMetadataAfterNextRebuild = true
+            shouldRefreshVisibleActivePullRequestMetadataAfterNextRebuild = true
             rebuildDerivedState()
             DebugTrace.log(
                 "load applied mode=\(inboxMode.rawValue) unread.count=\(serverNotifications.count) " +
@@ -992,9 +992,9 @@ final class AppState {
         selectedThreadID = filteredNotifications[selectedIndexStorage].id
 
         enqueueVisibleSubjectMetadataRefreshIfNeeded(
-            forceOpenPRRefresh: shouldRefreshVisibleCIMetadataAfterNextRebuild
+            forceActivePullRequestRefresh: shouldRefreshVisibleActivePullRequestMetadataAfterNextRebuild
         )
-        shouldRefreshVisibleCIMetadataAfterNextRebuild = false
+        shouldRefreshVisibleActivePullRequestMetadataAfterNextRebuild = false
     }
 
     private func filteredNotificationsForCurrentMode(
@@ -1377,15 +1377,15 @@ final class AppState {
 
         pendingVisibleSubjectStateIDs.removeAll { candidateIDs.contains($0) }
         visibleSubjectStateInFlightIDs.formUnion(candidateIDs)
-        let forceOpenPullRequestRefresh = !forcedVisibleSubjectStateRefreshIDs.isDisjoint(with: candidateIDs)
+        let forceActivePullRequestRefresh = !forcedVisibleSubjectStateRefreshIDs.isDisjoint(with: candidateIDs)
         let candidates = candidateIDs.compactMap { candidateID in
             filteredNotifications.first(where: { $0.id == candidateID })
         }
 
-        subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs, forceOpenPullRequestRefresh] in
+        subjectStateResolutionTask = Task { [weak self, client, candidates, candidateIDs, forceActivePullRequestRefresh] in
             let resolvedMetadata = await client.resolveSubjectMetadata(
                 for: candidates,
-                forceOpenPullRequestRefresh: forceOpenPullRequestRefresh
+                forceActivePullRequestRefresh: forceActivePullRequestRefresh
             )
             let warningMessage = await client.takeNonFatalWarningMessage()
             guard !Task.isCancelled else { return }
@@ -1455,21 +1455,17 @@ final class AppState {
         return didChange
     }
 
-    private func enqueueVisibleSubjectMetadataRefreshIfNeeded(forceOpenPRRefresh: Bool = false) {
+    private func enqueueVisibleSubjectMetadataRefreshIfNeeded(forceActivePullRequestRefresh: Bool = false) {
         guard isPanelVisible else { return }
 
         for notification in filteredNotifications.prefix(Self.visibleSubjectStateBatchSize) {
             let shouldQueue = notification.needsSubjectMetadataResolution || (
-                forceOpenPRRefresh &&
-                notification.type == .pullRequest &&
-                notification.subjectState == .open
+                forceActivePullRequestRefresh && notification.isActivePullRequest
             )
 
             guard shouldQueue else { continue }
             let id = notification.id
-            if forceOpenPRRefresh,
-               notification.type == .pullRequest,
-               notification.subjectState == .open {
+            if forceActivePullRequestRefresh, notification.isActivePullRequest {
                 forcedVisibleSubjectStateRefreshIDs.insert(id)
             }
             guard !pendingVisibleSubjectStateIDs.contains(id),

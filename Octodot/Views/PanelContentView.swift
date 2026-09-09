@@ -14,6 +14,7 @@ struct PanelContentView: View {
     @State private var lastSingleFireCommandAt = Date.distantPast
     @State private var suppressedKeyUpInput: PanelInput.KeyInput?
     @State private var focusRequestID = UUID()
+    @State private var jumpToTopRequestID = 0
 
     private var displayedSelectedNotificationID: String? {
         isSearchFieldFocused ? nil : appState.selectedNotificationID
@@ -145,6 +146,7 @@ struct PanelContentView: View {
                         selectedNotificationID: displayedSelectedNotificationID,
                         checkedIDs: appState.checkedThreadIDs,
                         groupByRepo: appState.groupByRepo,
+                        jumpToTopRequestID: jumpToTopRequestID,
                         onSelect: { appState.selectNotification(id: $0) },
                         onOpen: { _ in openSelectedNotificationAndCloseIfNeeded() },
                         onToggleCheck: { appState.toggleChecked(id: $0) },
@@ -395,6 +397,7 @@ struct PanelContentView: View {
             appState.jumpToBottom()
         case .jumpToTop:
             appState.jumpToTop()
+            jumpToTopRequestID &+= 1
         case .done:
             appState.done()
         case .unsubscribe:

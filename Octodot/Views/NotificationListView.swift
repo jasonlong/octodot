@@ -8,6 +8,7 @@ struct NotificationListView: View {
     let selectedNotificationID: String?
     let checkedIDs: Set<String>
     let groupByRepo: Bool
+    let jumpToTopRequestID: Int
     let onSelect: (String) -> Void
     let onOpen: (String) -> Void
     let onToggleCheck: (String) -> Void
@@ -32,7 +33,9 @@ struct NotificationListView: View {
     struct ScrollRequest: Equatable {
         let selectedNotificationID: String
         let targetID: String
+        let topTargetID: String
         let visibleIDs: [String]
+        let jumpToTopRequestID: Int
     }
 
     @State private var knownRowFrames: [String: CGRect] = [:]
@@ -52,7 +55,8 @@ struct NotificationListView: View {
         let currentScrollRequest = Self.scrollRequest(
             selectedNotificationID: selectedNotificationID,
             notifications: notifications,
-            groupByRepo: groupByRepo
+            groupByRepo: groupByRepo,
+            jumpToTopRequestID: jumpToTopRequestID
         )
 
         GeometryReader { viewportGeometry in
@@ -61,6 +65,7 @@ struct NotificationListView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(listItems, id: \.id) { item in
                             listItemView(item)
+                                .id(item.id)
                         }
                     }
                 }
@@ -99,6 +104,11 @@ struct NotificationListView: View {
                     }
 
                     await Task.yield()
+                    if Self.shouldAnchorTop(previous: priorRequest, current: scrollRequest) {
+                        proxy.scrollTo(scrollRequest.topTargetID, anchor: .top)
+                        return
+                    }
+
                     let currentRowFrame = knownRowFrames[scrollRequest.selectedNotificationID]
                     let shouldRevealContext = Self.shouldRevealDownwardContext(
                         previous: priorRequest,
@@ -152,7 +162,6 @@ struct NotificationListView: View {
                     )
                 }
             )
-            .id(notification.id)
             .background {
                 GeometryReader { geometry in
                     Color.clear.preference(
@@ -181,7 +190,8 @@ struct NotificationListView: View {
     static func scrollRequest(
         selectedNotificationID: String?,
         notifications: [GitHubNotification],
-        groupByRepo _: Bool
+        groupByRepo: Bool,
+        jumpToTopRequestID: Int = 0
     ) -> ScrollRequest? {
         guard let selectedNotificationID,
               notifications.contains(where: { $0.id == selectedNotificationID }) else {
@@ -191,8 +201,15 @@ struct NotificationListView: View {
         return ScrollRequest(
             selectedNotificationID: selectedNotificationID,
             targetID: selectedNotificationID,
-            visibleIDs: notifications.map(\.id)
+            topTargetID: groupByRepo ? "repo:\(notifications[0].repository)" : notifications[0].id,
+            visibleIDs: notifications.map(\.id),
+            jumpToTopRequestID: jumpToTopRequestID
         )
+    }
+
+    static func shouldAnchorTop(previous: ScrollRequest?, current: ScrollRequest) -> Bool {
+        guard let previous else { return false }
+        return previous.jumpToTopRequestID != current.jumpToTopRequestID
     }
 
     static func shouldRevealDownwardContext(

@@ -544,6 +544,66 @@ struct AppShellTests {
         #expect(firstInSecondGroup?.targetID == "3")
     }
 
+    @Test func notificationListJumpToTopTargetsFirstRepositoryHeader() {
+        let notifications = [
+            AppStateTests.makeNotification(id: 1, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 2, repo: "acme/alpha"),
+            AppStateTests.makeNotification(id: 3, repo: "acme/beta")
+        ]
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "3",
+            notifications: notifications,
+            groupByRepo: true,
+            jumpToTopRequestID: 0
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "1",
+            notifications: notifications,
+            groupByRepo: true,
+            jumpToTopRequestID: 1
+        )
+
+        #expect(current?.topTargetID == "repo:acme/alpha")
+        #expect(NotificationListView.shouldAnchorTop(previous: previous, current: current!))
+    }
+
+    @Test func notificationListRepeatedJumpToTopStillRequestsTopAnchor() {
+        let notifications = AppStateTests.makeNotifications(3)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "0",
+            notifications: notifications,
+            groupByRepo: false,
+            jumpToTopRequestID: 4
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "0",
+            notifications: notifications,
+            groupByRepo: false,
+            jumpToTopRequestID: 5
+        )
+
+        #expect(current?.topTargetID == "0")
+        #expect(NotificationListView.shouldAnchorTop(previous: previous, current: current!))
+    }
+
+    @Test func notificationListSelectionChangeDoesNotRequestTopAnchor() {
+        let notifications = AppStateTests.makeNotifications(3)
+        let previous = NotificationListView.scrollRequest(
+            selectedNotificationID: "2",
+            notifications: notifications,
+            groupByRepo: false,
+            jumpToTopRequestID: 7
+        )
+        let current = NotificationListView.scrollRequest(
+            selectedNotificationID: "0",
+            notifications: notifications,
+            groupByRepo: false,
+            jumpToTopRequestID: 7
+        )
+
+        #expect(NotificationListView.shouldAnchorTop(previous: previous, current: current!) == false)
+    }
+
     @Test func notificationListRevealsContextWhenMovingDownFromViewportBottom() {
         let notifications = AppStateTests.makeNotifications(4)
         let previous = NotificationListView.scrollRequest(

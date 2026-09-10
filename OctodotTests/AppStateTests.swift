@@ -172,7 +172,8 @@ struct AppStateTests {
         id: String,
         isUnread: Bool = true,
         updatedAt: String = recentDateString,
-        subjectURL: String? = nil
+        subjectURL: String? = nil,
+        subjectType: String = "PullRequest"
     ) -> Data {
         let subjectURLField: String
         if let subjectURL {
@@ -191,7 +192,7 @@ struct AppStateTests {
             "subject": {
               "title": "Notification \(id)",
               \(subjectURLField),
-              "type": "PullRequest"
+              "type": "\(subjectType)"
             },
             "repository": {
               "full_name": "acme/alpha",
@@ -1165,6 +1166,50 @@ struct AppStateTests {
             }
         }
 
+        #expect(await session.recordedRequests().count == 4)
+    }
+
+    @Test func resolvedIssueRefreshesAsClosedOnNextFeedLoad() async {
+        let feedPayload = Self.singleNotificationPayload(
+            id: "3775",
+            subjectURL: "https://api.github.com/repos/planetscale/surfaces/issues/3775",
+            subjectType: "Issue"
+        )
+        let feedResponse = Self.httpResponse(
+            url: "https://api.github.com/notifications?page=1",
+            statusCode: 200,
+            headers: ["Last-Modified": "Wed, 01 Apr 2026 12:00:00 GMT"]
+        )
+        let subjectResponse = Self.httpResponse(
+            url: "https://api.github.com/repos/planetscale/surfaces/issues/3775",
+            statusCode: 200
+        )
+        let session = StubNetworkSession(results: [
+            .success((feedPayload, feedResponse)),
+            .success((#"{"state":"open","user":null}"#.data(using: .utf8)!, subjectResponse)),
+            .success((feedPayload, feedResponse)),
+            .success((#"{"state":"closed","state_reason":"completed","user":null}"#.data(using: .utf8)!, subjectResponse)),
+        ])
+        let client = GitHubAPIClient(token: "ghp_secret", session: session, useGraphQLForSubjectMetadata: false)
+        let state = Self.makeState(0, apiClient: client)
+        state.inboxMode = .unread
+        state.isPanelVisible = true
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.subjectState == .open
+            }
+        }
+
+        await state.loadNotifications(force: true)
+        await Self.waitUntil {
+            await MainActor.run {
+                state.notifications.first?.subjectState == .closed
+            }
+        }
+
+        #expect(state.notifications.first?.iconName == "octicon-issue-closed")
         #expect(await session.recordedRequests().count == 4)
     }
 

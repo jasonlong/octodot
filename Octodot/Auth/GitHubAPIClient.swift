@@ -383,7 +383,7 @@ actor GitHubAPIClient {
 
     func resolveSubjectMetadata(
         for notifications: [GitHubNotification],
-        forceActivePullRequestRefresh: Bool = false
+        forceActiveSubjectRefresh: Bool = false
     ) async -> [String: GitHubNotification.SubjectMetadata] {
         let requestID = UUID()
         latestSubjectMetadataRequestID = requestID
@@ -391,7 +391,7 @@ actor GitHubAPIClient {
         let pendingSubjectNotifications = notifications
             .filter {
                 Self.shouldResolveSubjectMetadata($0) || (
-                    forceActivePullRequestRefresh && $0.isActivePullRequest
+                    forceActiveSubjectRefresh && $0.isActiveIssueOrPullRequest
                 )
             }
             .prefix(maxSubjectResolutionBatchSize)

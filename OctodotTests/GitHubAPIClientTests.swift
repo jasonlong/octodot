@@ -1246,7 +1246,7 @@ struct GitHubAPIClientTests {
 
         let forcedMetadata = await client.resolveSubjectMetadata(
             for: [notification],
-            forceActivePullRequestRefresh: true
+            forceActiveSubjectRefresh: true
         )
         #expect(forcedMetadata["42"]?.hasResolvedCIStatus == true)
         #expect(await session.recordedRequests().count == 2)
@@ -1732,7 +1732,7 @@ struct GitHubAPIClientTests {
 
         let metadata = await client.resolveSubjectMetadata(
             for: [notification],
-            forceActivePullRequestRefresh: true
+            forceActiveSubjectRefresh: true
         )
 
         #expect(metadata["8688"]?.state == .closed)
